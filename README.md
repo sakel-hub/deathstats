@@ -59,7 +59,16 @@ The following options can be customized in `minetest.conf` or the in-game Settin
 - `deathstats_death.2.ogg`: *j1game_over_mono* by jivatma07 (CC0, Freesound #173859)
 - `deathstats_death.3.ogg`: *Life Lost Game Over* by noirenex (CC0, Freesound #159408)
 
+## Testing
+
+DeathStats includes automated unit tests covering death reason analysis, live stat tracking, formspec layouts, corpse mechanics, and reconnect persistence:
+
+```bash
+lua test.lua
+```
+
 ## License
 - **Code**: LGPL-2.1 or later (C) 2026 SaKeL
 - **Textures & Art**: CC0 / Public Domain
 - **Sounds**: CC0 / Public Domain
+
