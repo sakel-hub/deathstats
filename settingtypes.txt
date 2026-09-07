@@ -29,3 +29,6 @@ deathstats_formspec_side (Statistics Formspec Side) enum right right,left,center
 # Enable broken/fractured limb rotations on death (arms, legs, head)
 deathstats_enable_limb_fractures (Enable Corpse Limb Fractures) bool true
 
+
+# Enable particle effects on corpse (bubbles in water, fire in lava, smoke in fire, impact debris on ground)
+deathstats_enable_corpse_particles (Enable Corpse Particles) bool true

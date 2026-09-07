@@ -33,6 +33,7 @@ deathstats = {
         orbit_radius = tonumber(core.settings:get("deathstats_orbit_radius")) or 3.2,
         orbit_height = tonumber(core.settings:get("deathstats_orbit_height")) or 1.5,
         orbit_speed = tonumber(core.settings:get("deathstats_orbit_speed")) or 0.4,
+        enable_corpse_particles = core.settings:get_bool("deathstats_enable_corpse_particles", true),
     },
     -- Common & Reusable Color Palette for UI Formspecs and HUD Elements
     colors = {
@@ -1726,6 +1727,561 @@ function deathstats.get_player_visuals(player)
     }
 end
 
+--- Get the primary tile texture name for a given node for particle fallback
+---@param node_name string Name of the node (e.g. "default:dirt")
+---@return string texture Name of the texture or fallback
+function deathstats.get_node_tile_texture(node_name)
+    if not node_name or node_name == "" or node_name == "air" or node_name == "ignore" then
+        return "default_dirt.png"
+    end
+    local ndef = core.registered_nodes[node_name]
+    if ndef and ndef.tiles then
+        local t = ndef.tiles[1]
+        if type(t) == "string" then
+            return t
+        elseif type(t) == "table" and t.name then
+            return t.name
+        end
+    end
+    return "default_dirt.png"
+end
+
+--- Determine the appropriate particle effect for a corpse based on death cause and environment
+---@param corpse_pos table The {x, y, z} position of the corpse
+---@param death_info table|nil Optional death analysis table
+---@return string effect_type "water"|"lava"|"fire"|"impact"
+function deathstats.get_corpse_effect_type(corpse_pos, death_info)
+    local cat = death_info and death_info.category
+    if cat == "lava" then
+        return "lava"
+    elseif cat == "fire" then
+        return "fire"
+    elseif cat == "drown" then
+        return "water"
+    end
+
+    if death_info and death_info.reason_text then
+        local rtext = death_info.reason_text:lower()
+        if rtext:find("lava") then
+            return "lava"
+        elseif rtext:find("fire") or rtext:find("burned") or rtext:find("flame") or rtext:find("ashes") then
+            return "fire"
+        elseif rtext:find("drown") or rtext:find("water") then
+            return "water"
+        end
+    end
+
+    if corpse_pos then
+        local get_node_fn = core.get_node_or_nil or core.get_node
+        local node = get_node_fn and get_node_fn(corpse_pos)
+        if node then
+            local nname = node.name:lower()
+            if nname:find("lava") then
+                return "lava"
+            elseif nname:find("fire") then
+                return "fire"
+            elseif nname:find("water") then
+                return "water"
+            end
+            local ndef = core.registered_nodes[node.name]
+            if ndef and (ndef.drawtype == "liquid" or ndef.drawtype == "flowingliquid"
+                    or ndef.liquidtype == "source" or ndef.liquidtype == "flowing") then
+                return "water"
+            end
+        end
+    end
+
+    return "impact"
+end
+
+--- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti/Minetest clients
+---@param effect_type string "water"|"lava"|"fire"|"impact"
+---@param corpse_pos table The {x, y, z} position of the corpse
+---@return table|nil def ParticleSpawner definition table
+function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
+    if not corpse_pos then return nil end
+    local cx, cy, cz = corpse_pos.x, corpse_pos.y, corpse_pos.z
+
+    if effect_type == "water" then
+        -- Bubbles floating upwards through water continuously from random positions on the submerged corpse
+        return {
+            amount = 8,
+            time = 0, -- Continuous spawner
+            collisiondetection = true,
+            collision_removal = false,
+            glow = 3,
+            -- Legacy client fields (< v5.6)
+            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
+            minvel = { x = -0.15, y = 0.35, z = -0.15 },
+            maxvel = { x = 0.15, y = 0.85, z = 0.15 },
+            minacc = { x = -0.05, y = 0.20, z = -0.05 },
+            maxacc = { x = 0.05, y = 0.45, z = 0.05 },
+            minexptime = 1.2,
+            maxexptime = 2.4,
+            minsize = 1.0,
+            maxsize = 1.6,
+            texture = "deathstats_particle_bubble.png",
+            animation = {
+                type = "vertical_frames",
+                aspect_w = 5,
+                aspect_h = 5,
+                length = 0.8,
+            },
+            -- Modern Luanti fields (v5.6+)
+            pos = {
+                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
+            },
+            vel = {
+                min = vector.new(-0.15, 0.35, -0.15),
+                max = vector.new(0.15, 0.85, 0.15),
+            },
+            acc = {
+                min = vector.new(-0.05, 0.20, -0.05),
+                max = vector.new(0.05, 0.45, 0.05),
+            },
+            exptime = { min = 1.2, max = 2.4 },
+            size = { min = 1.0, max = 1.6 },
+            texpool = {
+                {
+                    name = "deathstats_particle_bubble.png",
+                    alpha_tween = { 0.85, 0.30 },
+                    scale_tween = { { x = 0.9, y = 0.9 }, { x = 1.15, y = 1.15 } },
+                    blend = "alpha",
+                    animation = {
+                        type = "vertical_frames",
+                        aspect_w = 5,
+                        aspect_h = 5,
+                        length = 0.8,
+                    },
+                },
+            },
+        }
+
+    elseif effect_type == "lava" then
+        -- Fire and glowing ember sparks leaping continuously from random positions on the burning corpse
+        return {
+            amount = 12,
+            time = 0, -- Continuous spawner
+            collisiondetection = true,
+            collision_removal = false,
+            glow = 14,
+            -- Legacy client fields (< v5.6)
+            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minvel = { x = -0.25, y = 0.50, z = -0.25 },
+            maxvel = { x = 0.25, y = 1.40, z = 0.25 },
+            minacc = { x = -0.10, y = 0.30, z = -0.10 },
+            maxacc = { x = 0.10, y = 0.80, z = 0.10 },
+            minexptime = 0.5,
+            maxexptime = 1.2,
+            minsize = 1.0,
+            maxsize = 1.8,
+            texture = "deathstats_particle_fire.png",
+            animation = {
+                type = "vertical_frames",
+                aspect_w = 5,
+                aspect_h = 5,
+                length = 0.4,
+            },
+            -- Modern Luanti fields (v5.6+)
+            pos = {
+                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+            },
+            vel = {
+                min = vector.new(-0.25, 0.50, -0.25),
+                max = vector.new(0.25, 1.40, 0.25),
+            },
+            acc = {
+                min = vector.new(-0.10, 0.30, -0.10),
+                max = vector.new(0.10, 0.80, 0.10),
+            },
+            exptime = { min = 0.5, max = 1.2 },
+            size = { min = 1.0, max = 1.8 },
+            texpool = {
+                {
+                    name = "deathstats_particle_fire.png",
+                    alpha_tween = { 1.0, 0.0 },
+                    blend = "add",
+                    animation = {
+                        type = "vertical_frames",
+                        aspect_w = 5,
+                        aspect_h = 5,
+                        length = 0.4,
+                    },
+                },
+            },
+        }
+
+    elseif effect_type == "fire" then
+        -- Billowing ash smoke rising continuously into the air from the charred corpse
+        return {
+            amount = 8,
+            time = 0, -- Continuous spawner
+            collisiondetection = true,
+            collision_removal = false,
+            glow = 1,
+            -- Legacy client fields (< v5.6)
+            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minvel = { x = -0.15, y = 0.30, z = -0.15 },
+            maxvel = { x = 0.15, y = 0.80, z = 0.15 },
+            minacc = { x = -0.05, y = 0.15, z = -0.05 },
+            maxacc = { x = 0.05, y = 0.40, z = 0.05 },
+            minexptime = 1.0,
+            maxexptime = 2.0,
+            minsize = 1.2,
+            maxsize = 2.4,
+            texture = "deathstats_particle_smoke.png",
+            animation = {
+                type = "vertical_frames",
+                aspect_w = 5,
+                aspect_h = 5,
+                length = 0.8,
+            },
+            -- Modern Luanti fields (v5.6+)
+            pos = {
+                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+            },
+            vel = {
+                min = vector.new(-0.15, 0.30, -0.15),
+                max = vector.new(0.15, 0.80, 0.15),
+            },
+            acc = {
+                min = vector.new(-0.05, 0.15, -0.05),
+                max = vector.new(0.05, 0.40, 0.05),
+            },
+            exptime = { min = 1.0, max = 2.0 },
+            size = { min = 1.2, max = 2.4 },
+            texpool = {
+                {
+                    name = "deathstats_particle_smoke.png",
+                    alpha_tween = { 0.75, 0.0 },
+                    scale_tween = { { x = 0.8, y = 0.8 }, { x = 1.5, y = 1.5 } },
+                    blend = "alpha",
+                    animation = {
+                        type = "vertical_frames",
+                        aspect_w = 5,
+                        aspect_h = 5,
+                        length = 0.8,
+                    },
+                },
+            },
+        }
+
+    else
+        -- All others: Node particles around the corpse flying upwards from impact at time of death (non-continuous)
+        local ground_node_name = "default:dirt"
+        local ground_param2 = 0
+        local get_node_fn = core.get_node_or_nil or core.get_node
+        if get_node_fn then
+            local check_positions = {
+                { x = cx, y = math.floor(cy), z = cz },
+                { x = cx, y = math.floor(cy - 0.5), z = cz },
+                { x = cx, y = math.floor(cy - 1.0), z = cz },
+            }
+            for _, cpos in ipairs(check_positions) do
+                local n = get_node_fn(cpos)
+                if n and n.name ~= "air" and n.name ~= "ignore" then
+                    ground_node_name = n.name
+                    ground_param2 = n.param2 or 0
+                    break
+                end
+            end
+        end
+
+        local fallback_tex = deathstats.get_node_tile_texture(ground_node_name)
+
+        return {
+            amount = 28,
+            time = 0.15, -- Moment of death impact burst (not continuous)
+            collisiondetection = true,
+            collision_removal = false,
+            node = { name = ground_node_name, param2 = ground_param2 },
+            texture = fallback_tex,
+            -- Legacy client fields (< v5.6)
+            minpos = { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
+            maxpos = { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
+            minvel = { x = -1.6, y = 1.8, z = -1.6 },
+            maxvel = { x = 1.6, y = 3.6, z = 1.6 },
+            minacc = { x = 0, y = -9.81, z = 0 },
+            maxacc = { x = 0, y = -9.81, z = 0 },
+            minexptime = 0.6,
+            maxexptime = 1.2,
+            minsize = 0,
+            maxsize = 0,
+            -- Modern Luanti fields (v5.6+)
+            pos = {
+                min = vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
+                max = vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
+            },
+            vel = {
+                min = vector.new(-1.6, 1.8, -1.6),
+                max = vector.new(1.6, 3.6, 1.6),
+            },
+            acc = {
+                min = vector.new(0, -9.81, 0),
+                max = vector.new(0, -9.81, 0),
+            },
+            exptime = { min = 0.6, max = 1.2 },
+            size = { min = 0, max = 0 },
+        }
+    end
+end
+
+--- Spawn corpse particle spawner(s) according to death cause/environment
+---@param corpse_pos table The {x, y, z} position of the corpse
+---@param death_info table|nil Optional death analysis table
+---@return number[] spawner_ids Array of active particle spawner IDs
+function deathstats.spawn_corpse_particles(corpse_pos, death_info)
+    if not corpse_pos then return {} end
+    if deathstats.config.enable_corpse_particles == false then return {} end
+    if not core.add_particlespawner then return {} end
+
+    local effect_type = deathstats.get_corpse_effect_type(corpse_pos, death_info)
+    local def = deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
+    if not def then return {} end
+
+    local spawner_id = core.add_particlespawner(def)
+    local spawner_ids = {}
+    if spawner_id and spawner_id > 0 then
+        table.insert(spawner_ids, spawner_id)
+    end
+    return spawner_ids
+end
+
+
+
+--- Wrap an animation function to prevent death animation looping while a player is dead
+--- In minetest_game / repixture, player_api.globalstep calls player_set_animation(player, "lay") every tick
+--- which defaults to loop = true at 30 fps, causing a violent 0.13s death replay loop.
+--- This hook forces loop = false and speed = 1 so the character cleanly stays in the final flat pose.
+---@param mod_table table|nil The mod table containing the animation function
+---@param fn_name string The name of the animation function
+deathstats.hooked_animations = {}
+
+function deathstats.hook_animation_function(mod_table, fn_name)
+    if mod_table and type(mod_table[fn_name]) == "function" and not deathstats.hooked_animations[mod_table[fn_name]] then
+        local orig_fn = mod_table[fn_name]
+        local hooked_fn = function(player, anim_name, speed, loop)
+            if player and player:is_player() then
+                local name = player:get_player_name()
+                if not deathstats.is_player_online(name) then
+                    return
+                end
+                if deathstats.dead_players[name] then
+                    if anim_name == "lay" or anim_name == "die" then
+                        return orig_fn(player, anim_name, 1, false)
+                    end
+                    return
+                end
+            end
+            return orig_fn(player, anim_name, speed, loop)
+        end
+        deathstats.hooked_animations[hooked_fn] = true
+        mod_table[fn_name] = hooked_fn
+    end
+end
+
+-- Hook available player animation handlers immediately
+deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
+deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
+deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
+
+-- Also hook in on_mods_loaded in case a mod initialized late
+core.register_on_mods_loaded(function()
+    deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
+    deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
+    deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
+end)
+
+--- Set or clear the player_attached flag in player_api and default mods
+---@param name string The player name
+---@param attached boolean|nil True if attached, nil to clear
+function deathstats.set_engine_player_attached(name, attached)
+    local papi = rawget(_G, "player_api")
+    if papi and papi.player_attached then
+        papi.player_attached[name] = attached
+    end
+    local def_mod = rawget(_G, "default")
+    if def_mod and def_mod.player_attached then
+        def_mod.player_attached[name] = attached
+    end
+end
+
+--- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
+---@param player ObjectRef The player object
+---@return table visuals { mesh = string, textures = table, visual_size = table, yaw = number }
+function deathstats.get_player_visuals(player)
+    local name = player:get_player_name()
+    local props = player:get_properties() or {}
+
+    local armor_mod = rawget(_G, "armor")
+    local skins_mod = rawget(_G, "skins")
+    local wardrobe_mod = rawget(_G, "wardrobe")
+    local player_api_mod = rawget(_G, "player_api")
+    local mcl_skins_mod = rawget(_G, "mcl_skins")
+    local clothing_mod = rawget(_G, "clothing")
+
+    local mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or props.mesh or "character.b3d"
+    local textures = copy(props.textures or { "character.png" })
+    local visual_size = copy(props.visual_size or { x = 1, y = 1, z = 1 })
+    local yaw = player:get_look_horizontal() or 0
+
+    if visual_size.x == 0 and visual_size.y == 0 then
+        visual_size = { x = 1, y = 1, z = 1 }
+    end
+
+    -- 1. 3d_armor support: composite skin, armor, wielditem textures
+    if armor_mod and armor_mod.textures and armor_mod.textures[name] then
+        local a_tex = armor_mod.textures[name]
+        textures = {
+            a_tex.skin or "character.png",
+            a_tex.armor or "3d_armor_trans.png",
+            a_tex.wielditem or "3d_armor_trans.png",
+        }
+    -- 2. skinsdb support
+    elseif skins_mod and skins_mod.get_player_skin then
+        local skin = skins_mod.get_player_skin(player)
+        if skin then
+            local skin_tex = skin:get_texture()
+            if skin_tex then
+                textures[1] = skin_tex
+            end
+            local vs_x = skin:get_meta("visual_size_x")
+            local vs_y = skin:get_meta("visual_size_y")
+            if vs_x and vs_y then
+                visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
+            end
+        end
+    -- 3. simple_skins support
+    elseif skins_mod and skins_mod.skins and skins_mod.skins[name] then
+        textures = { skins_mod.skins[name] .. ".png" }
+    -- 4. wardrobe support
+    elseif wardrobe_mod and wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
+        textures = { wardrobe_mod.playerSkins[name] }
+    -- 5. player_api support
+    elseif player_api_mod and player_api_mod.get_textures then
+        local p_tex = player_api_mod.get_textures(player)
+        if p_tex and #p_tex > 0 then
+            textures = copy(p_tex)
+        end
+    -- 6. mcl_skins support
+    elseif mcl_skins_mod and mcl_skins_mod.get_player_skin then
+        local skin_data = mcl_skins_mod.get_player_skin(player)
+        if type(skin_data) == "table" and skin_data.texture then
+            textures[1] = skin_data.texture
+        elseif type(skin_data) == "string" then
+            textures[1] = skin_data
+        end
+    end
+
+    -- 7. clothing support (layer clothing on top of skin)
+    if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
+        local c = clothing_mod.player_textures[name]
+        if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
+            textures[1] = (textures[1] or "character.png") .. "^" .. c.clothing
+        end
+        if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
+            textures[1] = (textures[1] or "character.png") .. "^" .. c.cape
+        end
+    end
+
+    -- 8. Fallback for transparent texture trap:
+    -- If textures only contains deathstats_transparent.png, recover original textures from metadata or default
+    local is_transparent = true
+    if type(textures) == "table" and #textures > 0 then
+        for _, tex in ipairs(textures) do
+            if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" then
+                is_transparent = false
+                break
+            end
+        end
+    else
+        is_transparent = true
+    end
+
+    local meta = player.get_meta and player:get_meta()
+    if is_transparent and meta then
+        local raw_orig = meta:get_string("deathstats:orig_textures")
+        if raw_orig and raw_orig ~= "" then
+            local des = core.deserialize(raw_orig)
+            if type(des) == "table" and #des > 0 then
+                textures = des
+                is_transparent = false
+            end
+        end
+    end
+    if is_transparent then
+        textures = { "character.png" }
+    end
+
+    if meta then
+        if not mesh or mesh == "" then
+            local raw_mesh = meta:get_string("deathstats:orig_mesh")
+            if raw_mesh and raw_mesh ~= "" then mesh = raw_mesh end
+        end
+        if visual_size.x == 0 and visual_size.y == 0 then
+            local raw_vs = meta:get_string("deathstats:orig_visual_size")
+            if raw_vs and raw_vs ~= "" then
+                local des = core.deserialize(raw_vs)
+                if type(des) == "table" then visual_size = des end
+            end
+        end
+        if yaw == 0 then
+            local raw_yaw = meta:get_string("deathstats:orig_yaw")
+            if raw_yaw and raw_yaw ~= "" then
+                yaw = tonumber(raw_yaw) or yaw
+            end
+        end
+    end
+
+    return {
+        mesh = mesh,
+        textures = textures,
+        visual_size = visual_size,
+        yaw = yaw,
+    }
+end
+
+--- Check if bones were placed for this player at or near death position
+---@param player ObjectRef The deceased player object
+---@param search_center Vector|nil Optional search origin (defaults to orbit_center or player pos)
+---@return Vector|nil pos The 3D coordinates of the placed bones node, or nil if not found
+function deathstats.find_player_bones(player, search_center)
+    if not player or not player:is_player() then return nil end
+    local name = player:get_player_name()
+    local cam_data = deathstats.player_camera_data[name]
+    local center = search_center or (cam_data and cam_data.orbit_center) or player:get_pos()
+    if not center then return nil end
+    local pos = vector.round(center)
+
+    -- Check direct death node first
+    local node = core.get_node(pos)
+    if node.name == "bones:bones" then
+        local meta = core.get_meta(pos)
+        local owner = meta:get_string("owner")
+        if owner == "" or owner == name then
+            return pos
+        end
+    end
+
+    -- Search adjacent nodes strictly checking that bones belong to this player
+    local minp = vector.new(pos.x - 2, pos.y - 2, pos.z - 2)
+    local maxp = vector.new(pos.x + 2, pos.y + 2, pos.z + 2)
+    local positions = core.find_nodes_in_area(minp, maxp, { "bones:bones" })
+    for _, bpos in ipairs(positions) do
+        local meta = core.get_meta(bpos)
+        if meta:get_string("owner") == name then
+            return bpos
+        end
+    end
+    return nil
+end
+
 --- Check if bones were placed for this player at or near death position
 ---@param player ObjectRef The deceased player object
 ---@param search_center Vector|nil Optional search origin (defaults to orbit_center or player pos)
@@ -2359,6 +2915,13 @@ function deathstats.set_death_camera(player, death_info)
     end
 
     -- 0. Detach from any prior vehicle/cart/bed and cancel momentum
+    local old_data = deathstats.player_camera_data[name]
+    if old_data and old_data.particle_spawners then
+        for _, pid in ipairs(old_data.particle_spawners) do
+            pcall(function() core.delete_particlespawner(pid) end)
+        end
+        old_data.particle_spawners = nil
+    end
     if player.get_attach and player:get_attach() then
         pcall(function() player:set_detach() end)
     end
@@ -2483,6 +3046,10 @@ function deathstats.set_death_camera(player, death_info)
     end
 
     local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+    local particle_spawners = nil
+    if deathstats.config.enable_corpse_particles ~= false then
+        particle_spawners = deathstats.spawn_corpse_particles(corpse_pos, death_info)
+    end
     if not corpse and core.after then
         core.after(0.2, function()
             local p = core.get_player_by_name(name)
@@ -2491,6 +3058,9 @@ function deathstats.set_death_camera(player, death_info)
                 local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
+                end
+                if deathstats.config.enable_corpse_particles ~= false and not cdata.particle_spawners then
+                    cdata.particle_spawners = deathstats.spawn_corpse_particles(corpse_pos, death_info)
                 end
             end
         end)
@@ -2640,6 +3210,8 @@ function deathstats.set_death_camera(player, death_info)
         saved_hand_size = saved_hand_size,
         saved_hand_stack = saved_hand_stack,
         stashed_main = stashed_main,
+        death_info = death_info,
+        particle_spawners = particle_spawners,
     }
 
     -- 7. Immediately orient camera to starting orbit vantage
@@ -2659,8 +3231,14 @@ function deathstats.reset_camera(player, is_leaving)
         player:set_detach()
     end)
 
-    -- 2. Remove corpse placeholder and camera anchor entities
+    -- 2. Remove corpse placeholder, camera anchor entities, and particle spawners
     if data then
+        if data.particle_spawners then
+            for _, pid in ipairs(data.particle_spawners) do
+                pcall(function() core.delete_particlespawner(pid) end)
+            end
+            data.particle_spawners = nil
+        end
         if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
             pcall(function() data.corpse:remove() end)
             data.corpse = nil
@@ -2840,6 +3418,12 @@ core.register_on_leaveplayer(function(player)
 
     local data = deathstats.player_camera_data[name]
     if data then
+        if data.particle_spawners then
+            for _, pid in ipairs(data.particle_spawners) do
+                pcall(function() core.delete_particlespawner(pid) end)
+            end
+            data.particle_spawners = nil
+        end
         if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
             pcall(function() data.corpse:remove() end)
         end

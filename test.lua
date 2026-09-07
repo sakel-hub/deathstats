@@ -2977,5 +2977,191 @@ do
     print("  [PASS] Elastic 'YOU DIED' slap animation trajectory & prominence (2.4s, peak ~1.31x, bounce ~0.91x, exact 1.00x rest)")
 end
 
+-- ==========================================
+-- TEST 40: Corpse Particle Spawners (Water, Lava, Fire, Impact)
+-- ==========================================
+do
+    print("\n--- TEST 40: Corpse Particle Spawners (Water, Lava, Fire, Impact) ---")
 
-print("\nALL 39 TEST SUITES PASSED SUCCESSFULLY!\n")
+    local test_pos = vector.new(50, 5, 50)
+
+    -- 1. Detection of effect types across causes and environments
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "drown" }) == "water",
+        "Category drown must map to water effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "lava" }) == "lava",
+        "Category lava must map to lava effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "fire" }) == "fire",
+        "Category fire must map to fire effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "fall" }) == "impact",
+        "Category fall must map to impact node particle effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "mob" }) == "impact",
+        "Category mob must map to impact node particle effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "pvp" }) == "impact",
+        "Category pvp must map to impact node particle effect")
+
+    -- Node-based environment detection fallbacks
+    core.world_nodes["50,5,50"] = "default:water_source"
+    assert(deathstats.get_corpse_effect_type(test_pos, nil) == "water",
+        "Corpse immersed in water_source must trigger water bubbles effect")
+    core.world_nodes["50,5,50"] = "default:lava_source"
+    assert(deathstats.get_corpse_effect_type(test_pos, nil) == "lava",
+        "Corpse immersed in lava_source must trigger lava fire effect")
+    core.world_nodes["50,5,50"] = "fire:basic_flame"
+    assert(deathstats.get_corpse_effect_type(test_pos, nil) == "fire",
+        "Corpse resting in fire must trigger smoke effect")
+    core.world_nodes["50,5,50"] = "air"
+
+    -- 2. Water (bubbles): continuous, upward buoyancy, animated 5x5 frames, modern + legacy
+    local water_def = deathstats.create_corpse_particlespawner_def("water", test_pos)
+    assert(water_def ~= nil, "Water definition must not be nil")
+    assert(water_def.time == 0, "Water bubbles must be continuous (time = 0)")
+    assert(water_def.amount == 8, "Water bubbles rate must be 8 per second")
+    assert(water_def.texture == "deathstats_particle_bubble.png", "Water texture must be deathstats_particle_bubble.png")
+    assert(water_def.animation and water_def.animation.type == "vertical_frames", "Water animation must be vertical_frames")
+    assert(water_def.animation.aspect_w == 5 and water_def.animation.aspect_h == 5, "Water animation frames must be 5x5 px")
+    assert(water_def.pos and water_def.pos.min and water_def.pos.max, "Modern pos range must be defined")
+    assert(water_def.minpos and water_def.maxpos, "Legacy minpos/maxpos must be defined")
+    assert(water_def.vel and water_def.vel.min.y > 0 and water_def.vel.max.y > 0, "Bubbles must move upwards (vel.y > 0)")
+    assert(water_def.minvel and water_def.minvel.y > 0 and water_def.maxvel.y > 0, "Legacy minvel/maxvel must move upwards")
+    assert(water_def.acc and water_def.acc.min.y > 0, "Bubbles must have buoyancy acceleration (acc.y > 0)")
+    assert(water_def.texpool and #water_def.texpool > 0, "Modern texpool must be defined")
+
+    -- 3. Lava (fire): continuous, glowing embers, leaping upwards, modern + legacy
+    local lava_def = deathstats.create_corpse_particlespawner_def("lava", test_pos)
+    assert(lava_def ~= nil, "Lava definition must not be nil")
+    assert(lava_def.time == 0, "Lava fire must be continuous (time = 0)")
+    assert(lava_def.glow == 14, "Lava fire must have maximum glow = 14")
+    assert(lava_def.texture == "deathstats_particle_fire.png", "Lava texture must be deathstats_particle_fire.png")
+    assert(lava_def.animation and water_def.animation.type == "vertical_frames", "Lava animation must be vertical_frames")
+    assert(lava_def.animation.aspect_w == 5 and lava_def.animation.aspect_h == 5, "Lava animation frames must be 5x5 px")
+    assert(lava_def.pos and lava_def.minpos, "Lava pos and minpos must both be defined")
+    assert(lava_def.vel and lava_def.vel.max.y > lava_def.vel.min.y, "Lava velocity must span upwards")
+    assert(lava_def.texpool and lava_def.texpool[1].blend == "add", "Lava texpool must use additive blend")
+
+    -- 4. Fire (smoke): continuous, billowing upward convection, modern + legacy
+    local fire_def = deathstats.create_corpse_particlespawner_def("fire", test_pos)
+    assert(fire_def ~= nil, "Fire definition must not be nil")
+    assert(fire_def.time == 0, "Fire smoke must be continuous (time = 0)")
+    assert(fire_def.texture == "deathstats_particle_smoke.png", "Fire texture must be deathstats_particle_smoke.png")
+    assert(fire_def.animation and fire_def.animation.type == "vertical_frames", "Fire animation must be vertical_frames")
+    assert(fire_def.animation.aspect_w == 5 and fire_def.animation.aspect_h == 5, "Fire animation frames must be 5x5 px")
+    assert(fire_def.pos and fire_def.minpos, "Smoke pos and minpos must both be defined")
+    assert(fire_def.vel and fire_def.vel.min.y > 0, "Smoke velocity must be upward")
+    assert(fire_def.acc and fire_def.acc.min.y > 0, "Smoke acceleration must rise")
+
+    -- 5. Impact (all others): non-continuous impact burst, default node particles, customized gravity/speed
+    core.world_nodes["50,4,50"] = "default:stone"
+    local impact_def = deathstats.create_corpse_particlespawner_def("impact", test_pos)
+    assert(impact_def ~= nil, "Impact definition must not be nil")
+    assert(impact_def.time == 0.15, "Impact particles must be a short burst at moment of death (time = 0.15)")
+    assert(impact_def.amount == 28, "Impact amount must be 28 shards")
+    assert(impact_def.node and impact_def.node.name == "default:stone",
+        "Impact node must be default:stone from ground below corpse")
+    assert(impact_def.size and impact_def.size.min == 0 and impact_def.size.max == 0,
+        "Impact size must be 0 for randomized node dig particle shards")
+    assert(impact_def.minsize == 0 and impact_def.maxsize == 0,
+        "Legacy minsize/maxsize must be 0 for node particle shards")
+    assert(impact_def.vel and impact_def.vel.min.y > 0 and impact_def.vel.max.y > 0,
+        "Impact particles must fly upwards (vel.y > 0)")
+    assert(impact_def.acc and impact_def.acc.min.y == -9.81 and impact_def.acc.max.y == -9.81,
+        "Impact acceleration must apply customized downward gravity (-9.81)")
+    assert(impact_def.collisiondetection == true, "Impact particles must have collision detection")
+
+    -- 6. Particle spawner invocation and lifecycle management
+    core.active_particlespawners = {}
+    local pids = deathstats.spawn_corpse_particles(test_pos, { category = "drown" })
+    assert(#pids == 1, "spawn_corpse_particles must return array with 1 spawner ID")
+    local spawner_id = pids[1]
+    assert(core.active_particlespawners[spawner_id] ~= nil, "Active particle spawner must be registered in engine")
+    assert(core.active_particlespawners[spawner_id].texture == "deathstats_particle_bubble.png",
+        "Active spawner texture must match bubble particle")
+
+    -- Clean up spawner
+    core.delete_particlespawner(spawner_id)
+    assert(core.active_particlespawners[spawner_id] == nil, "delete_particlespawner must remove spawner from engine")
+
+    -- 7. Disabled setting toggle verification
+    deathstats.config.enable_corpse_particles = false
+    local empty_pids = deathstats.spawn_corpse_particles(test_pos, { category = "drown" })
+    assert(#empty_pids == 0, "No particle spawners should spawn when enable_corpse_particles = false")
+    deathstats.config.enable_corpse_particles = true
+
+    -- 8. Verify camera orbit integration and automatic cleanup on release
+    local mock_player = {
+        name = "ParticleTester",
+        get_player_name = function(self) return self.name end,
+        is_player = function() return true end,
+        is_valid = function() return true end,
+        get_pos = function() return vector.new(10, 1, 10) end,
+        get_look_horizontal = function() return 0 end,
+        get_look_vertical = function() return 0 end,
+        set_look_horizontal = function() end,
+        set_look_vertical = function() end,
+        set_detach = function() end,
+        get_attach = function() return nil end,
+        set_attach = function() end,
+        set_properties = function() end,
+        get_properties = function() return { textures = { "character.png" }, visual_size = { x = 1, y = 1 } } end,
+        set_nametag_attributes = function() end,
+        get_nametag_attributes = function() return { text = "ParticleTester", color = { a = 255, r = 255, g = 255, b = 255 } } end,
+        set_armor_groups = function() end,
+        get_armor_groups = function() return { fleshy = 100 } end,
+        set_physics_override = function() end,
+        get_physics_override = function() return { speed = 1, jump = 1, gravity = 1 } end,
+        get_inventory = function()
+            return {
+                get_list = function() return {} end,
+                get_size = function() return 0 end,
+                set_size = function() end,
+                set_stack = function() end,
+                get_stack = function() return nil end,
+                is_empty = function() return true end,
+            }
+        end,
+        hud_add = function() return 1 end,
+        hud_change = function() end,
+        hud_remove = function() end,
+        get_meta = function()
+            local store = {}
+            return {
+                get_string = function(self, k) return store[k] or "" end,
+                set_string = function(self, k, v) store[k] = v end,
+            }
+        end,
+        get_children = function() return {} end,
+    }
+
+    core.active_particlespawners = {}
+    deathstats.dead_players["ParticleTester"] = true
+    deathstats.set_death_camera(mock_player, { category = "lava", reason_text = "Melted in lava" })
+    local cdata = deathstats.player_camera_data["ParticleTester"]
+    assert(cdata ~= nil, "Camera data must be established")
+    assert(cdata.particle_spawners and #cdata.particle_spawners == 1,
+        "Camera data must track active particle spawner ID")
+    local active_pid = cdata.particle_spawners[1]
+    assert(core.active_particlespawners[active_pid] ~= nil, "Engine must have active spawner running")
+    assert(core.active_particlespawners[active_pid].texture == "deathstats_particle_fire.png",
+        "Active spawner must be fire particle for lava death")
+
+    -- Release camera (e.g. respawn) must delete particle spawner
+    deathstats.reset_camera(mock_player)
+    assert(deathstats.player_camera_data["ParticleTester"] == nil, "Camera data must be cleared on release")
+    assert(core.active_particlespawners[active_pid] == nil, "Particle spawner must be cleanly deleted on release")
+
+    -- 9. Texture asset files existence check
+    local bubble_f = io.open("textures/deathstats_particle_bubble.png", "rb")
+    assert(bubble_f ~= nil, "deathstats_particle_bubble.png texture must exist")
+    bubble_f:close()
+
+    local fire_f = io.open("textures/deathstats_particle_fire.png", "rb")
+    assert(fire_f ~= nil, "deathstats_particle_fire.png texture must exist")
+    fire_f:close()
+
+    local smoke_f = io.open("textures/deathstats_particle_smoke.png", "rb")
+    assert(smoke_f ~= nil, "deathstats_particle_smoke.png texture must exist")
+    smoke_f:close()
+
+    print("  [PASS] Corpse particle spawner effects (water bubbles, lava fire, smoke, node impact debris, lifecycle & textures)")
+end
+
+print("\nALL 40 TEST SUITES PASSED SUCCESSFULLY!\n")
