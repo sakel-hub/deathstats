@@ -1379,6 +1379,51 @@ assert(vector.distance(p_orbit:get_pos(), cam_data22.orbit_center) < 0.001, "Pla
 -- 4. Verify downward pitch pointing directly at corpse
 assert(p_orbit.look_vertical > 0, "Camera must tilt downward (> 0) toward corpse")
 
+-- 4b. Verify continuous obstacle avoidance, proportional height scaling & hold-timer hysteresis
+local orig_raycast = core.raycast
+local obstacle_detected = true
+core.set_node({ x = 42, y = 11, z = 40 }, { name = "default:stone" })
+core.raycast = function()
+    if not obstacle_detected then
+        return function() return nil end
+    end
+    local called = false
+    return function()
+        if not called then
+            called = true
+            return {
+                type = "node",
+                under = { x = 42, y = 11, z = 40 },
+                intersection_point = { x = 42.0, y = 11.0, z = 40.0 },
+            }
+        end
+        return nil
+    end
+end
+
+-- Run multiple steps with obstacle present: camera must pull in smoothly and prime hold timer
+for _ = 1, 15 do
+    deathstats.update_death_camera(p_orbit, 0.05)
+end
+assert(cam_data22.eff_radius < 3.0, "Camera eff_radius must decrease smoothly when obstacle is detected")
+assert(cam_data22.obstacle_hold_timer == 0.5, "Obstacle hold timer must be primed to 0.5s when obstacle is active")
+assert(p_orbit.eye_offset[1].y < 15, "Eye offset Y must scale down proportionally with eff_radius (proportional height)")
+local contracted_radius = cam_data22.eff_radius
+
+-- Clear the obstacle: verify hold-timer prevents immediate accordion expansion over transient gaps
+obstacle_detected = false
+deathstats.update_death_camera(p_orbit, 0.1)
+assert(cam_data22.obstacle_hold_timer > 0, "Hold timer must be counting down while gap is present")
+assert(cam_data22.eff_radius <= contracted_radius + 0.05, "Camera must not bounce outward while hold timer is active")
+
+-- Advance past hold duration: camera must smoothly ease back out towards nominal radius
+for _ = 1, 25 do
+    deathstats.update_death_camera(p_orbit, 0.1)
+end
+assert(cam_data22.eff_radius > contracted_radius, "Camera must smoothly ease out towards nominal radius after hold expires")
+assert(cam_data22.eff_radius <= 3.2, "Camera must not overshoot nominal radius")
+core.raycast = orig_raycast
+
 -- 5. Verify reset_camera restores properties, unlocks camera mode, detaches player, and removes corpse & anchor
 local corpse_ref = cam_data22.corpse
 local anchor_ref = cam_data22.anchor

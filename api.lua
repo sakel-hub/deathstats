@@ -2641,18 +2641,24 @@ function deathstats.update_death_camera(player, dtime)
     local height = data.orbit_height or deathstats.config.orbit_height or 1.5
     local target_radius = radius
 
-    -- Raycast obstacle detection to prevent camera clipping into walls / terrain
+    -- Raycast obstacle detection to prevent camera clipping into walls / terrain.
+    -- Uses a continuous clearance buffer (zero boundary step discontinuity) and multi-angle probing.
+    local buffer = 0.45
+    local probe_radius = radius + buffer
+    local nominal_ratio = height / math.max(0.1, radius)
+    local probe_height = math.max(0.65, probe_radius * nominal_ratio)
+
     if core.raycast and data.orbit_center then
         local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.8, data.orbit_center.z)
-        local min_clear_dist = radius
+        local min_clear_r = probe_radius
 
-        -- Multi-angle probe: check primary camera line plus slight lookahead/lookbehind (+/- 0.08 rad)
-        -- to prevent zero-thickness edge chattering at block corners and provide advance avoidance notice
+        -- Multi-angle probe: check primary camera sightline plus lookahead/lookbehind (+/- 0.08 rad)
+        -- to detect approaching walls before camera sweeps into them and prevent edge chattering
         local probe_angles = { angle, angle + 0.08, angle - 0.08 }
         for _, p_angle in ipairs(probe_angles) do
-            local cam_x = data.orbit_center.x + radius * math.sin(p_angle)
-            local cam_y = data.orbit_center.y + height
-            local cam_z = data.orbit_center.z - radius * math.cos(p_angle)
+            local cam_x = data.orbit_center.x + probe_radius * math.sin(p_angle)
+            local cam_y = data.orbit_center.y + probe_height
+            local cam_z = data.orbit_center.z - probe_radius * math.cos(p_angle)
             local cam_target = vector.new(cam_x, cam_y, cam_z)
             local ray = core.raycast(ray_start, cam_target, false, false)
             for pointed_thing in ray do
@@ -2666,9 +2672,12 @@ function deathstats.update_death_camera(player, dtime)
                             and (math.abs(hit_pos.x - data.orbit_center.x) <= 1.0)
                             and (math.abs(hit_pos.z - data.orbit_center.z) <= 1.0)
                         if not is_ground then
-                            local dist = vector.distance(ray_start, hit_pos)
-                            if dist >= 0.8 and dist < min_clear_dist then
-                                min_clear_dist = dist
+                            -- Project 3D hit point to horizontal orbit radius from orbit center
+                            local hx = hit_pos.x - data.orbit_center.x
+                            local hz = hit_pos.z - data.orbit_center.z
+                            local hit_r = math.sqrt(hx * hx + hz * hz)
+                            if hit_r >= 0.8 and hit_r < min_clear_r then
+                                min_clear_r = hit_r
                             end
                             break
                         end
@@ -2677,38 +2686,61 @@ function deathstats.update_death_camera(player, dtime)
             end
         end
 
-        if min_clear_dist < radius then
-            target_radius = math.max(1.2, math.min(radius, min_clear_dist - 0.35))
-        end
+        -- Continuous safe radius: as an obstacle approaches, target_radius transitions
+        -- smoothly from full radius downward with zero boundary step jump (no cliff)
+        target_radius = math.max(1.2, math.min(radius, min_clear_r - buffer))
     end
 
-    -- Smoothly interpolate current radius toward target radius using framerate-independent exponential damping
-    local dt = dtime or 0.05
+    -- Smoothly interpolate current radius toward target radius using framerate-independent exponential damping.
+    -- Includes a hold-timer hysteresis (0.5s) to suppress rapid accordion pumping when sweeping past
+    -- windows, pillars, doors, and alcoves.
+    local dt = (dtime and dtime > 0) and dtime or 0.05
+    data.obstacle_hold_timer = data.obstacle_hold_timer or 0
+
     if not data.eff_radius then
         data.eff_radius = target_radius
     else
-        -- Faster pull-in when approaching obstacle, gentle ease-out when leaving obstacle
-        local lerp_speed = (target_radius < data.eff_radius) and 5.0 or 2.5
-        local factor = 1.0 - math.exp(-lerp_speed * dt)
-        data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * factor
+        if target_radius < data.eff_radius - 0.02 then
+            -- Obstacle detected closer than current camera radius:
+            -- React smoothly and promptly to avoid clipping, and refresh the hold timer
+            data.obstacle_hold_timer = 0.5
+            local lerp_speed = 4.5
+            local factor = 1.0 - math.exp(-lerp_speed * dt)
+            data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * factor
+        elseif target_radius > data.eff_radius + 0.02 then
+            -- Obstacle has cleared: check hold timer to suppress rapid accordion pumping
+            -- over windows, pillars, and small gaps
+            if data.obstacle_hold_timer > 0 then
+                data.obstacle_hold_timer = data.obstacle_hold_timer - dt
+                -- Hold stable safe distance while passing through transient gaps
+            else
+                -- Path has stayed clear for the full hold duration: ease out gently and cinematically
+                local lerp_speed = 1.2
+                local factor = 1.0 - math.exp(-lerp_speed * dt)
+                data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * factor
+            end
+        end
     end
     local eff_radius = data.eff_radius
 
-    -- Pass continuous floating-point decimeters rather than math.floor integer quantization
-    -- to eliminate 10-centimeter stepped teleportation jerks
+    -- Proportional height scaling: keeping height proportional to radius maintains
+    -- a constant sightline angle (pitch) relative to the corpse, eliminating vertical bobbing
+    local eff_height = math.max(0.65, eff_radius * nominal_ratio)
+
+    -- Decimeter eye offsets for Luanti client
     local target_dm_z = -eff_radius * 10
-    local target_dm_y = height * 10
+    local target_dm_y = eff_height * 10
     if player.set_eye_offset then
         local cur_first = player.get_eye_offset and player:get_eye_offset()
         if not cur_first
-            or math.abs(cur_first.y - target_dm_y) > 0.05
-            or math.abs(cur_first.z - target_dm_z) > 0.05 then
+            or math.abs(cur_first.y - target_dm_y) > 0.08
+            or math.abs(cur_first.z - target_dm_z) > 0.08 then
             player:set_eye_offset({ x = 0, y = target_dm_y, z = target_dm_z }, vector.zero())
         end
     end
 
-    -- Smooth pitch transitions to prevent camera vertically bobbing when radius changes
-    local target_pitch = atan2(height, eff_radius)
+    -- Downward pitch pointing directly at corpse
+    local target_pitch = atan2(eff_height, eff_radius)
     if not data.eff_pitch then
         data.eff_pitch = target_pitch
     else
