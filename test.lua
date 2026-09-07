@@ -1121,6 +1121,7 @@ local expected_methods = {
     "is_inventory_list_empty",
     "serialize_inventory_list",
     "deserialize_inventory_list",
+    "is_player_starving",
 }
 
 for _, method_name in ipairs(expected_methods) do
@@ -1139,6 +1140,7 @@ local expected_tables = {
     "players",
     "recent_punches",
     "recent_falls",
+    "recent_starvations",
     "funny_notes",
 }
 
@@ -3164,4 +3166,209 @@ do
     print("  [PASS] Corpse particle spawner effects (water bubbles, lava fire, smoke, node impact debris, lifecycle & textures)")
 end
 
-print("\nALL 40 TEST SUITES PASSED SUCCESSFULLY!\n")
+-- ==========================================
+-- TEST 41: Starvation Detection (hbhunger, hudbars, stamina, set_hp, & priority)
+-- ==========================================
+do
+    print("\n--- TEST 41: Starvation Detection (hbhunger, hudbars, stamina, set_hp) ---")
+
+    local p_starve = {
+        is_player = function() return true end,
+        get_player_name = function() return "StarveTester" end,
+        get_hp = function() return 0 end,
+        set_hp = function() end,
+        get_breath = function() return 10 end,
+        get_pos = function() return { x = 0, y = 5, z = 0, node_name = "air" } end,
+        get_velocity = function() return { x = 0, y = 0, z = 0 } end,
+        get_properties = function() return { eye_height = 1.625 } end,
+        get_inventory = function()
+            local inv_store = {}
+            return {
+                get_list = function(self, listname) return inv_store[listname] or {} end,
+                get_size = function(self, listname) return (inv_store[listname] and #inv_store[listname]) or 0 end,
+                set_size = function(self, listname, sz) inv_store[listname] = inv_store[listname] or {} end,
+                set_stack = function(self, listname, idx, stack)
+                    inv_store[listname] = inv_store[listname] or {}
+                    inv_store[listname][idx] = stack
+                end,
+                get_stack = function(self, listname, idx)
+                    if inv_store[listname] and inv_store[listname][idx] then
+                        return inv_store[listname][idx]
+                    end
+                    return { is_empty = function() return true end, get_count = function() return 0 end, get_name = function() return "" end }
+                end,
+                is_empty = function(self, listname)
+                    return not inv_store[listname] or #inv_store[listname] == 0
+                end,
+            }
+        end,
+        get_meta = function()
+            local store = {}
+            return {
+                get_string = function(self, k) return store[k] or "" end,
+                set_string = function(self, k, v) store[k] = v end,
+            }
+        end,
+    }
+
+    -- 1. Verify deathstats.is_player_starving with hbhunger
+    _G.hbhunger = {
+        hunger = {
+            ["StarveTester"] = 0,
+        },
+        SAT_MAX = 30,
+        SAT_INIT = 20,
+    }
+
+    assert(deathstats.is_player_starving(p_starve) == true,
+        "is_player_starving must return true when hbhunger.hunger is 0")
+
+    _G.hbhunger.hunger["StarveTester"] = 1
+    assert(deathstats.is_player_starving(p_starve) == true,
+        "is_player_starving must return true when hbhunger.hunger is 1 (hbhunger damage threshold)")
+
+    _G.hbhunger.hunger["StarveTester"] = 20
+    assert(deathstats.is_player_starving(p_starve) == false,
+        "is_player_starving must return false when hbhunger.hunger is 20")
+
+    -- 2. Verify with hbhunger.get_hunger_raw
+    _G.hbhunger.hunger["StarveTester"] = nil
+    _G.hbhunger.get_hunger_raw = function(pl) return 0 end
+    assert(deathstats.is_player_starving(p_starve) == true,
+        "is_player_starving must return true when hbhunger.get_hunger_raw returns 0")
+
+    _G.hbhunger.get_hunger_raw = function(pl) return 20 end
+    assert(deathstats.is_player_starving(p_starve) == false,
+        "is_player_starving must return false when hbhunger.get_hunger_raw returns 20")
+
+    -- 3. Verify with hudbars (hb) registered & unregistered bar states (regression test for hudbars/init.lua:448)
+    _G.hbhunger = nil
+    local orig_hb = _G.hb
+    _G.hb = {
+        hudtables = {
+            ["health"] = {
+                hudstate = { ["StarveTester"] = { value = 20, max = 20 } }
+            },
+            ["breath"] = {
+                hudstate = { ["StarveTester"] = { value = 10, max = 10 } }
+            },
+        },
+        get_hudbar_state = function(pl, id)
+            -- Replicates exact behavior of hudbars/init.lua:448 when bar is not in hudtables
+            local tbl = _G.hb.hudtables[id]
+            return tbl.hudstate[pl:get_player_name()] -- triggers error if tbl is nil
+        end,
+    }
+    -- With only health and breath registered (satiation/hunger not registered), must NOT crash
+    assert(deathstats.is_player_starving(p_starve) == false,
+        "is_player_starving must gracefully handle hudbars when hunger/satiation is not registered")
+
+    -- Now register satiation in hudtables with value <= 1
+    _G.hb.hudtables["satiation"] = {
+        hudstate = { ["StarveTester"] = { value = 0.5, max = 30 } }
+    }
+    assert(deathstats.is_player_starving(p_starve) == true,
+        "is_player_starving must return true when hb satiation bar is <= 1")
+
+    -- Set satiation > 1
+    _G.hb.hudtables["satiation"].hudstate["StarveTester"].value = 18
+    assert(deathstats.is_player_starving(p_starve) == false,
+        "is_player_starving must return false when hb satiation bar is > 1")
+
+    -- Animal attack simulation (like animalia mob attack dealing damage via punch)
+    p_starve.get_hp = function() return 10 end
+    local hp_res = core.on_player_hpchange(p_starve, -3, { type = "punch" })
+    assert(hp_res == -3, "Animal punch must not crash and must pass through hp_change")
+    _G.hb = orig_hb
+
+    -- 4. Verify with stamina mod
+    _G.stamina = {
+        get = function(pl) return 0 end,
+    }
+    assert(deathstats.is_player_starving(p_starve) == true,
+        "is_player_starving must return true when stamina.get is 0")
+    _G.stamina.get = function(pl) return 20 end
+    assert(deathstats.is_player_starving(p_starve) == false,
+        "is_player_starving must return false when stamina.get is 20")
+    _G.stamina = nil
+
+    -- 5. Verify analyze_death with hbhunger and reason { type = "set_hp" } (actual hbhunger behavior)
+    _G.hbhunger = {
+        hunger = {
+            ["StarveTester"] = 0,
+        },
+    }
+
+    local hbhunger_death_reason = { type = "set_hp" }
+    local analysis_hbhunger = deathstats.analyze_death(p_starve, hbhunger_death_reason)
+    assert(analysis_hbhunger.category == "starve",
+        "analyze_death must identify starve category when hbhunger player dies of set_hp")
+    assert(analysis_hbhunger.reason_text == "Starved to death",
+        "analyze_death reason_text must be 'Starved to death'")
+    assert(analysis_hbhunger.funny_note ~= nil and #analysis_hbhunger.funny_note > 0,
+        "analyze_death must supply a humorous epitaph for starvation")
+
+    -- 6. Verify analyze_death when hbhunger is active but death was NOT from starvation (e.g. /kill with full hunger)
+    _G.hbhunger.hunger["StarveTester"] = 20
+    local kill_command_reason = { type = "set_hp" }
+    local analysis_kill = deathstats.analyze_death(p_starve, kill_command_reason)
+    assert(analysis_kill.category == "unknown",
+        "analyze_death must NOT identify starve when set_hp occurs with full hunger")
+
+    -- 7. Verify analyze_death with explicit reason tables from other mods
+    _G.hbhunger.hunger["StarveTester"] = 0
+    local explicit_starve = { type = "starve" }
+    local analysis_exp = deathstats.analyze_death(p_starve, explicit_starve)
+    assert(analysis_exp.category == "starve", "Explicit { type = 'starve' } must produce starve category")
+
+    local stamina_starve = { type = "set_hp", cause = "stamina:starve" }
+    local analysis_stam = deathstats.analyze_death(p_starve, stamina_starve)
+    assert(analysis_stam.category == "starve", "stamina:starve cause must produce starve category")
+
+    -- 8. Verify environmental fallback (reason is nil or empty table) when starving
+    local analysis_nil = deathstats.analyze_death(p_starve, nil)
+    assert(analysis_nil.category == "starve",
+        "Environmental fallback must identify starve category when reason is nil and player is starving")
+
+    local analysis_empty = deathstats.analyze_death(p_starve, {})
+    assert(analysis_empty.category == "starve",
+        "Environmental fallback must identify starve category when reason is {} and player is starving")
+
+    -- 9. Hazard Priority: Fall, PvP, Lava, Drown must take precedence even if hunger is 0
+    local fall_while_hungry = { type = "fall" }
+    local analysis_fall_hungry = deathstats.analyze_death(p_starve, fall_while_hungry)
+    assert(analysis_fall_hungry.category == "fall",
+        "Fall damage must take precedence over hunger when reason.type == 'fall'")
+
+    local burn_while_hungry = { type = "burn" }
+    p_starve.get_pos = function() return { x = 0, y = 5, z = 0, node_name = "default:lava_source" } end
+    local analysis_burn_hungry = deathstats.analyze_death(p_starve, burn_while_hungry)
+    assert(analysis_burn_hungry.category == "lava",
+        "Lava damage must take precedence over hunger when burning in lava")
+    p_starve.get_pos = function() return { x = 0, y = 5, z = 0, node_name = "air" } end
+
+    -- 10. Verify on_player_hpchange starvation tracking & race condition safety
+    deathstats.recent_starvations["StarveTester"] = nil
+    p_starve.get_hp = function() return 1 end
+    core.on_player_hpchange(p_starve, -1, { type = "set_hp" })
+    assert(deathstats.recent_starvations["StarveTester"] ~= nil,
+        "on_player_hpchange must record timestamp in recent_starvations during starvation damage")
+
+    -- Clear hbhunger hunger table simulating another mod resetting hunger in on_dieplayer early
+    p_starve.get_hp = function() return 0 end
+    _G.hbhunger.hunger["StarveTester"] = 20
+    local analysis_race = deathstats.analyze_death(p_starve, { type = "set_hp" })
+    assert(analysis_race.category == "starve",
+        "recent_starvations timestamp must safely protect against race conditions where hunger was reset early")
+
+    -- 11. Cleanup on player reset / respawn
+    deathstats.reset_player_effects(p_starve)
+    assert(deathstats.recent_starvations["StarveTester"] == nil,
+        "reset_player_effects must cleanly purge recent_starvations")
+
+    _G.hbhunger = nil
+
+    print("  [PASS] Starvation detection & hbhunger integration (set_hp, fallback, priority, race immunity, cleanup)")
+end
+
+print("\nALL 41 TEST SUITES PASSED SUCCESSFULLY!\n")

@@ -99,6 +99,7 @@ deathstats = {
     players = {},
     recent_punches = {},
     recent_falls = {},
+    recent_starvations = {},
     respawn_immunity = {},
     left_players = {},
 }
@@ -331,7 +332,6 @@ function deathstats.stack_to_string(stack)
     end
     return ""
 end
-
 
 --- Check whether an entire inventory list is empty
 ---@param inv InvRef The inventory reference
@@ -995,6 +995,127 @@ function deathstats.resolve_entity_info(obj)
     return "Creature", false, "Creature", nil
 end
 
+--- Check if a player is in a starving state (satiation/hunger depleted)
+--- Seamlessly integrates with hbhunger, hudbars, stamina, hunger_ng, mcl_hunger, and classic hunger
+---@param player ObjectRef The player object
+---@return boolean is_starving True if hunger level is at or below starvation threshold
+function deathstats.is_player_starving(player)
+    if not player or not player:is_player() then return false end
+    local name = player:get_player_name()
+    if not name or name == "" then return false end
+
+    local starving = false
+    pcall(function()
+        -- 1. Check hbhunger mod (Wuzzy's hbhunger)
+        local hbh = rawget(_G, "hbhunger")
+        if hbh then
+            -- In hbhunger, starvation damage is dealt when h <= 1
+            if hbh.hunger and hbh.hunger[name] ~= nil then
+                local h = tonumber(hbh.hunger[name])
+                if h and h <= 1 then
+                    starving = true
+                    return
+                end
+            end
+            if hbh.get_hunger_raw then
+                local raw = tonumber(hbh.get_hunger_raw(player))
+                if raw and raw <= 1 then
+                    starving = true
+                    return
+                end
+            end
+        end
+
+        -- 2. Check hudbars (hb) "satiation" or "hunger" registered bar state
+        local hb_mod = rawget(_G, "hb")
+        if hb_mod then
+            local tables = hb_mod.hudtables
+            for _, bar_id in ipairs({ "satiation", "hunger" }) do
+                -- Direct safe inspection of hudstate without calling get_hudbar_state which crashes on unregistered bars
+                if tables and tables[bar_id] and tables[bar_id].hudstate and tables[bar_id].hudstate[name] then
+                    local val = tonumber(tables[bar_id].hudstate[name].value)
+                    if val and val <= 1 then
+                        starving = true
+                        return
+                    end
+                elseif hb_mod.get_hudbar_state and tables and tables[bar_id] then
+                    local ok, state = pcall(hb_mod.get_hudbar_state, player, bar_id)
+                    if ok and state and state.value ~= nil then
+                        local val = tonumber(state.value)
+                        if val and val <= 1 then
+                            starving = true
+                            return
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 3. Check stamina mod
+        local stam = rawget(_G, "stamina")
+        if stam then
+            local sval = (stam.get and stam.get(player))
+                or (stam.get_stamina and stam.get_stamina(player))
+            if sval ~= nil and tonumber(sval) <= 0 then
+                starving = true
+                return
+            end
+            local meta = player.get_meta and player:get_meta()
+            if meta and meta:get_string("stamina:level") ~= "" then
+                local slvl = tonumber(meta:get_string("stamina:level"))
+                if slvl and slvl <= 0 then
+                    starving = true
+                    return
+                end
+            end
+        end
+
+        -- 4. Check hunger_ng mod
+        local hng = rawget(_G, "hunger_ng")
+        if hng then
+            local val = (hng.get_hunger and hng.get_hunger(player))
+                or (hng.hunger and hng.hunger[name])
+            if val ~= nil and tonumber(val) <= 0 then
+                starving = true
+                return
+            end
+        end
+
+        -- 5. Check MineClone mcl_hunger
+        local mcl_h = rawget(_G, "mcl_hunger")
+        if mcl_h and mcl_h.get_hunger then
+            local val = tonumber(mcl_h.get_hunger(player))
+            if val and val <= 0 then
+                starving = true
+                return
+            end
+        end
+
+        -- 6. Check classic hunger mod
+        local hmod = rawget(_G, "hunger")
+        if hmod then
+            local val = (hmod.hunger and hmod.hunger[name])
+                or (hmod.get_hunger and hmod.get_hunger(player))
+            if val ~= nil and tonumber(val) <= 1 then
+                starving = true
+                return
+            end
+        end
+
+        -- 7. Direct inventory "hunger" stack count check (hbhunger stores count = hunger + 1)
+        local inv = player.get_inventory and player:get_inventory()
+        if inv and inv.get_size and inv:get_size("hunger") > 0 and inv.get_stack then
+            local st = inv:get_stack("hunger", 1)
+            if st and not st:is_empty() and st:get_count() <= 2 then
+                starving = true
+                return
+            end
+        end
+    end)
+
+    return starving
+end
+
 --- Deep environmental and state inspection fallback when engine reason table is nil or incomplete
 --- Checks recent combat punches, falling velocity, surrounding nodes (lava, water, suffocation, fall, out-of-world)
 ---@param player ObjectRef The deceased player object
@@ -1099,7 +1220,18 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 8. Fallback unknown
+    -- 8. Check starvation (hbhunger, stamina, hunger_ng, hudbars, or inventory hunger)
+    local was_starving = deathstats.is_player_starving(player)
+        or (deathstats.recent_starvations[name] and (core.get_gametime() - deathstats.recent_starvations[name] <= 3.5))
+    if was_starving then
+        return {
+            category = "starve",
+            reason_text = S("Starved to death"),
+            funny_note = deathstats.get_funny_note("starve"),
+        }
+    end
+
+    -- 9. Fallback unknown
     return {
         category = "unknown",
         reason_text = "Died from mysterious causes",
@@ -1234,6 +1366,27 @@ function deathstats.analyze_death(player, reason)
                 category = cat,
                 reason_text = "Pricked or wounded by " .. node_name,
                 funny_note = deathstats.get_funny_note(cat),
+            }
+        end
+
+        -- STARVATION (explicit reason type or cause from hunger mods e.g. stamina, mcl_hunger)
+        if rtype == "starve" or rtype == "hunger"
+            or (reason.cause and (tostring(reason.cause):find("starve") or tostring(reason.cause):find("hunger"))) then
+            return {
+                category = "starve",
+                reason_text = S("Starved to death"),
+                funny_note = deathstats.get_funny_note("starve"),
+            }
+        end
+
+        -- SET_HP from hunger mod (e.g. hbhunger calling player:set_hp without extra reason)
+        local was_starving = deathstats.is_player_starving(player)
+            or (deathstats.recent_starvations[pname] and (core.get_gametime() - deathstats.recent_starvations[pname] <= 3.5))
+        if rtype == "set_hp" and was_starving then
+            return {
+                category = "starve",
+                reason_text = S("Starved to death"),
+                funny_note = deathstats.get_funny_note("starve"),
             }
         end
     end
@@ -1532,199 +1685,6 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
         end
     end
     return corpse
-end
-
-
---- Wrap an animation function to prevent death animation looping while a player is dead
---- In minetest_game / repixture, player_api.globalstep calls player_set_animation(player, "lay") every tick
---- which defaults to loop = true at 30 fps, causing a violent 0.13s death replay loop.
---- This hook forces loop = false and speed = 1 so the character cleanly stays in the final flat pose.
----@param mod_table table|nil The mod table containing the animation function
----@param fn_name string The name of the animation function
-deathstats.hooked_animations = {}
-
-function deathstats.hook_animation_function(mod_table, fn_name)
-    if mod_table and type(mod_table[fn_name]) == "function" and not deathstats.hooked_animations[mod_table[fn_name]] then
-        local orig_fn = mod_table[fn_name]
-        local hooked_fn = function(player, anim_name, speed, loop)
-            if player and player:is_player() then
-                local name = player:get_player_name()
-                if not deathstats.is_player_online(name) then
-                    return
-                end
-                if deathstats.dead_players[name] then
-                    if anim_name == "lay" or anim_name == "die" then
-                        return orig_fn(player, anim_name, 1, false)
-                    end
-                    return
-                end
-            end
-            return orig_fn(player, anim_name, speed, loop)
-        end
-        deathstats.hooked_animations[hooked_fn] = true
-        mod_table[fn_name] = hooked_fn
-    end
-end
-
--- Hook available player animation handlers immediately
-deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
-deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
-deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
-
--- Also hook in on_mods_loaded in case a mod initialized late
-core.register_on_mods_loaded(function()
-    deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
-    deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
-    deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
-end)
-
---- Set or clear the player_attached flag in player_api and default mods
----@param name string The player name
----@param attached boolean|nil True if attached, nil to clear
-function deathstats.set_engine_player_attached(name, attached)
-    local papi = rawget(_G, "player_api")
-    if papi and papi.player_attached then
-        papi.player_attached[name] = attached
-    end
-    local def_mod = rawget(_G, "default")
-    if def_mod and def_mod.player_attached then
-        def_mod.player_attached[name] = attached
-    end
-end
-
---- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
----@param player ObjectRef The player object
----@return table visuals { mesh = string, textures = table, visual_size = table, yaw = number }
-function deathstats.get_player_visuals(player)
-    local name = player:get_player_name()
-    local props = player:get_properties() or {}
-
-    local armor_mod = rawget(_G, "armor")
-    local skins_mod = rawget(_G, "skins")
-    local wardrobe_mod = rawget(_G, "wardrobe")
-    local player_api_mod = rawget(_G, "player_api")
-    local mcl_skins_mod = rawget(_G, "mcl_skins")
-    local clothing_mod = rawget(_G, "clothing")
-
-    local mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or props.mesh or "character.b3d"
-    local textures = copy(props.textures or { "character.png" })
-    local visual_size = copy(props.visual_size or { x = 1, y = 1, z = 1 })
-    local yaw = player:get_look_horizontal() or 0
-
-    if visual_size.x == 0 and visual_size.y == 0 then
-        visual_size = { x = 1, y = 1, z = 1 }
-    end
-
-    -- 1. 3d_armor support: composite skin, armor, wielditem textures
-    if armor_mod and armor_mod.textures and armor_mod.textures[name] then
-        local a_tex = armor_mod.textures[name]
-        textures = {
-            a_tex.skin or "character.png",
-            a_tex.armor or "3d_armor_trans.png",
-            a_tex.wielditem or "3d_armor_trans.png",
-        }
-    -- 2. skinsdb support
-    elseif skins_mod and skins_mod.get_player_skin then
-        local skin = skins_mod.get_player_skin(player)
-        if skin then
-            local skin_tex = skin:get_texture()
-            if skin_tex then
-                textures[1] = skin_tex
-            end
-            local vs_x = skin:get_meta("visual_size_x")
-            local vs_y = skin:get_meta("visual_size_y")
-            if vs_x and vs_y then
-                visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
-            end
-        end
-    -- 3. simple_skins support
-    elseif skins_mod and skins_mod.skins and skins_mod.skins[name] then
-        textures = { skins_mod.skins[name] .. ".png" }
-    -- 4. wardrobe support
-    elseif wardrobe_mod and wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
-        textures = { wardrobe_mod.playerSkins[name] }
-    -- 5. player_api support
-    elseif player_api_mod and player_api_mod.get_textures then
-        local p_tex = player_api_mod.get_textures(player)
-        if p_tex and #p_tex > 0 then
-            textures = copy(p_tex)
-        end
-    -- 6. mcl_skins support
-    elseif mcl_skins_mod and mcl_skins_mod.get_player_skin then
-        local skin_data = mcl_skins_mod.get_player_skin(player)
-        if type(skin_data) == "table" and skin_data.texture then
-            textures[1] = skin_data.texture
-        elseif type(skin_data) == "string" then
-            textures[1] = skin_data
-        end
-    end
-
-    -- 7. clothing support (layer clothing on top of skin)
-    if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
-        local c = clothing_mod.player_textures[name]
-        if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
-            textures[1] = (textures[1] or "character.png") .. "^" .. c.clothing
-        end
-        if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
-            textures[1] = (textures[1] or "character.png") .. "^" .. c.cape
-        end
-    end
-
-    -- 8. Fallback for transparent texture trap:
-    -- If textures only contains deathstats_transparent.png, recover original textures from metadata or default
-    local is_transparent = true
-    if type(textures) == "table" and #textures > 0 then
-        for _, tex in ipairs(textures) do
-            if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" then
-                is_transparent = false
-                break
-            end
-        end
-    else
-        is_transparent = true
-    end
-
-    local meta = player.get_meta and player:get_meta()
-    if is_transparent and meta then
-        local raw_orig = meta:get_string("deathstats:orig_textures")
-        if raw_orig and raw_orig ~= "" then
-            local des = core.deserialize(raw_orig)
-            if type(des) == "table" and #des > 0 then
-                textures = des
-                is_transparent = false
-            end
-        end
-    end
-    if is_transparent then
-        textures = { "character.png" }
-    end
-
-    if meta then
-        if not mesh or mesh == "" then
-            local raw_mesh = meta:get_string("deathstats:orig_mesh")
-            if raw_mesh and raw_mesh ~= "" then mesh = raw_mesh end
-        end
-        if visual_size.x == 0 and visual_size.y == 0 then
-            local raw_vs = meta:get_string("deathstats:orig_visual_size")
-            if raw_vs and raw_vs ~= "" then
-                local des = core.deserialize(raw_vs)
-                if type(des) == "table" then visual_size = des end
-            end
-        end
-        if yaw == 0 then
-            local raw_yaw = meta:get_string("deathstats:orig_yaw")
-            if raw_yaw and raw_yaw ~= "" then
-                yaw = tonumber(raw_yaw) or yaw
-            end
-        end
-    end
-
-    return {
-        mesh = mesh,
-        textures = textures,
-        visual_size = visual_size,
-        yaw = yaw,
-    }
 end
 
 --- Get the primary tile texture name for a given node for particle fallback
@@ -3540,6 +3500,7 @@ function deathstats.reset_player_effects(player, is_leaving)
     deathstats.dead_players[name] = nil
     deathstats.is_respawning[name] = nil
     deathstats.active_animations[name] = nil
+    deathstats.recent_starvations[name] = nil
 
     -- 2. Clear all death HUD elements
     deathstats.clear_death_hud(player)

@@ -127,6 +127,14 @@ core.register_on_player_hpchange(function(player, hp_change, reason)
             data.current_run.damage_taken = data.current_run.damage_taken + dmg
             data.lifetime.damage_taken = data.lifetime.damage_taken + dmg
         end
+
+        -- Record recent starvation damage if starving or reason is starvation
+        local is_starve = reason and (reason.type == "starve" or reason.type == "hunger"
+                or (reason.cause and (tostring(reason.cause):find("starve") or tostring(reason.cause):find("hunger"))))
+        local is_combat_or_env = reason and (reason.type == "punch" or reason.type == "fall" or reason.type == "burn" or reason.type == "drown")
+        if is_starve or (not is_combat_or_env and deathstats.is_player_starving and deathstats.is_player_starving(player)) then
+            deathstats.recent_starvations[name] = core.get_gametime()
+        end
     end
     return hp_change
 end, true)
@@ -257,6 +265,7 @@ core.register_on_leaveplayer(function(player)
     deathstats.players[name] = nil
     deathstats.recent_punches[name] = nil
     deathstats.recent_falls[name] = nil
+    deathstats.recent_starvations[name] = nil
 end)
 
 core.register_on_shutdown(function()
