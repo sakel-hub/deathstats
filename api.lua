@@ -2643,55 +2643,80 @@ function deathstats.update_death_camera(player, dtime)
 
     -- Raycast obstacle detection to prevent camera clipping into walls / terrain
     if core.raycast and data.orbit_center then
-        local cam_x = data.orbit_center.x + radius * math.sin(angle)
-        local cam_y = data.orbit_center.y + height
-        local cam_z = data.orbit_center.z - radius * math.cos(angle)
-        local cam_target = vector.new(cam_x, cam_y, cam_z)
-        -- Ray origin elevated above corpse to avoid grazing ground block tops
         local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.8, data.orbit_center.z)
-        local ray = core.raycast(ray_start, cam_target, false, false)
-        for pointed_thing in ray do
-            if pointed_thing.type == "node" and pointed_thing.under then
-                local node = core.get_node(pointed_thing.under)
-                local def = core.registered_nodes[node.name]
-                if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
-                    -- Ignore the floor node directly beneath the corpse (not an obstacle)
-                    local is_floor = (pointed_thing.under.x == math.floor(data.orbit_center.x + 0.5))
-                        and (pointed_thing.under.z == math.floor(data.orbit_center.z + 0.5))
-                        and (pointed_thing.under.y <= math.floor(data.orbit_center.y + 0.5))
-                    if not is_floor then
+        local min_clear_dist = radius
+
+        -- Multi-angle probe: check primary camera line plus slight lookahead/lookbehind (+/- 0.08 rad)
+        -- to prevent zero-thickness edge chattering at block corners and provide advance avoidance notice
+        local probe_angles = { angle, angle + 0.08, angle - 0.08 }
+        for _, p_angle in ipairs(probe_angles) do
+            local cam_x = data.orbit_center.x + radius * math.sin(p_angle)
+            local cam_y = data.orbit_center.y + height
+            local cam_z = data.orbit_center.z - radius * math.cos(p_angle)
+            local cam_target = vector.new(cam_x, cam_y, cam_z)
+            local ray = core.raycast(ray_start, cam_target, false, false)
+            for pointed_thing in ray do
+                if pointed_thing.type == "node" and pointed_thing.under then
+                    local node = core.get_node(pointed_thing.under)
+                    local def = core.registered_nodes[node.name]
+                    if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
                         local hit_pos = pointed_thing.intersection_point or pointed_thing.under
-                        local dist = vector.distance(ray_start, hit_pos)
-                        if dist >= 0.8 then
-                            target_radius = math.max(1.2, math.min(radius, dist - 0.3))
+                        -- Safely ignore floor nodes directly beneath/around the corpse (not an obstacle)
+                        local is_ground = (hit_pos.y <= data.orbit_center.y + 0.35)
+                            and (math.abs(hit_pos.x - data.orbit_center.x) <= 1.0)
+                            and (math.abs(hit_pos.z - data.orbit_center.z) <= 1.0)
+                        if not is_ground then
+                            local dist = vector.distance(ray_start, hit_pos)
+                            if dist >= 0.8 and dist < min_clear_dist then
+                                min_clear_dist = dist
+                            end
                             break
                         end
                     end
                 end
             end
         end
-    end
 
-    -- Smoothly interpolate current radius toward target radius to prevent camera popping
-    if not data.eff_radius then
-        data.eff_radius = target_radius
-    else
-        local lerp_speed = (target_radius < data.eff_radius) and 8.0 or 4.0
-        data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * math.min(1.0, (dtime or 0.05) * lerp_speed)
-    end
-    local eff_radius = data.eff_radius
-
-    local radius_dm = math.floor(eff_radius * 10)
-    local height_dm = math.floor(height * 10)
-    -- Suppress redundant eye offset updates to eliminate client recalculation jitter
-    if player.set_eye_offset then
-        local cur_first = player.get_eye_offset and player:get_eye_offset()
-        if not cur_first or cur_first.y ~= height_dm or cur_first.z ~= -radius_dm then
-            player:set_eye_offset({ x = 0, y = height_dm, z = -radius_dm }, vector.zero())
+        if min_clear_dist < radius then
+            target_radius = math.max(1.2, math.min(radius, min_clear_dist - 0.35))
         end
     end
 
-    local pitch = atan2(height, eff_radius)
+    -- Smoothly interpolate current radius toward target radius using framerate-independent exponential damping
+    local dt = dtime or 0.05
+    if not data.eff_radius then
+        data.eff_radius = target_radius
+    else
+        -- Faster pull-in when approaching obstacle, gentle ease-out when leaving obstacle
+        local lerp_speed = (target_radius < data.eff_radius) and 5.0 or 2.5
+        local factor = 1.0 - math.exp(-lerp_speed * dt)
+        data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * factor
+    end
+    local eff_radius = data.eff_radius
+
+    -- Pass continuous floating-point decimeters rather than math.floor integer quantization
+    -- to eliminate 10-centimeter stepped teleportation jerks
+    local target_dm_z = -eff_radius * 10
+    local target_dm_y = height * 10
+    if player.set_eye_offset then
+        local cur_first = player.get_eye_offset and player:get_eye_offset()
+        if not cur_first
+            or math.abs(cur_first.y - target_dm_y) > 0.05
+            or math.abs(cur_first.z - target_dm_z) > 0.05 then
+            player:set_eye_offset({ x = 0, y = target_dm_y, z = target_dm_z }, vector.zero())
+        end
+    end
+
+    -- Smooth pitch transitions to prevent camera vertically bobbing when radius changes
+    local target_pitch = atan2(height, eff_radius)
+    if not data.eff_pitch then
+        data.eff_pitch = target_pitch
+    else
+        local pitch_factor = 1.0 - math.exp(-4.0 * dt)
+        data.eff_pitch = data.eff_pitch + (target_pitch - data.eff_pitch) * pitch_factor
+    end
+    local pitch = data.eff_pitch
+
     -- Suppress redundant horizontal yaw updates to avoid packet flooding
     if player.set_look_horizontal then
         local cur_yaw = player.get_look_horizontal and player:get_look_horizontal()
