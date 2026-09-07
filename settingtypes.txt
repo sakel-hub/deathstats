@@ -1,0 +1,31 @@
+# Enable sound effects on death
+deathstats_enable_sounds (Enable Death Sounds) bool true
+
+# Orbit camera around player corpse on death
+deathstats_enable_camera (Cinematic Camera Orbit on Death) bool true
+
+# Orbit camera radius in nodes
+deathstats_orbit_radius (Deathcam Orbit Radius) float 3.2 1.0 10.0
+
+# Orbit camera height above corpse in nodes
+deathstats_orbit_height (Deathcam Orbit Height) float 1.5 0.2 6.0
+
+# Orbit camera rotation speed in radians per second (~0.4 rad/s is ~15.7s per turn)
+deathstats_orbit_speed (Deathcam Orbit Rotation Speed) float 0.4 0.1 3.0
+
+
+# Enable zoom and fade animation for YOU DIED banner
+deathstats_enable_animation (Enable Zoom & Fade Animation) bool true
+
+# Duration of zoom & fade animation in seconds
+deathstats_animation_duration (Animation Duration) float 1.8 0.2 5.0
+
+# Opacity of blood splatter vignette overlay (0-255)
+deathstats_blood_opacity (Blood Splatter Opacity) int 240 0 255
+
+# Placement side for death statistics card (right, left, center)
+deathstats_formspec_side (Statistics Formspec Side) enum right right,left,center
+
+# Enable broken/fractured limb rotations on death (arms, legs, head)
+deathstats_enable_limb_fractures (Enable Corpse Limb Fractures) bool true
+
