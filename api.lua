@@ -2067,9 +2067,32 @@ function deathstats.set_engine_player_attached(name, attached)
     end
 end
 
+--- Check if 3d_armor is configured to drop or destroy armor on player death
+---@param player ObjectRef|nil Optional player reference
+---@return boolean drops True if armor is ejected/dropped from inventory on death
+function deathstats.is_armor_dropped(player)
+    local armor_mod = rawget(_G, "armor")
+    if not armor_mod then
+        return false
+    end
+    if armor_mod.config and type(armor_mod.config) == "table" then
+        if armor_mod.config.drop ~= nil or armor_mod.config.destroy ~= nil then
+            return (armor_mod.config.drop == true) or (armor_mod.config.destroy == true)
+        end
+    end
+    if core.settings then
+        local drop_set = core.settings:get_bool("armor_drop")
+        local dest_set = core.settings:get_bool("armor_destroy")
+        if drop_set ~= nil or dest_set ~= nil then
+            return (drop_set == true) or (dest_set == true)
+        end
+    end
+    return false
+end
+
 --- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
 ---@param player ObjectRef The player object
----@return table visuals { mesh = string, textures = table, visual_size = table, yaw = number }
+---@return table visuals { mesh = string, textures = table, visual_size = table, yaw = number, armor_dropped = boolean }
 function deathstats.get_player_visuals(player)
     local name = player:get_player_name()
     local props = player:get_properties() or {}
@@ -2090,13 +2113,26 @@ function deathstats.get_player_visuals(player)
         visual_size = { x = 1, y = 1, z = 1 }
     end
 
+    local drops_armor = deathstats.is_armor_dropped(player)
+
     -- 1. 3d_armor support: composite skin, armor, wielditem textures
     if armor_mod and armor_mod.textures and armor_mod.textures[name] then
         local a_tex = armor_mod.textures[name]
+        local skin_tex = a_tex.skin or "character.png"
+        local armor_tex = a_tex.armor or "3d_armor_trans.png"
+        local wield_tex = a_tex.wielditem or "3d_armor_trans.png"
+
+        if drops_armor then
+            -- Armor was/will be ejected from inventory on death (dropped into bones or on ground).
+            -- Reflect the corpse without armor and without wielded weapon.
+            armor_tex = "3d_armor_trans.png"
+            wield_tex = "3d_armor_trans.png"
+        end
+
         textures = {
-            a_tex.skin or "character.png",
-            a_tex.armor or "3d_armor_trans.png",
-            a_tex.wielditem or "3d_armor_trans.png",
+            skin_tex,
+            armor_tex,
+            wield_tex,
         }
     -- 2. skinsdb support
     elseif skins_mod and skins_mod.get_player_skin then
@@ -2199,6 +2235,7 @@ function deathstats.get_player_visuals(player)
         textures = textures,
         visual_size = visual_size,
         yaw = yaw,
+        armor_dropped = drops_armor,
     }
 end
 
@@ -3059,6 +3096,7 @@ function deathstats.set_death_camera(player, death_info)
         if saved_corpse.textures then visuals.textures = saved_corpse.textures end
         if saved_corpse.visual_size then visuals.visual_size = saved_corpse.visual_size end
         if saved_corpse.yaw then visuals.yaw = saved_corpse.yaw end
+        if saved_corpse.armor_dropped ~= nil then visuals.armor_dropped = saved_corpse.armor_dropped end
     elseif meta then
         meta:set_string("deathstats:orig_textures", core.serialize(visuals.textures))
         meta:set_string("deathstats:orig_mesh", visuals.mesh or "character.b3d")
@@ -3070,6 +3108,7 @@ function deathstats.set_death_camera(player, death_info)
             mesh = visuals.mesh,
             textures = visuals.textures,
             visual_size = visuals.visual_size,
+            armor_dropped = visuals.armor_dropped,
         }))
     end
 

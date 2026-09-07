@@ -1122,6 +1122,7 @@ local expected_methods = {
     "serialize_inventory_list",
     "deserialize_inventory_list",
     "is_player_starving",
+    "is_armor_dropped",
 }
 
 for _, method_name in ipairs(expected_methods) do
@@ -1449,16 +1450,40 @@ local vis_default = deathstats.get_player_visuals(p_skin)
 assert(vis_default.mesh == "character.b3d", "Default mesh must be character.b3d")
 assert(vis_default.textures[1] == "character.png", "Default texture must be character.png")
 
--- 2. 3d_armor compatibility
+-- 2. 3d_armor compatibility & automatic inventory drop reflection
+-- 2a. Default/kept armor (drop == false, destroy == false): corpse retains worn armor
 rawset(_G, "armor", {
     textures = { ["SkinUser"] = { skin = "armor_skin.png", armor = "armor_chest.png", wielditem = "armor_sword.png" } },
     models = { ["SkinUser"] = "3d_armor_character.b3d" },
+    config = { drop = false, destroy = false },
 })
-local vis_armor = deathstats.get_player_visuals(p_skin)
-assert(vis_armor.mesh == "3d_armor_character.b3d", "3d_armor mesh must be inherited")
-assert(vis_armor.textures[1] == "armor_skin.png", "3d_armor skin texture must be inherited")
-assert(vis_armor.textures[2] == "armor_chest.png", "3d_armor armor texture must be inherited")
-assert(vis_armor.textures[3] == "armor_sword.png", "3d_armor wielditem texture must be inherited")
+local vis_armor_kept = deathstats.get_player_visuals(p_skin)
+assert(vis_armor_kept.mesh == "3d_armor_character.b3d", "3d_armor mesh must be inherited")
+assert(vis_armor_kept.textures[1] == "armor_skin.png", "3d_armor skin texture must be inherited")
+assert(vis_armor_kept.textures[2] == "armor_chest.png", "Worn armor texture must be kept on corpse when drop=false")
+assert(vis_armor_kept.textures[3] == "armor_sword.png", "Worn wielditem texture must be inherited when drop=false")
+assert(vis_armor_kept.armor_dropped == false, "armor_dropped must be false when armor is kept")
+
+-- 2b. Ejected/dropped armor (drop == true): corpse reflects body without armor
+rawget(_G, "armor").config = { drop = true, destroy = false }
+local vis_armor_dropped = deathstats.get_player_visuals(p_skin)
+assert(vis_armor_dropped.textures[1] == "armor_skin.png", "Skin texture must be preserved when armor drops")
+assert(vis_armor_dropped.textures[2] == "3d_armor_trans.png", "Corpse armor texture must be 3d_armor_trans.png when armor drops")
+assert(vis_armor_dropped.textures[3] == "3d_armor_trans.png", "Corpse wielditem must be 3d_armor_trans.png when armor drops")
+assert(vis_armor_dropped.armor_dropped == true, "armor_dropped must be true when armor drops")
+
+-- 2c. Destroyed armor (destroy == true): corpse reflects body without armor
+rawget(_G, "armor").config = { drop = false, destroy = true }
+local vis_armor_destroyed = deathstats.get_player_visuals(p_skin)
+assert(vis_armor_destroyed.textures[2] == "3d_armor_trans.png", "Corpse armor texture must be transparent when armor is destroyed")
+assert(vis_armor_destroyed.armor_dropped == true, "armor_dropped must be true when armor is destroyed")
+
+-- 2d. Settings fallback when armor.config is absent
+rawget(_G, "armor").config = nil
+assert(deathstats.is_armor_dropped(p_skin) == false, "is_armor_dropped must default to false without config or setting")
+local vis_fallback = deathstats.get_player_visuals(p_skin)
+assert(vis_fallback.textures[2] == "armor_chest.png", "Armor texture must be preserved without drop config")
+
 rawset(_G, "armor", nil)
 
 -- 3. skinsdb compatibility
@@ -2820,6 +2845,8 @@ do
     assert(meta:get_string("deathstats:death_active") == "1", "death_active must be 1")
     assert(meta:get_string("deathstats:last_life") ~= "", "last_life metadata must be saved")
     assert(meta:get_string("deathstats:corpse_data") ~= "", "corpse_data metadata must be saved")
+    local des_corpse = core.deserialize(meta:get_string("deathstats:corpse_data"))
+    assert(type(des_corpse) == "table" and des_corpse.armor_dropped ~= nil, "corpse_data must record armor_dropped status")
 
     -- 3. Simulate total server shutdown / crash:
     -- Wipe in-memory Lua tables and all active world entities
