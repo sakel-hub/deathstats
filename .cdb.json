@@ -1,0 +1,23 @@
+{
+  "name": "deathstats",
+  "title": "DeathStats",
+  "type": "MOD",
+  "short_description": "Cinematic pixel art death screen with slap-on zoom animation, detailed death causes, funny epitaphs, smooth 360° camera orbit around corpse, and lifetime statistics tracking.",
+  "long_description": "# DeathStats\n\nA cinematic, pixel art-themed death screen and lifetime player statistics mod for Luanti (Minetest).\n\nWhen a player dies, **DeathStats** transforms the death experience into an immersive event: the camera smoothly orbits around the fallen character corpse in a 360-degree circle, a visceral pixel art blood splatter vignette washes over the screen, and the iconic pixel art \"YOU DIED\" banner slaps onto the screen glass with an accelerating trajectory from the distance, accompanied by authentic retro sound cues.\n\n---\n\n### Key Features\n\n* **Cinematic Death Presentation**:\n  * Custom pixel art \"YOU DIED\" banner with dripping blood typography.\n  * Visceral slap-on-screen zoom animation with distance acceleration, impact overshoot, and damped settling.\n  * Fullscreen pixel art blood splatter and dark vignette overlay.\n  * Smooth 360° camera orbit around the fallen corpse entity mirroring the player's skins.\n  * Clean cinematic display: in-game hotbar and HUDs are automatically hidden during death.\n* **Intelligent Death Cause & Weapon Detection**:\n  * Identifies killers (players or mobs), weapon or tool used for the killing blow.\n  * Full projectile attribution: tracks kills and damage from arrows (`x_bows`), sword projectiles (`x_obsidianmese`), and ranged weapons directly to the shooter.\n  * Complete mob combat damage tracking across `mobs_redo`, `creatura`, `mobkit`, and engine entities.\n  * Robust environmental fallback inspection when engine reason is `nil`: detects drowning, lava melting, fire, falling impact velocity, suffocation in solid blocks, and void falls.\n  * Curated humorous epitaph notes for every cause of death in crisp, high-contrast white text.\n* **Interactive Death Interface (Modern Formspec v6)**:\n  * **Try Again**: Instant respawn, clean HUD removal, and camera restore.\n  * **Last Life Summary**: Displays time survived, blocks mined, ores mined (with specific ore name and count breakdown banner), damage dealt & taken, mobs & players slain, items crafted & consumed, and distance traveled.\n  * **More Statistics (Lifetime Dossier)**: Interactive dashboard with transparent backdrop and accessible tab styling, persistent across server restarts using Luanti's Mod Storage:\n    * **Overview Tab**: Total playtime, total deaths, K/D ratio, damage statistics, building and survival records.\n    * **Ores Breakdown Tab**: 2-column grid showing every ore variety extracted with icons, exact counts, and rankings.\n    * **Combat & Mobs Tab**: 2-column grid of mobs and players slain with individual kill counts.\n* **Sound Effects**:\n  * Authentic CC0 sound cues from Freesound picked at random on death (8-bit game over, dark bell chime, dramatic defeat impact).\n* **Multiplayer Performance**:\n  * High performance, memory-efficient in-memory tracking ($O(1)$ operations).\n  * Zero-lag Mod Storage persistence upon death, disconnect, and server shutdown.\n",
+  "dev_state": "ACTIVELY_DEVELOPED",
+  "license": "LGPL-2.1-or-later",
+  "media_license": "CC0-1.0",
+  "repo": "https://github.com/sakel-hub/deathstats",
+  "issue_tracker": "https://github.com/sakel-hub/deathstats/issues",
+  "video_url": null,
+  "website": "https://github.com/sakel-hub/deathstats#readme",
+  "tags": [
+    "hud",
+    "gui",
+    "effects",
+    "combat",
+    "tools"
+  ],
+  "content_warnings": [],
+  "ai_disclosure": "NONE"
+}

@@ -1,0 +1,33 @@
+{
+    "name": "deathstats",
+    "version": "1.0.0",
+    "description": "Cinematic pixel art death screen with zoom animation, detailed death causes, funny epitaphs, 3rd-person camera, and lifetime statistics tracking.",
+    "main": "init.lua",
+    "type": "module",
+    "engines": {
+        "node": ">=16.0.0",
+        "npm": ">=8.0.0"
+    },
+    "scripts": {
+        "test": "lua test.lua",
+        "lint": "luacheck .",
+        "push:ci": "node ./scripts/deploy.mjs"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/sakel-hub/deathstats.git"
+    },
+    "author": "SaKeL",
+    "license": "LGPL-2.1-or-later",
+    "bugs": {
+        "url": "https://github.com/sakel-hub/deathstats/issues"
+    },
+    "homepage": "https://github.com/sakel-hub/deathstats#readme",
+    "devDependencies": {
+        "node-fetch": "^3.3.2",
+        "yargs": "^17.7.2"
+    },
+    "dependencies": {
+        "dotenv": "^16.4.5"
+    }
+}
