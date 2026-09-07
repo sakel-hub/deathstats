@@ -13,16 +13,22 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
   - Dynamic camera perspective:
     - **Smooth Circular Orbit**: Smoothly orbits around the fallen player corpse or bones block in a circular path in first-person mode, eliminating third-person camera offsets.
     - **Corpse Placeholder Entity**: Spawns an immortal, non-physical corpse mesh entity lying flat on the ground that inherits the player's exact character model and composite skins across `skinsdb`, `simple_skins`, `wardrobe`, `3d_armor`, `clothing`, `player_api`, and `mcl_skins`.
+    - **Atmospheric Corpse Particles**: Spawns natural particle effects from the corpse:
+      - **Water**: continuous animated bubbling air bubbles (5x5 px pixel art) floating upward through water.
+      - **Lava**: continuous animated licking fire & ember sparks (5x5 px pixel art) leaping with high glow.
+      - **Fire**: continuous animated billowing ash smoke (5x5 px pixel art) drifting upward.
+      - **All Others**: dynamic burst of surface node particles flying upward from ground impact at the moment of death with customized gravity and velocity.
     - **Obstacle Avoidance**: Raycasts line-of-sight between camera and corpse, dynamically pulling camera in front of solid walls to eliminate clipping.
-    - **Bones Mod Compatibility**: Automatically re-centers the circular orbit around the bones block when placed (including delayed placement).
-    - **Early Item Drops**: If the game drops inventory on death (`bones_mode == "drop"`, etc.), items scatter around the corpse with randomized velocity right as the orbit begins.
+    - **Bones Mod Compatibility**: Respects `bones_mode` setting. When `bones_mode == "bones"`, suppresses the corpse entity so the placed bones block is directly visible and fully functional (retaining stored inventory and item drop mechanics), automatically locking camera orbit directly onto the bones. When `bones` is disabled or in `drop`/`keep` mode, falls back to the cinematic corpse entity.
+    - **Early Item Drops**: If the game drops inventory on death (`bones_mode == "drop"`, etc.), items scatter around the death position with randomized velocity right as the orbit begins.
   - Clean cinematic display: in-game hotbar and HUDs automatically hidden during death.
 
 - **Intelligent Death Cause & Weapon Detection**:
   - Identifies killers (players or mobs), weapon/tool used for the killing blow (swords, tools, bare hands).
   - Full projectile & ranged weapon attribution: tracks kills and damage from arrows (`x_bows`), sword projectiles (`x_obsidianmese`), and custom ranged weapons directly to the shooter player.
   - Full mob combat damage tracking: tracks all damage dealt to mobs across `mobs_redo`, `creatura`, and custom entities.
-  - Robust fallback environmental inspection when engine `reason` is `nil`: detects drowning (breath/water), lava melting, burning in fire, falling impact velocity, suffocation in solid blocks, and falling into the void.
+  - Robust fallback environmental inspection when engine `reason` is `nil` or generic: detects drowning (breath/water), lava melting, burning in fire, falling impact velocity, suffocation in solid blocks, falling into the void, and hunger starvation.
+  - **Hunger & Starvation Integration**: Seamlessly detects starvation deaths across popular hunger frameworks including `hbhunger`, `hudbars`, `stamina`, `hunger_ng`, and `mcl_hunger` (even when damage is applied via generic `set_hp` calls).
   - Hilarious, curated epitaph notes for every cause of death in high-contrast white text.
 
 - **Interactive Death Interface (Modern Formspec v6)**:
@@ -42,7 +48,7 @@ The following options can be customized in `minetest.conf` or the in-game Settin
 - `deathstats_orbit_height = 1.5` (orbit camera height above corpse in nodes)
 - `deathstats_orbit_speed = 0.4` (orbit rotation speed in rad/s, ~15.7s for full circle)
 - `deathstats_enable_animation = true` (toggle zoom & fade animation)
-- `deathstats_animation_duration = 1.8` (duration of screen slap animation in seconds)
+- `deathstats_animation_duration = 2.4` (duration of screen slap animation in seconds)
 - `deathstats_blood_opacity = 240` (opacity of blood splatter overlay, 0-255)
 - `deathstats_formspec_side = right` (`right`, `left`, or `center` screen alignment)
 

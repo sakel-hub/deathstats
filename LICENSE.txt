@@ -474,6 +474,9 @@ Copyright (C) 2026 SaKeL
 - deathstats_icon_pickaxe.png
 - deathstats_icon_skull.png
 - deathstats_icon_sword.png
+- deathstats_particle_bubble.png
+- deathstats_particle_fire.png
+- deathstats_particle_smoke.png
 - deathstats_you_died.png
 - deathstats_you_died_drown.png
 - deathstats_you_died_fire.png
@@ -482,11 +485,10 @@ Copyright (C) 2026 SaKeL
 
 ### Sounds
 
-**CC0-1.0, by Euphrosyyn**, https://freesound.org/people/Euphrosyyn/sounds/442127/
+**CC0-1.0, by kreha**, https://freesound.org/people/kreha
+
 - deathstats_death.1.ogg
-
-**CC0-1.0, by jivatma07**, https://freesound.org/people/jivatma07/sounds/173859/
 - deathstats_death.2.ogg
-
-**CC0-1.0, by noirenex**, https://freesound.org/people/noirenex/sounds/159408/
 - deathstats_death.3.ogg
+- deathstats_death.4.ogg
+- deathstats_death.5.ogg
