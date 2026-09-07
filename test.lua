@@ -2929,5 +2929,53 @@ do
     print("  [PASS] Server disconnect during death screen & engine show_death_screen reconnect persistence")
 end
 
+--------------------------------------------------------------------------------
+-- TEST 39: Elastic "YOU DIED" Slap Animation Trajectory & Prominence
+--------------------------------------------------------------------------------
+do
+    print("\n--- TEST 39: Elastic 'YOU DIED' Slap Animation Trajectory & Prominence ---")
 
-print("\nALL 38 TEST SUITES PASSED SUCCESSFULLY!\n")
+    -- 1. Verify default configuration duration has been updated to 2.4s
+    assert(deathstats.config.animation_duration == 2.4,
+        "deathstats.config.animation_duration must default to 2.4 seconds, got: " .. tostring(deathstats.config.animation_duration))
+
+    local target_w = -32.0
+    local target_h = -23.0
+
+    -- 2. Test progress = 0: starting distant scale (15% of target) and initial opacity stage
+    local sx0, sy0, a0, impact0 = deathstats.calculate_slap_animation(0.0, target_w, target_h)
+    assert(math.abs(sx0 - (target_w * 0.15)) < 0.001, "Scale at progress 0 must be 15% of target")
+    assert(math.abs(sy0 - (target_h * 0.15)) < 0.001, "Scale at progress 0 must be 15% of target")
+    assert(a0 == 60, "Initial alpha at progress 0 must be 60")
+    assert(impact0 == false, "Impact must not be reached at progress 0")
+
+    -- 3. Test progress = 0.35: peak prominent zoom-in overshoot (> 1.25x target, ~1.31x) and subtitle impact trigger
+    local sx_peak, sy_peak, a_peak, impact_peak = deathstats.calculate_slap_animation(0.35, target_w, target_h)
+    local zoom_ratio = sx_peak / target_w
+    assert(zoom_ratio > 1.25, "Peak zoom ratio must be > 1.25x target scale for prominence, got: " .. tostring(zoom_ratio))
+    assert(zoom_ratio < 1.35, "Peak zoom ratio must stay within reasonable bounds (< 1.35x), got: " .. tostring(zoom_ratio))
+    assert(math.abs((sy_peak / target_h) - zoom_ratio) < 0.001, "Aspect ratio must be preserved during peak zoom")
+    assert(a_peak == 255, "Alpha at peak zoom must be fully opaque (255)")
+    assert(impact_peak == true, "Subtitles impact must trigger at or by progress 0.35")
+
+    -- 4. Test progress = 0.75: recoil bounce undershoot (< 0.95x target, ~0.91x)
+    local sx_bounce, sy_bounce, a_bounce, impact_bounce = deathstats.calculate_slap_animation(0.75, target_w, target_h)
+    local bounce_ratio = sx_bounce / target_w
+    assert(bounce_ratio < 0.95, "Recoil bounce must undershoot resting scale (< 0.95x), got: " .. tostring(bounce_ratio))
+    assert(bounce_ratio > 0.85, "Recoil bounce must be stable (> 0.85x), got: " .. tostring(bounce_ratio))
+    assert(math.abs((sy_bounce / target_h) - bounce_ratio) < 0.001, "Aspect ratio must be preserved during recoil bounce")
+    assert(a_bounce == 255, "Alpha during recoil must be 255")
+    assert(impact_bounce == true, "Impact must remain true during recoil")
+
+    -- 5. Test progress = 1.0: exact convergence to resting target scale (1.000x)
+    local sx1, sy1, a1, impact1 = deathstats.calculate_slap_animation(1.0, target_w, target_h)
+    assert(math.abs(sx1 - target_w) < 0.001, "Final scale X must converge exactly to target_w, got: " .. tostring(sx1))
+    assert(math.abs(sy1 - target_h) < 0.001, "Final scale Y must converge exactly to target_h, got: " .. tostring(sy1))
+    assert(a1 == 255, "Final alpha must be 255")
+    assert(impact1 == true, "Final impact must be true")
+
+    print("  [PASS] Elastic 'YOU DIED' slap animation trajectory & prominence (2.4s, peak ~1.31x, bounce ~0.91x, exact 1.00x rest)")
+end
+
+
+print("\nALL 39 TEST SUITES PASSED SUCCESSFULLY!\n")

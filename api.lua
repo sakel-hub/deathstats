@@ -26,7 +26,7 @@ deathstats = {
             core.settings:get_bool("deathstats_enable_fall_fractures", true)),
         enable_fall_fractures = core.settings:get_bool("deathstats_enable_fall_fractures",
             core.settings:get_bool("deathstats_enable_limb_fractures", true)),
-        animation_duration = tonumber(core.settings:get("deathstats_animation_duration")) or 1.8,
+        animation_duration = tonumber(core.settings:get("deathstats_animation_duration")) or 2.4,
         blood_splatter_opacity = tonumber(core.settings:get("deathstats_blood_opacity")) or 240,
         formspec_side = core.settings:get("deathstats_formspec_side") or "right",
         banner_texture = "deathstats_you_died.png",

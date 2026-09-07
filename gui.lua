@@ -14,7 +14,7 @@
 -- ==========================================
 
 --- Calculate distance flight and screen slap animation parameters
---- Uses a continuous cubic overshoot (Ease-Out Back) trajectory for smooth, fluid motion
+--- Uses an elastic damped sine curve trajectory for prominent zoom-in and bouncy recoil
 ---@param progress number from 0.0 to 1.0
 ---@param target_w number|nil target scale x percentage
 ---@param target_h number|nil target scale y percentage
@@ -25,11 +25,12 @@ local function calculate_slap_animation(progress, target_w, target_h)
     local start_w  = target_w * 0.15
     local start_h  = target_h * 0.15
 
-    -- Continuous Ease-Out Back trajectory:
-    -- Progresses smoothly from distance with organic deceleration and a crisp, gentle bounce
-    local s = 1.0 -- Elasticity factor (~3.7% bounce at progress ~0.65)
-    local p = progress - 1.0
-    local factor = 1.0 + (s + 1.0) * (p * p * p) + s * (p * p)
+    -- Continuous Elastic Damped Oscillation trajectory:
+    -- Starts from distant perspective (progress=0 -> factor=0, 15% scale),
+    -- surges forward into a prominent zoom-in peaking at ~1.31x scale (progress ~0.35),
+    -- bounces back with an undershoot to ~0.91x scale (progress ~0.75),
+    -- and smoothly settles to exact resting target scale 1.00x at completion (progress=1.0).
+    local factor = 1.0 - (2.0 ^ (-4.5 * progress)) * math.cos(progress * math.pi * 2.5)
 
     local scale_x = start_w + (target_w - start_w) * factor
     local scale_y = start_h + (target_h - start_h) * factor
@@ -48,9 +49,11 @@ local function calculate_slap_animation(progress, target_w, target_h)
         alpha = 255
     end
 
-    local impact_reached = (progress >= 0.65)
+    local impact_reached = (progress >= 0.35)
     return scale_x, scale_y, alpha, impact_reached
 end
+
+deathstats.calculate_slap_animation = calculate_slap_animation
 
 --- Globalstep animation loop for distance flight and visceral screen slap
 core.register_globalstep(function(dtime)

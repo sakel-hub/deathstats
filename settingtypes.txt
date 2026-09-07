@@ -18,7 +18,7 @@ deathstats_orbit_speed (Deathcam Orbit Rotation Speed) float 0.4 0.1 3.0
 deathstats_enable_animation (Enable Zoom & Fade Animation) bool true
 
 # Duration of zoom & fade animation in seconds
-deathstats_animation_duration (Animation Duration) float 1.8 0.2 5.0
+deathstats_animation_duration (Animation Duration) float 2.4 0.2 5.0
 
 # Opacity of blood splatter vignette overlay (0-255)
 deathstats_blood_opacity (Blood Splatter Opacity) int 240 0 255
