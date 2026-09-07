@@ -2786,6 +2786,100 @@ do
     print("  [PASS] Dead reconnect post-shutdown corpse & stats persistence (corpse spawned, skin restored, exact stats preserved, 0 duplicates)")
 end
 
-print("\nALL 37 TEST SUITES PASSED SUCCESSFULLY!")
+--------------------------------------------------------------------------------
+-- TEST 38: Server Disconnect During Death Screen & Engine show_death_screen Reconnect
+--------------------------------------------------------------------------------
+do
+    print("\n--- TEST 38: Server Disconnect During Death Screen & Engine show_death_screen Reconnect ---")
+
+    local p_disc = create_mock_player("ServerShutdownPlayer")
+    p_disc:set_pos({ x = 100, y = 20, z = 100 })
+
+    -- 1. Player reaches 0 HP and simulate an extensive run before dying
+    p_disc:set_hp(0)
+    local data = deathstats.get_player_data(p_disc)
+    data.current_run.blocks_mined = 142
+    data.current_run.total_ores = 38
+    data.current_run.damage_dealt = 550
+    data.current_run.damage_taken = 95
+    data.current_run.mobs_killed = 12
+    data.current_run.players_killed = 2
+    data.current_run.items_crafted = 24
+    data.current_run.items_consumed = 8
+    data.current_run.distance_traveled = 350.5
+
+    -- 2. Player dies in the world
+    local fatal_info = {
+        category = "pvp",
+        reason_text = "Slain by RivalKnight with Diamond Sword",
+        weapon = "Diamond Sword",
+        killer_name = "RivalKnight",
+        funny_note = "A legendary duel remembered by the victor.",
+    }
+    deathstats.trigger_death_screen(p_disc, fatal_info)
+
+    -- Assert death screen was triggered and stats saved
+    local meta = p_disc:get_meta()
+    assert(meta:get_string("deathstats:death_active") == "1", "death_active must be '1' while in death screen")
+    assert(data.last_life.blocks_mined == 142, "last_life.blocks_mined must be 142")
+    assert(data.last_life.total_ores == 38, "last_life.total_ores must be 38")
+    assert(data.lifetime.deaths == 1, "lifetime.deaths must be 1")
+
+    -- 3. Abrupt server disconnect / shutdown occurs while player is looking at the death screen!
+    -- In-memory server tables are wiped (fresh server restart)
+    deathstats.players = {}
+    deathstats.dead_players = {}
+    deathstats.player_camera_data = {}
+    deathstats.active_huds = {}
+    core.last_formspec = nil
+
+    -- 4. Player reconnects to the newly started server with hp == 0
+    p_disc:set_hp(0)
+
+    -- Luanti engine builtin/game/death_screen.lua on_joinplayer executes:
+    -- core.show_death_screen(player) WITHOUT is_reconnect parameter!
+    core.show_death_screen(p_disc)
+
+    -- 5. Verify stats from previous death are FULLY PERSISTED and NOT wiped
+    local persisted_recon_data = deathstats.players["ServerShutdownPlayer"]
+    assert(persisted_recon_data ~= nil, "Player data must exist on reconnect")
+    assert(persisted_recon_data.last_life ~= nil, "last_life must not be nil")
+    assert(persisted_recon_data.last_life.blocks_mined == 142,
+        "blocks_mined must retain 142 from previous death, got: " .. tostring(persisted_recon_data.last_life.blocks_mined))
+    assert(persisted_recon_data.last_life.total_ores == 38,
+        "total_ores must retain 38 from previous death, got: " .. tostring(persisted_recon_data.last_life.total_ores))
+    assert(persisted_recon_data.last_life.damage_dealt == 550,
+        "damage_dealt must retain 550, got: " .. tostring(persisted_recon_data.last_life.damage_dealt))
+    assert(persisted_recon_data.last_life.damage_taken == 95,
+        "damage_taken must retain 95, got: " .. tostring(persisted_recon_data.last_life.damage_taken))
+    assert(persisted_recon_data.last_life.mobs_killed == 12,
+        "mobs_killed must retain 12, got: " .. tostring(persisted_recon_data.last_life.mobs_killed))
+    assert(persisted_recon_data.last_life.players_killed == 2,
+        "players_killed must retain 2, got: " .. tostring(persisted_recon_data.last_life.players_killed))
+    assert(persisted_recon_data.last_life.items_crafted == 24,
+        "items_crafted must retain 24, got: " .. tostring(persisted_recon_data.last_life.items_crafted))
+    assert(persisted_recon_data.last_life.last_cause == "Slain by RivalKnight with Diamond Sword",
+        "last_cause must retain exact kill credit from previous death")
+
+    -- 6. Verify lifetime deaths counter was not double incremented on reconnect
+    assert(persisted_recon_data.lifetime.deaths == 1,
+        "lifetime.deaths must remain 1 after reconnecting to death screen, got: " .. tostring(persisted_recon_data.lifetime.deaths))
+
+    -- 7. Verify the death formspec presents the restored stats
+    assert(core.last_formspec ~= nil and core.last_formspec.formname == "deathstats:death",
+        "Death screen formspec must be presented on reconnect")
+    assert(core.last_formspec.fs:find("Mined: 142 %(38 ores%)"),
+        "Formspec must display 142 mined (38 ores) from previous death")
+    assert(core.last_formspec.fs:find("Slain by RivalKnight"),
+        "Formspec must display death cause from previous death")
+
+    -- 8. Respawn player and verify clean reset
+    deathstats.on_player_respawn(p_disc)
+    assert(meta:get_string("deathstats:death_active") == "", "death_active must be cleared after respawning")
+
+    print("  [PASS] Server disconnect during death screen & engine show_death_screen reconnect persistence")
+end
+
+print("\nALL 38 TEST SUITES PASSED SUCCESSFULLY!")
 
 

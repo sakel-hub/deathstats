@@ -453,7 +453,7 @@ function deathstats.load_player_stats(player_name)
             local meta_last_raw = meta:get_string("deathstats:last_life")
             if meta_last_raw and meta_last_raw ~= "" then
                 local des = core.deserialize(meta_last_raw)
-                if type(des) == "table" and des.last_cause and des.last_cause ~= "None" then
+                if type(des) == "table" then
                     last_life = des
                 end
             end
@@ -522,7 +522,7 @@ function deathstats.get_player_data(player)
             local meta_last_raw = meta:get_string("deathstats:last_life")
             if meta_last_raw and meta_last_raw ~= "" then
                 local des = core.deserialize(meta_last_raw)
-                if type(des) == "table" and des.last_cause and des.last_cause ~= "None" then
+                if type(des) == "table" then
                     data.last_life = des
                 end
             end
@@ -1057,6 +1057,16 @@ function deathstats.analyze_death(player, reason)
     end
 
     local pname = player:get_player_name()
+
+    -- If reason is already an analyzed death_info table with reason_text
+    if reason and type(reason) == "table" and reason.reason_text then
+        local res = {}
+        for k, v in pairs(reason) do res[k] = v end
+        if not res.funny_note then
+            res.funny_note = deathstats.get_funny_note(res.category or "unknown")
+        end
+        return res
+    end
 
     -- If reason table is provided and valid
     if reason and type(reason) == "table" and reason.type then
@@ -2916,6 +2926,12 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
     local data = deathstats.get_player_data(player)
     local death_info
     local meta = player.get_meta and player:get_meta()
+
+    -- Check if player was already dead before this call (reconnect from server shutdown or disconnect)
+    if not is_reconnect and player:get_hp() <= 0 and meta and meta:get_string("deathstats:death_active") == "1" then
+        is_reconnect = true
+    end
+
     if is_reconnect then
         if meta then
             local meta_info_raw = meta:get_string("deathstats:death_info")
@@ -2925,11 +2941,11 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
                     death_info = des
                 end
             end
-            if not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" then
-                local meta_last_raw = meta:get_string("deathstats:last_life")
-                if meta_last_raw and meta_last_raw ~= "" then
-                    local des = core.deserialize(meta_last_raw)
-                    if type(des) == "table" then
+            local meta_last_raw = meta:get_string("deathstats:last_life")
+            if meta_last_raw and meta_last_raw ~= "" then
+                local des = core.deserialize(meta_last_raw)
+                if type(des) == "table" then
+                    if not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" or (data.last_life.time_alive or 0) == 0 then
                         data.last_life = des
                     end
                 end
@@ -2946,12 +2962,21 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         end
         if not death_info then
             death_info = {
-                category = "reconnect",
+                category = (data and data.last_life and data.last_life.last_category) or "reconnect",
                 reason_text = (data and data.last_life and data.last_life.last_cause) or "Died before disconnect",
                 weapon = (data and data.last_life and data.last_life.last_weapon) or "None",
                 killer_name = (data and data.last_life and data.last_life.last_killer) or "Environment",
                 funny_note = (data and data.last_life and data.last_life.last_funny) or "Welcome back to the afterlife.",
             }
+        end
+
+        -- Re-persist metadata so death_active and last_life remain solid across repeated disconnects
+        if meta then
+            meta:set_string("deathstats:death_active", "1")
+            if data and data.last_life then
+                meta:set_string("deathstats:last_life", core.serialize(data.last_life))
+            end
+            meta:set_string("deathstats:death_info", core.serialize(death_info))
         end
     else
         death_info = deathstats.analyze_death(player, reason)
