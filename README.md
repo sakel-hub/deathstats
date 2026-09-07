@@ -41,7 +41,6 @@ The following options can be customized in `minetest.conf` or the in-game Settin
 - `deathstats_orbit_radius = 3.2` (orbit circle radius in nodes)
 - `deathstats_orbit_height = 1.5` (orbit camera height above corpse in nodes)
 - `deathstats_orbit_speed = 0.4` (orbit rotation speed in rad/s, ~15.7s for full circle)
-- `deathstats_drop_items_early = true` (scatter inventory items right as deathcam orbit begins)
 - `deathstats_enable_animation = true` (toggle zoom & fade animation)
 - `deathstats_animation_duration = 1.8` (duration of screen slap animation in seconds)
 - `deathstats_blood_opacity = 240` (opacity of blood splatter overlay, 0-255)
