@@ -504,7 +504,7 @@ function deathstats.load_player_stats(player_name)
 
     -- Dual persistence check: load from player metadata if storage was empty or not flushed
     local player = core.get_player_by_name(player_name)
-    local meta = player and player.get_meta and player:get_meta()
+    local meta = player and player:get_meta()
     if meta then
         if type(lifetime) ~= "table" then
             local meta_raw = meta:get_string("deathstats:lifetime")
@@ -561,7 +561,7 @@ function deathstats.save_player_stats(player_name)
         deathstats.storage:set_string("last_life:" .. player_name, core.serialize(data.last_life))
     end
     local player = core.get_player_by_name(player_name)
-    local meta = player and player.get_meta and player:get_meta()
+    local meta = player and player:get_meta()
     if meta then
         meta:set_string("deathstats:lifetime", core.serialize(data.lifetime))
         if data.last_life then
@@ -581,7 +581,7 @@ function deathstats.get_player_data(player)
         data = deathstats.load_player_stats(name)
     end
     if data and (not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" or (data.last_life.time_alive or 0) == 0) then
-        local meta = player.get_meta and player:get_meta()
+        local meta = player:get_meta()
         if meta then
             local meta_last_raw = meta:get_string("deathstats:last_life")
             if meta_last_raw and meta_last_raw ~= "" then
@@ -638,7 +638,7 @@ function deathstats.record_player_death(player, death_info)
 
     -- Persist immediately to Mod Storage and Player Metadata
     deathstats.save_player_stats(player:get_player_name())
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     if meta then
         meta:set_string("deathstats:death_active", "1")
         meta:set_string("deathstats:last_life", core.serialize(data.last_life))
@@ -1060,7 +1060,7 @@ function deathstats.is_player_starving(player)
                 starving = true
                 return
             end
-            local meta = player.get_meta and player:get_meta()
+            local meta = player:get_meta()
             if meta and meta:get_string("stamina:level") ~= "" then
                 local slvl = tonumber(meta:get_string("stamina:level"))
                 if slvl and slvl <= 0 then
@@ -1103,7 +1103,7 @@ function deathstats.is_player_starving(player)
         end
 
         -- 7. Direct inventory "hunger" stack count check (hbhunger stores count = hunger + 1)
-        local inv = player.get_inventory and player:get_inventory()
+        local inv = player:get_inventory()
         if inv and inv.get_size and inv:get_size("hunger") > 0 and inv.get_stack then
             local st = inv:get_stack("hunger", 1)
             if st and not st:is_empty() and st:get_count() <= 2 then
@@ -1175,7 +1175,7 @@ function deathstats.inspect_surroundings_fallback(player)
     if node_feet.name:find("lava") or node_head.name:find("lava") then
         return {
             category = "lava",
-            reason_text = "Melted in searing lava",
+            reason_text = S("Melted in searing lava"),
             funny_note = deathstats.get_funny_note("lava"),
         }
     end
@@ -1184,7 +1184,7 @@ function deathstats.inspect_surroundings_fallback(player)
     if node_feet.name:find("fire") or node_head.name:find("fire") then
         return {
             category = "fire",
-            reason_text = "Burned to ashes",
+            reason_text = S("Burned to ashes"),
             funny_note = deathstats.get_funny_note("fire"),
         }
     end
@@ -1195,7 +1195,7 @@ function deathstats.inspect_surroundings_fallback(player)
     if in_water or (breath and breath <= 0) then
         return {
             category = "drown",
-            reason_text = "Drowned in deep water",
+            reason_text = S("Drowned in deep water"),
             funny_note = deathstats.get_funny_note("drown"),
         }
     end
@@ -1205,7 +1205,7 @@ function deathstats.inspect_surroundings_fallback(player)
     if head_def and head_def.walkable and head_def.drawtype == "normal" and not node_head.name:find("air") then
         return {
             category = "suffocate",
-            reason_text = string.format("Suffocated inside %s", deathstats.format_name(node_head.name)),
+            reason_text = S("Suffocated inside @1", deathstats.format_name(node_head.name)),
             funny_note = deathstats.get_funny_note("suffocate"),
         }
     end
@@ -1215,7 +1215,7 @@ function deathstats.inspect_surroundings_fallback(player)
     if fall_speed < -12.0 then
         return {
             category = "fall",
-            reason_text = "Fell from a high place",
+            reason_text = S("Fell from a high place"),
             funny_note = deathstats.get_funny_note("fall"),
         }
     end
@@ -1319,7 +1319,7 @@ function deathstats.analyze_death(player, reason)
         if rtype == "fall" then
             return {
                 category = "fall",
-                reason_text = "Fell from a high place",
+                reason_text = S("Fell from a high place"),
                 funny_note = deathstats.get_funny_note("fall"),
             }
         end
@@ -1328,7 +1328,7 @@ function deathstats.analyze_death(player, reason)
         if rtype == "drown" then
             return {
                 category = "drown",
-                reason_text = "Drowned in deep water",
+                reason_text = S("Drowned in deep water"),
                 funny_note = deathstats.get_funny_note("drown"),
             }
         end
@@ -1340,13 +1340,13 @@ function deathstats.analyze_death(player, reason)
             if node.name:find("lava") then
                 return {
                     category = "lava",
-                    reason_text = "Melted in searing lava",
+                    reason_text = S("Melted in searing lava"),
                     funny_note = deathstats.get_funny_note("lava"),
                 }
             end
             return {
                 category = "fire",
-                reason_text = "Burned to ashes",
+                reason_text = S("Burned to ashes"),
                 funny_note = deathstats.get_funny_note("fire"),
             }
         end
@@ -1467,11 +1467,6 @@ core.register_entity("deathstats:camera_anchor", {
             if self.object.set_velocity then
                 self.object:set_velocity(vector.zero())
             end
-        end
-    end,
-    on_step = function(self, _dtime)
-        if self.object and self.object.set_velocity then
-            self.object:set_velocity(vector.zero())
         end
     end,
 })
@@ -2164,7 +2159,7 @@ function deathstats.get_player_visuals(player)
         is_transparent = true
     end
 
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     if is_transparent and meta then
         local raw_orig = meta:get_string("deathstats:orig_textures")
         if raw_orig and raw_orig ~= "" then
@@ -2212,6 +2207,7 @@ end
 ---@param search_center Vector|nil Optional search origin (defaults to orbit_center or player pos)
 ---@return Vector|nil pos The 3D coordinates of the placed bones node, or nil if not found
 function deathstats.find_player_bones(player, search_center)
+    if not core.registered_nodes["bones:bones"] then return nil end
     if not player or not player:is_player() then return nil end
     local name = player:get_player_name()
     local cam_data = deathstats.player_camera_data[name]
@@ -2271,14 +2267,12 @@ function deathstats.is_liquid_at(pos)
     if not node or node.name == "air" or node.name == "ignore" then
         return false
     end
-    if core.get_item_group then
-        if core.get_item_group(node.name, "liquid") ~= 0
-            or core.get_item_group(node.name, "water") ~= 0
-            or core.get_item_group(node.name, "lava") ~= 0 then
-            return true
-        end
+    if core.get_item_group(node.name, "liquid") ~= 0
+        or core.get_item_group(node.name, "water") ~= 0
+        or core.get_item_group(node.name, "lava") ~= 0 then
+        return true
     end
-    local def = core.registered_nodes and core.registered_nodes[node.name]
+    local def = core.registered_nodes[node.name]
     if def then
         if def.liquidtype ~= nil and def.liquidtype ~= "none" then
             return true
@@ -2287,7 +2281,7 @@ function deathstats.is_liquid_at(pos)
             return true
         end
     end
-    local idef = core.registered_items and core.registered_items[node.name]
+    local idef = core.registered_items[node.name]
     if idef and idef.groups and (idef.groups.liquid or idef.groups.water or idef.groups.lava) then
         return true
     end
@@ -2529,29 +2523,26 @@ function deathstats.update_death_camera(player, dtime)
     end
 
     -- Keep player reach strictly at zero: re-enforce camera_hand in "hand" list
-    if player.get_inventory then
-        local inv = player:get_inventory()
-        if inv and inv.get_stack and inv.set_stack then
-            local cur_hand = inv:get_stack("hand", 1)
-            local cur_name = deathstats.get_stack_name(cur_hand)
-            if cur_name ~= "deathstats:camera_hand" then
-                if inv.set_size and (not inv.get_size or inv:get_size("hand") ~= 1) then
-                    inv:set_size("hand", 1)
-                end
-                inv:set_stack("hand", 1, "deathstats:camera_hand")
+    local inv = player:get_inventory()
+    if inv and inv.get_stack and inv.set_stack then
+        local cur_hand = inv:get_stack("hand", 1)
+        local cur_name = deathstats.get_stack_name(cur_hand)
+        if cur_name ~= "deathstats:camera_hand" then
+            if inv.set_size and (not inv.get_size or inv:get_size("hand") ~= 1) then
+                inv:set_size("hand", 1)
             end
+            inv:set_stack("hand", 1, "deathstats:camera_hand")
         end
     end
 
     -- Defer main inventory stashing until after on_dieplayer has completed (dtime > 0)
     -- This allows bones and external drop mods to handle corpse inventory drops without interference.
     -- If keep_inventory or creative is active, stashing main ensures zero-reach camera hand takes effect.
-    if dtime and dtime > 0 and data and not data.stashed_main and player.get_inventory then
-        local inv = player:get_inventory()
-        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+    if dtime and dtime > 0 and data and not data.stashed_main and inv then
+        if not deathstats.is_inventory_list_empty(inv, "main") then
             local items = deathstats.serialize_inventory_list(inv, "main")
             data.stashed_main = items
-            local meta = player.get_meta and player:get_meta()
+            local meta = player:get_meta()
             if meta then
                 meta:set_string("deathstats:stashed_main", core.serialize(items))
             end
@@ -2561,9 +2552,8 @@ function deathstats.update_death_camera(player, dtime)
             end
         end
     end
-    if data and data.stashed_main and player.get_inventory then
-        local inv = player:get_inventory()
-        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+    if data and data.stashed_main and inv then
+        if not deathstats.is_inventory_list_empty(inv, "main") then
             local sz = (inv.get_size and inv:get_size("main")) or #data.stashed_main
             for i = 1, sz do
                 local cur_st = inv.get_stack and inv:get_stack("main", i)
@@ -2769,11 +2759,11 @@ end
 function deathstats.restore_player_inventory_and_hand(player)
     if not player or not player:is_player() then return false end
     local name = player:get_player_name()
-    local inv = player.get_inventory and player:get_inventory()
+    local inv = player:get_inventory()
     if not inv then return false end
 
     local data = deathstats.player_camera_data[name]
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     local restored = false
 
     -- 1. Restore Main Inventory if stashed
@@ -2887,21 +2877,27 @@ function deathstats.set_death_camera(player, death_info)
         end
     end
 
-    -- 0. Detach from any prior vehicle/cart/bed and cancel momentum
+    -- Clean up any existing anchor / camera session
     local old_data = deathstats.player_camera_data[name]
-    if old_data and old_data.particle_spawners then
-        for _, pid in ipairs(old_data.particle_spawners) do
-            pcall(function() core.delete_particlespawner(pid) end)
+    if old_data then
+        if old_data.anchor and (not old_data.anchor.is_valid or old_data.anchor:is_valid()) then
+            pcall(function() old_data.anchor:remove() end)
+        end
+        old_data.anchor = nil
+        if old_data.particle_spawners then
+            for _, sid in ipairs(old_data.particle_spawners) do
+                pcall(function() core.delete_particlespawner(sid, name) end)
+            end
         end
         old_data.particle_spawners = nil
     end
-    if player.get_attach and player:get_attach() then
+    if player:get_attach() then
         pcall(function() player:set_detach() end)
     end
     deathstats.zero_player_velocity(player)
 
     -- 1. Determine ground surface and orbit center
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     local saved_corpse = nil
     if meta then
         local raw_corpse = meta:get_string("deathstats:corpse_data")
@@ -2932,9 +2928,9 @@ function deathstats.set_death_camera(player, death_info)
     local old_pointable = (props.pointable ~= nil and props.pointable or true)
     local old_is_visible = (props.is_visible ~= nil and props.is_visible or true)
     local old_interaction_range = props.interaction_range or 4
-    local current_physics = (player.get_physics_override and player:get_physics_override()) or { speed = 1, jump = 1, gravity = 1 }
+    local current_physics = player:get_physics_override() or { speed = 1, jump = 1, gravity = 1 }
     local old_physics = copy(current_physics)
-    local old_armor_groups = copy(player.get_armor_groups and player:get_armor_groups() or { fleshy = 100 })
+    local old_armor_groups = copy(player:get_armor_groups() or { fleshy = 100 })
     local old_nametag_attributes = nil
     if player.get_nametag_attributes then
         local nta = player:get_nametag_attributes()
@@ -2944,7 +2940,7 @@ function deathstats.set_death_camera(player, death_info)
     end
 
     -- Enforce zero interaction reach for the camera (range = 0 via camera hand)
-    local inv = player.get_inventory and player:get_inventory()
+    local inv = player:get_inventory()
     local saved_hand_size = 0
     local saved_hand_stack = nil
 
@@ -3284,7 +3280,7 @@ function deathstats.reset_camera(player, is_leaving)
         end
         if player.set_properties then
             local orig_tex = nil
-            local meta = player.get_meta and player:get_meta()
+            local meta = player:get_meta()
             if meta then
                 local raw_orig = meta:get_string("deathstats:orig_textures")
                 if raw_orig and raw_orig ~= "" then
@@ -3459,33 +3455,33 @@ if core.register_on_item_eat then
     end)
 end
 
-if core.register_on_punchplayer then
-    core.register_on_punchplayer(function(player, hitter, time_from_last_punch, tool_capabilities, dir, damage)
-        local p_name = player and player:is_player() and player:get_player_name()
-        local h_name = hitter and hitter:is_player() and hitter:get_player_name()
-        if (p_name and deathstats.dead_players[p_name]) or (h_name and deathstats.dead_players[h_name]) then
-            return true
-        end
-    end)
-end
+-- Block dead players from receiving punch damage or punching others
+core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _tool_capabilities, _dir, _damage)
+    if not next(deathstats.dead_players) then return end
+    local p_name = player and player:is_player() and player:get_player_name()
+    local h_name = hitter and hitter:is_player() and hitter:get_player_name()
+    if (p_name and deathstats.dead_players[p_name]) or (h_name and deathstats.dead_players[h_name]) then
+        return true
+    end
+end)
 
-if core.register_on_rightclickplayer then
-    core.register_on_rightclickplayer(function(player, clicker)
-        local p_name = player and player:is_player() and player:get_player_name()
-        local c_name = clicker and clicker:is_player() and clicker:get_player_name()
-        if (p_name and deathstats.dead_players[p_name]) or (c_name and deathstats.dead_players[c_name]) then
-            return true
-        end
-    end)
-end
+-- Block rightclicking on dead players or dead players rightclicking
+core.register_on_rightclickplayer(function(player, clicker)
+    if not next(deathstats.dead_players) then return end
+    local p_name = player and player:is_player() and player:get_player_name()
+    local c_name = clicker and clicker:is_player() and clicker:get_player_name()
+    if (p_name and deathstats.dead_players[p_name]) or (c_name and deathstats.dead_players[c_name]) then
+        return true
+    end
+end)
 
-if core.register_on_item_pickup then
-    core.register_on_item_pickup(function(itemstack, picker, pointed_thing)
-        if picker and picker:is_player() and deathstats.dead_players[picker:get_player_name()] then
-            return itemstack
-        end
-    end)
-end
+-- Prevent dead players from picking up inventory items during camera orbit
+core.register_on_item_pickup(function(itemstack, picker, _pointed_thing)
+    if not next(deathstats.dead_players) then return end
+    if picker and picker:is_player() and deathstats.dead_players[picker:get_player_name()] then
+        return itemstack
+    end
+end)
 
 -- ==========================================
 -- HUD Elements, Animation & Lifecycle Reset
@@ -3531,31 +3527,7 @@ function deathstats.reset_player_effects(player, is_leaving)
     core.close_formspec(name, "deathstats:death_screen")
     core.close_formspec(name, "deathstats:more_stats")
 
-    -- 4. Restore gameplay HUD flags (crosshair, hotbar, healthbar, breathbar, minimap, wielditem)
-    if not is_leaving and player.hud_set_flags then
-        local is_hb_health = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar()
-        local is_hb_breath = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_breathbar and deathstats.compat_hudbars.manages_breathbar()
-        player:hud_set_flags({
-            crosshair = true,
-            hotbar = true,
-            healthbar = not is_hb_health,
-            breathbar = not is_hb_breath,
-            minimap = true,
-            wielditem = true,
-        })
-    end
-    if deathstats.compat_hudbars and deathstats.compat_hudbars.unhide then
-        deathstats.compat_hudbars.unhide(player)
-    else
-        local hb_mod = rawget(_G, "hb")
-        if hb_mod and hb_mod.hudtables and hb_mod.unhide_hudbar then
-            for id in pairs(hb_mod.hudtables) do
-                pcall(function() hb_mod.unhide_hudbar(player, id) end)
-            end
-        end
-    end
-
-    -- 5. Restore camera perspective, eye offset, fov, and standing animation
+    -- 4. Restore camera perspective, eye offset, fov, gameplay HUDs, and standing animation
     deathstats.reset_camera(player, is_leaving)
 end
 
@@ -3648,7 +3620,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
     -- 3. Analyze death or recover previous death info for reconnecting dead player
     local data = deathstats.get_player_data(player)
     local death_info
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
 
     -- Check if player was already dead before this call (reconnect from server shutdown or disconnect)
     if not is_reconnect and player:get_hp() <= 0 and meta and meta:get_string("deathstats:death_active") == "1" then
@@ -3863,7 +3835,7 @@ function deathstats.on_player_respawn(player)
     deathstats.reset_player_effects(player)
 
     -- Clear persistent death session metadata
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     if meta then
         meta:set_string("deathstats:death_active", "")
         meta:set_string("deathstats:death_info", "")
@@ -3931,6 +3903,9 @@ function deathstats.show_death_formspec(player, death_info)
     local items_consumed = deathstats.format_number(last.items_consumed or 0)
     local dist_str = string.format("%.1f m", last.distance_traveled or 0)
 
+    local fatal_cause = (death_info and death_info.reason_text) or (last and last.last_cause) or "Unknown"
+    local fatal_weapon = (death_info and (death_info.weapon_name or death_info.weapon)) or (last and last.last_weapon) or "None"
+
     local side = deathstats.config.formspec_side or "right"
     local pos_x = 0.96
     local anchor_x = 1.0
@@ -3982,8 +3957,8 @@ function deathstats.show_death_formspec(player, death_info)
         -- Row 5: Fatal Blow Inset Box
         "box[0.5,2.88;4.6,1.52;" .. c.card_inset .. "]",
         "label[0.7,3.16;", F(C(c.text_crimson, S("Fatal Blow:"))), "]",
-        "label[0.7,3.52;", F(deathstats.truncate_str(last.last_cause or "Unknown", 30)), "]",
-        "label[0.7,3.95;", F(deathstats.truncate_str(last.last_weapon or "None", 20) .. "  |  " .. dist_str), "]",
+        "label[0.7,3.52;", F(deathstats.truncate_str(fatal_cause, 30)), "]",
+        "label[0.7,3.95;", F(deathstats.truncate_str(fatal_weapon, 20) .. "  |  " .. dist_str), "]",
 
         -- Button Styling
         "style_type[button;border=true;bgimg_middle=true]",

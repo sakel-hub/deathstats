@@ -9,9 +9,11 @@
 --]]
 
 -- Register combat listener to record recent punches for weapon/killer deduction
-core.register_on_punchplayer(function(player, hitter, time_from_last_punch, tool_capabilities, dir, damage)
-    if not player then return end
+core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _tool_capabilities, _dir, damage)
+    if not player or not player:is_player() then return end
     local name = player:get_player_name()
+    if not name or name == "" or deathstats.dead_players[name] then return end
+
     local real_attacker, _, proj_name = deathstats.resolve_puncher_player(hitter)
     local tool_name = nil
     local tool_desc = nil

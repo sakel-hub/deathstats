@@ -64,7 +64,7 @@ core.register_on_dignode(function(pos, oldnode, digger)
 end)
 
 -- 2. Placed Blocks
-core.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, pointed_thing)
+core.register_on_placenode(function(_pos, _newnode, placer, _oldnode, _itemstack, _pointed_thing)
     if not placer or not placer:is_player() then return end
     if deathstats.dead_players and deathstats.dead_players[placer:get_player_name()] then return end
     local data = deathstats.get_player_data(placer)
@@ -75,7 +75,7 @@ core.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, po
 end)
 
 -- 3. Crafted Items
-core.register_on_craft(function(itemstack, player, old_craft_grid, craft_inv)
+core.register_on_craft(function(itemstack, player, _old_craft_grid, _craft_inv)
     if not player or not player:is_player() then return end
     local data = deathstats.get_player_data(player)
     if not data then return end
@@ -86,7 +86,7 @@ core.register_on_craft(function(itemstack, player, old_craft_grid, craft_inv)
 end)
 
 -- 4. Consumed Items (Food / Potions)
-core.register_on_item_eat(function(hp_change, replace_with_item, itemstack, user, pointed_thing)
+core.register_on_item_eat(function(_hp_change, _replace_with_item, _itemstack, user, _pointed_thing)
     if not user or not user:is_player() then return end
     local data = deathstats.get_player_data(user)
     if not data then return end
@@ -140,7 +140,7 @@ core.register_on_player_hpchange(function(player, hp_change, reason)
 end, true)
 
 -- 6. PvP Damage Dealt Tracking (handles both melee and projectiles like x_bows / x_obsidianmese)
-core.register_on_punchplayer(function(player, hitter, time_from_last_punch, tool_capabilities, dir, damage)
+core.register_on_punchplayer(function(_player, hitter, time_from_last_punch, tool_capabilities, _dir, damage)
     local punch_player = deathstats.resolve_puncher_player(hitter)
     if punch_player and punch_player:is_player() then
         local data = deathstats.get_player_data(punch_player)
@@ -289,9 +289,13 @@ core.register_globalstep(function(dtime)
             if data then
                 local pos = player:get_pos()
                 if data.last_pos then
-                    local dist = vector.distance(pos, data.last_pos)
-                    -- Only count natural movements, ignore teleports (> 50m/s)
-                    if dist > 0.05 and dist < 50.0 then
+                    local dx = pos.x - data.last_pos.x
+                    local dy = pos.y - data.last_pos.y
+                    local dz = pos.z - data.last_pos.z
+                    local dist_sq = dx * dx + dy * dy + dz * dz
+                    -- Only count natural movements, ignore sub-millimeter noise (<= 0.05m) and teleports (>= 50m/s)
+                    if dist_sq > 0.0025 and dist_sq < 2500.0 then
+                        local dist = math.sqrt(dist_sq)
                         data.current_run.distance_traveled = data.current_run.distance_traveled + dist
                         data.lifetime.distance_traveled = data.lifetime.distance_traveled + dist
                     end
@@ -299,12 +303,8 @@ core.register_globalstep(function(dtime)
                 data.last_pos = pos
 
                 -- Track vertical speed for fall damage detection
-                local vel
-                if player.get_velocity then
-                    vel = player:get_velocity()
-                elseif player.get_player_velocity then
-                    vel = player:get_player_velocity()
-                end
+                local vel = (player.get_velocity and player:get_velocity())
+                    or (player.get_player_velocity and player:get_player_velocity())
                 if vel then
                     deathstats.recent_falls[name] = vel.y
                 end

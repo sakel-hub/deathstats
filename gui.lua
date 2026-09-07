@@ -188,15 +188,15 @@ end)
 
 -- Override core.show_death_screen to suppress the default engine death formspec
 function core.show_death_screen(player, reason)
-    local meta = player and player.get_meta and player:get_meta()
-    local is_reconnect = player and player.get_hp and player:get_hp() <= 0 and meta and (meta:get_string("deathstats:death_active") == "1")
+    local meta = player and player:get_meta()
+    local is_reconnect = player and player:get_hp() <= 0 and meta and (meta:get_string("deathstats:death_active") == "1")
     deathstats.trigger_death_screen(player, reason, is_reconnect)
 end
 
 -- Catch-all for dieplayer in case show_death_screen was not called
 core.register_on_dieplayer(function(player, reason)
-    local meta = player and player.get_meta and player:get_meta()
-    local is_reconnect = player and player.get_hp and player:get_hp() <= 0 and meta and (meta:get_string("deathstats:death_active") == "1")
+    local meta = player and player:get_meta()
+    local is_reconnect = player and player:get_hp() <= 0 and meta and (meta:get_string("deathstats:death_active") == "1")
     deathstats.trigger_death_screen(player, reason, is_reconnect)
 end)
 
@@ -210,7 +210,7 @@ end)
 core.register_on_joinplayer(function(player)
     local name = player:get_player_name()
     deathstats.left_players[name] = nil
-    local meta = player.get_meta and player:get_meta()
+    local meta = player:get_meta()
     if player:get_hp() == 0 or (meta and meta:get_string("deathstats:death_active") == "1") then
         deathstats.trigger_death_screen(player, nil, true)
     else

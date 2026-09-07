@@ -182,6 +182,7 @@ end
 -- 4. Globalstep reinforcement while dead (throttled to 0.1s intervals to prevent packet flooding)
 local hb_check_timer = 0
 core.register_globalstep(function(dtime)
+    if not next(deathstats.dead_players) then return end
     hb_check_timer = hb_check_timer + (dtime or 0.1)
     if hb_check_timer < 0.1 then return end
     hb_check_timer = 0
