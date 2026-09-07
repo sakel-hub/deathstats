@@ -2242,39 +2242,23 @@ function deathstats.find_player_bones(player, search_center)
     return nil
 end
 
---- Check if bones were placed for this player at or near death position
----@param player ObjectRef The deceased player object
----@param search_center Vector|nil Optional search origin (defaults to orbit_center or player pos)
----@return Vector|nil pos The 3D coordinates of the placed bones node, or nil if not found
-function deathstats.find_player_bones(player, search_center)
-    if not player or not player:is_player() then return nil end
-    local name = player:get_player_name()
-    local cam_data = deathstats.player_camera_data[name]
-    local center = search_center or (cam_data and cam_data.orbit_center) or player:get_pos()
-    if not center then return nil end
-    local pos = vector.round(center)
-
-    -- Check direct death node first
-    local node = core.get_node(pos)
-    if node.name == "bones:bones" then
-        local meta = core.get_meta(pos)
-        local owner = meta:get_string("owner")
-        if owner == "" or owner == name then
-            return pos
-        end
+--- Check if bones mod is active and configured to place/show bones
+---@return boolean should_show_bones True if bones mod is active and bones_mode == "bones"
+---@return string bones_mode The effective bones_mode setting ("bones", "drop", or "keep")
+---@return boolean has_bones_mod True if bones mod is loaded in the world
+function deathstats.get_bones_mode()
+    local has_bones_mod = false
+    if core.get_modpath and core.get_modpath("bones") then
+        has_bones_mod = true
+    elseif rawget(_G, "bones") ~= nil and type(rawget(_G, "bones")) == "table" then
+        has_bones_mod = true
     end
-
-    -- Search adjacent nodes strictly checking that bones belong to this player
-    local minp = vector.new(pos.x - 2, pos.y - 2, pos.z - 2)
-    local maxp = vector.new(pos.x + 2, pos.y + 2, pos.z + 2)
-    local positions = core.find_nodes_in_area(minp, maxp, { "bones:bones" })
-    for _, bpos in ipairs(positions) do
-        local meta = core.get_meta(bpos)
-        if meta:get_string("owner") == name then
-            return bpos
-        end
+    local mode = (core.settings and core.settings:get("bones_mode")) or "bones"
+    if mode ~= "bones" and mode ~= "drop" and mode ~= "keep" then
+        mode = "bones"
     end
-    return nil
+    local should_show_bones = has_bones_mod and (mode == "bones")
+    return should_show_bones, mode, has_bones_mod
 end
 
 --- Check if a specific world position contains liquid (water, lava, or modded fluids)
@@ -2442,9 +2426,15 @@ function deathstats.update_death_camera(player, dtime)
             data.bones_pos = bones_pos
             local new_center = bones_pos
             data.orbit_center = new_center
-            if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
-                data.corpse:set_pos(vector.new(bones_pos.x, bones_pos.y + 0.5, bones_pos.z))
+            -- When bones are placed, remove any corpse entity so bones block is visible
+            if data.corpse then
+                if data.corpse.remove then
+                    pcall(function() data.corpse:remove() end)
+                end
+                data.corpse = nil
             end
+            data.corpse_pos = nil
+            data.corpse_visuals = nil
             if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
                 data.anchor:set_pos(new_center)
             end
@@ -2459,41 +2449,28 @@ function deathstats.update_death_camera(player, dtime)
     end
 
     -- 1b. Check if corpse needs to be spawned / re-spawned once mapblock is loaded
-    if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
-        local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals)
-        if new_corpse then
-            data.corpse = new_corpse
-        end
-    end
-
-    -- Defer main inventory stashing until after on_dieplayer has completed (dtime > 0)
-    -- This allows bones and external drop mods to handle corpse inventory drops without interference.
-    -- If keep_inventory or creative is active, stashing main ensures zero-reach camera hand takes effect.
-    if dtime and dtime > 0 and data and not data.stashed_main and player.get_inventory then
-        local inv = player:get_inventory()
-        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
-            local items = deathstats.serialize_inventory_list(inv, "main")
-            data.stashed_main = items
-            local meta = player.get_meta and player:get_meta()
-            if meta then
-                meta:set_string("deathstats:stashed_main", core.serialize(items))
+    local should_show_bones = deathstats.get_bones_mode()
+    local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
+    if not bones_active then
+        if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
+            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals)
+            if new_corpse then
+                data.corpse = new_corpse
             end
-            local sz = (inv.get_size and inv:get_size("main")) or #items
-            for i = 1, sz do
-                inv:set_stack("main", i, "")
-            end
-        end
-    end
-    if dtime and dtime > 0 and data and data.stashed_main and player.get_inventory then
-        local inv = player:get_inventory()
-        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
-            local sz = (inv.get_size and inv:get_size("main")) or #data.stashed_main
-            for i = 1, sz do
-                local cur_st = inv.get_stack and inv:get_stack("main", i)
-                if not deathstats.is_stack_empty(cur_st) then
-                    inv:set_stack("main", i, "")
+            if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners then
+                local effect_type = deathstats.get_corpse_effect_type(data.corpse_pos, data.death_info)
+                if effect_type ~= "impact" then
+                    data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info)
                 end
             end
+        end
+    else
+        -- If bones are active, ensure any lingering corpse entity is removed
+        if data.corpse then
+            if data.corpse.remove then
+                pcall(function() data.corpse:remove() end)
+            end
+            data.corpse = nil
         end
     end
 
@@ -2562,6 +2539,37 @@ function deathstats.update_death_camera(player, dtime)
                     inv:set_size("hand", 1)
                 end
                 inv:set_stack("hand", 1, "deathstats:camera_hand")
+            end
+        end
+    end
+
+    -- Defer main inventory stashing until after on_dieplayer has completed (dtime > 0)
+    -- This allows bones and external drop mods to handle corpse inventory drops without interference.
+    -- If keep_inventory or creative is active, stashing main ensures zero-reach camera hand takes effect.
+    if dtime and dtime > 0 and data and not data.stashed_main and player.get_inventory then
+        local inv = player:get_inventory()
+        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+            local items = deathstats.serialize_inventory_list(inv, "main")
+            data.stashed_main = items
+            local meta = player.get_meta and player:get_meta()
+            if meta then
+                meta:set_string("deathstats:stashed_main", core.serialize(items))
+            end
+            local sz = (inv.get_size and inv:get_size("main")) or #items
+            for i = 1, sz do
+                inv:set_stack("main", i, "")
+            end
+        end
+    end
+    if data and data.stashed_main and player.get_inventory then
+        local inv = player:get_inventory()
+        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+            local sz = (inv.get_size and inv:get_size("main")) or #data.stashed_main
+            for i = 1, sz do
+                local cur_st = inv.get_stack and inv:get_stack("main", i)
+                if not deathstats.is_stack_empty(cur_st) then
+                    inv:set_stack("main", i, "")
+                end
             end
         end
     end
@@ -2732,9 +2740,14 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
         data.bones_pos = bones_pos
         local new_center = bones_pos
         data.orbit_center = new_center
-        if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
-            data.corpse:set_pos(vector.new(bones_pos.x, bones_pos.y + 0.5, bones_pos.z))
+        if data.corpse then
+            if data.corpse.remove then
+                pcall(function() data.corpse:remove() end)
+            end
+            data.corpse = nil
         end
+        data.corpse_pos = nil
+        data.corpse_visuals = nil
         if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
             data.anchor:set_pos(new_center)
         end
@@ -2903,6 +2916,8 @@ function deathstats.set_death_camera(player, death_info)
     local ppos = (saved_corpse and saved_corpse.pos) or player:get_pos()
     if not ppos then return end
     local bones_pos = deathstats.find_player_bones(player)
+    local should_show_bones = deathstats.get_bones_mode()
+    local expect_bones = should_show_bones or (bones_pos ~= nil)
     local surface_y = (saved_corpse and saved_corpse.pos.y) or deathstats.find_ground_surface(ppos, bones_pos, death_info)
     local corpse_pos = vector.new(ppos.x, surface_y, ppos.z)
     local in_liquid = deathstats.is_in_liquid(ppos, death_info)
@@ -3005,16 +3020,20 @@ function deathstats.set_death_camera(player, death_info)
         }))
     end
 
-    local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+    local corpse = nil
+    if not expect_bones then
+        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+    end
     local particle_spawners = nil
     if deathstats.config.enable_corpse_particles ~= false then
-        particle_spawners = deathstats.spawn_corpse_particles(corpse_pos, death_info)
+        local particle_pos = bones_pos or corpse_pos
+        particle_spawners = deathstats.spawn_corpse_particles(particle_pos, death_info)
     end
-    if not corpse and core.after then
+    if not expect_bones and not corpse and core.after then
         core.after(0.2, function()
             local p = core.get_player_by_name(name)
             local cdata = deathstats.player_camera_data[name]
-            if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse then
+            if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse and not cdata.has_bones and not cdata.expect_bones then
                 local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
@@ -3148,8 +3167,9 @@ function deathstats.set_death_camera(player, death_info)
     deathstats.player_camera_data[name] = {
         has_bones = (bones_pos ~= nil),
         bones_pos = bones_pos,
-        corpse_pos = corpse_pos,
-        corpse_visuals = visuals,
+        expect_bones = expect_bones,
+        corpse_pos = (not expect_bones) and corpse_pos or nil,
+        corpse_visuals = (not expect_bones) and visuals or nil,
         orbit_center = orbit_center,
         orbit_angle = initial_angle,
         orbit_radius = radius,

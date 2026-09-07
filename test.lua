@@ -3371,4 +3371,100 @@ do
     print("  [PASS] Starvation detection & hbhunger integration (set_hp, fallback, priority, race immunity, cleanup)")
 end
 
-print("\nALL 41 TEST SUITES PASSED SUCCESSFULLY!\n")
+-- TEST 42: Bones Mod Settings Compatibility & Corpse Suppression
+do
+    print("\n--- TEST 42: Bones Mod Settings Compatibility & Corpse Suppression ---")
+
+    -- 1. Helper: deathstats.get_bones_mode()
+    core.loaded_mods["bones"] = nil
+    core.settings:set("bones_mode", "bones")
+    local should_show_bones, mode, has_mod = deathstats.get_bones_mode()
+    assert(has_mod == false, "has_bones_mod must be false when bones mod is not loaded")
+    assert(should_show_bones == false, "should_show_bones must be false when bones mod is not loaded")
+    assert(mode == "bones", "mode must be bones")
+
+    core.loaded_mods["bones"] = "/path/to/bones"
+    core.settings:set("bones_mode", "bones")
+    local show_b, mode_b, has_b = deathstats.get_bones_mode()
+    assert(has_b == true, "has_bones_mod must be true when loaded_mods has bones")
+    assert(mode_b == "bones", "mode must be 'bones'")
+    assert(show_b == true, "should_show_bones must be true when bones_mode == 'bones'")
+
+    core.settings:set("bones_mode", "drop")
+    local show_d, mode_d = deathstats.get_bones_mode()
+    assert(mode_d == "drop", "mode must be 'drop'")
+    assert(show_d == false, "should_show_bones must be false when bones_mode == 'drop'")
+
+    core.settings:set("bones_mode", "keep")
+    local show_k, mode_k = deathstats.get_bones_mode()
+    assert(mode_k == "keep", "mode must be 'keep'")
+    assert(show_k == false, "should_show_bones must be false when bones_mode == 'keep'")
+
+    -- 2. Corpse suppression when bones_mode == "bones":
+    -- When player dies with bones_mode == "bones", deathstats must NOT spawn deathstats:corpse
+    core.settings:set("bones_mode", "bones")
+    local p_bones_user = create_mock_player("BonesUser")
+    p_bones_user:set_pos({ x = 50, y = 10, z = 50 })
+    p_bones_user:set_hp(0)
+
+    deathstats.trigger_death_screen(p_bones_user, { type = "punch" })
+    local cdata_bones = deathstats.player_camera_data["BonesUser"]
+    assert(cdata_bones ~= nil, "Camera data must be initialized")
+    assert(cdata_bones.expect_bones == true, "expect_bones must be true when bones_mode == 'bones'")
+    assert(cdata_bones.corpse == nil, "Corpse entity must NOT be spawned when bones_mode == 'bones'")
+    assert(cdata_bones.corpse_pos == nil, "corpse_pos must be nil when expecting bones")
+
+    -- 3. Delayed bones placement: orbit locks onto bones, corpse remains nil
+    local bones_node_pos = { x = 50, y = 10, z = 50 }
+    core.set_node(bones_node_pos, { name = "bones:bones" })
+    core.on_globalstep(0.1)
+
+    assert(cdata_bones.has_bones == true, "has_bones must be detected by update_death_camera")
+    assert(cdata_bones.bones_pos.x == 50 and cdata_bones.bones_pos.y == 10 and cdata_bones.bones_pos.z == 50,
+        "bones_pos must match bones node coordinates")
+    assert(cdata_bones.orbit_center.x == 50 and cdata_bones.orbit_center.y == 10 and cdata_bones.orbit_center.z == 50,
+        "Orbit center must be centered directly on the bones node")
+    assert(cdata_bones.corpse == nil, "Corpse entity must remain nil after bones placed")
+
+    -- 4. Corpse purge: if a corpse entity existed, update_death_camera and aim_camera_at_bones immediately remove it
+    local dummy_corpse_removed = false
+    local dummy_corpse = {
+        is_valid = function() return true end,
+        remove = function() dummy_corpse_removed = true end,
+    }
+    cdata_bones.corpse = dummy_corpse
+    cdata_bones.has_bones = false -- simulate before detection
+    core.on_globalstep(0.1)
+    assert(dummy_corpse_removed == true, "Existing corpse must be removed upon delayed bones detection")
+    assert(cdata_bones.corpse == nil, "Corpse reference must be cleared")
+
+    dummy_corpse_removed = false
+    cdata_bones.corpse = dummy_corpse
+    deathstats.aim_camera_at_bones(p_bones_user, bones_node_pos)
+    assert(dummy_corpse_removed == true, "Existing corpse must be removed by aim_camera_at_bones")
+    assert(cdata_bones.corpse == nil, "Corpse reference must be cleared by aim_camera_at_bones")
+
+    -- 5. Fallback: when bones mod is absent, corpse IS spawned
+    core.loaded_mods["bones"] = nil
+    core.world_nodes = {}
+    core.on_respawnplayer(p_bones_user)
+    p_bones_user:set_hp(0)
+    deathstats.set_death_camera(p_bones_user)
+    local cdata_nobones = deathstats.player_camera_data["BonesUser"]
+    assert(cdata_nobones ~= nil, "Camera data must exist")
+    assert(cdata_nobones.expect_bones == false, "expect_bones must be false when bones mod is absent")
+    assert(cdata_nobones.corpse ~= nil, "Corpse entity must be spawned when bones mod is not active")
+
+    -- 6. Clean up
+    core.on_respawnplayer(p_bones_user)
+    core.settings:set("bones_mode", "bones")
+    core.loaded_mods["bones"] = nil
+
+    print("  [PASS] Bones mod settings compatibility, corpse suppression & bones fallback")
+end
+
+print("\nALL 42 TEST SUITES PASSED SUCCESSFULLY!")
+
+
+
+
