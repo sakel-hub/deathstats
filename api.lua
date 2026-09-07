@@ -332,6 +332,69 @@ function deathstats.stack_to_string(stack)
 end
 
 
+--- Check whether an entire inventory list is empty
+---@param inv InvRef The inventory reference
+---@param list_name string The inventory list name
+---@return boolean is_empty True if list is empty or has no items
+function deathstats.is_inventory_list_empty(inv, list_name)
+    if not inv then return true end
+    if inv.is_empty then
+        local ok, empty = pcall(function() return inv:is_empty(list_name) end)
+        if ok and type(empty) == "boolean" then
+            return empty
+        end
+    end
+    if inv.get_list then
+        local list = inv:get_list(list_name)
+        if not list or #list == 0 then return true end
+        for _, st in ipairs(list) do
+            if not deathstats.is_stack_empty(st) then
+                return false
+            end
+        end
+        return true
+    end
+    return true
+end
+
+--- Serialize an inventory list into an array of itemstrings
+---@param inv InvRef The inventory reference
+---@param list_name string The inventory list name
+---@return string[] items Array of itemstrings
+function deathstats.serialize_inventory_list(inv, list_name)
+    local items = {}
+    if not inv or not inv.get_list then return items end
+    local list = inv:get_list(list_name)
+    if not list then return items end
+    for idx, item in ipairs(list) do
+        if item and not deathstats.is_stack_empty(item) then
+            items[idx] = deathstats.stack_to_string(item)
+        else
+            items[idx] = ""
+        end
+    end
+    return items
+end
+
+--- Deserialize an array of itemstrings back into an inventory list
+---@param inv InvRef The inventory reference
+---@param list_name string The inventory list name
+---@param items string[] Array of itemstrings
+function deathstats.deserialize_inventory_list(inv, list_name, items)
+    if not inv or not inv.set_stack or not items then return end
+    local list_size = (inv.get_size and inv:get_size(list_name)) or 0
+    if inv.set_size and list_size < #items then
+        inv:set_size(list_name, #items)
+        list_size = #items
+    end
+    local max_idx = math.max(#items, list_size)
+    for idx = 1, max_idx do
+        local stack_str = items[idx] or ""
+        inv:set_stack(list_name, idx, stack_str)
+    end
+end
+
+
 ---@param player ObjectRef The player object who should receive the audio effect
 function deathstats.play_death_sound(player)
     if not deathstats.config.enable_sounds or not player then
@@ -1264,11 +1327,16 @@ core.register_entity("deathstats:camera_anchor", {
 core.register_item("deathstats:camera_hand", {
     type = "none",
     range = 0,
+    liquids_pointable = false,
+    pointable = false,
+    pointabilities = {
+        nodes = {},
+        objects = {},
+    },
     wield_image = "deathstats_transparent.png",
     inventory_image = "deathstats_transparent.png",
     description = "",
     groups = { not_in_creative_inventory = 1 },
-    pointable = false,
     tool_capabilities = {
         full_punch_interval = 999999,
         max_drop_level = 0,
@@ -1882,6 +1950,37 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
+    -- Defer main inventory stashing until after on_dieplayer has completed (dtime > 0)
+    -- This allows bones and external drop mods to handle corpse inventory drops without interference.
+    -- If keep_inventory or creative is active, stashing main ensures zero-reach camera hand takes effect.
+    if dtime and dtime > 0 and data and not data.stashed_main and player.get_inventory then
+        local inv = player:get_inventory()
+        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+            local items = deathstats.serialize_inventory_list(inv, "main")
+            data.stashed_main = items
+            local meta = player.get_meta and player:get_meta()
+            if meta then
+                meta:set_string("deathstats:stashed_main", core.serialize(items))
+            end
+            local sz = (inv.get_size and inv:get_size("main")) or #items
+            for i = 1, sz do
+                inv:set_stack("main", i, "")
+            end
+        end
+    end
+    if dtime and dtime > 0 and data and data.stashed_main and player.get_inventory then
+        local inv = player:get_inventory()
+        if inv and not deathstats.is_inventory_list_empty(inv, "main") then
+            local sz = (inv.get_size and inv:get_size("main")) or #data.stashed_main
+            for i = 1, sz do
+                local cur_st = inv.get_stack and inv:get_stack("main", i)
+                if not deathstats.is_stack_empty(cur_st) then
+                    inv:set_stack("main", i, "")
+                end
+            end
+        end
+    end
+
     -- 1c. Check if camera anchor needs to be re-instantiated if lost across engine reload
     if (not data.anchor or (data.anchor.is_valid and not data.anchor:is_valid())) and data.orbit_center then
         local new_anchor = core.add_entity(data.orbit_center, "deathstats:camera_anchor")
@@ -2148,14 +2247,33 @@ function deathstats.restore_player_inventory_and_hand(player)
     local meta = player.get_meta and player:get_meta()
     local restored = false
 
-    -- 1. Clear any legacy stashed inventory metadata without modifying player inventory
-    if meta then
-        if meta:get_string("deathstats:stashed_main") ~= "" then
+    -- 1. Restore Main Inventory if stashed
+    local stashed_main = (data and data.stashed_main)
+    if not stashed_main and meta then
+        local raw = meta:get_string("deathstats:stashed_main")
+        if raw and raw ~= "" then
+            local des = core.deserialize(raw)
+            if type(des) == "table" then
+                stashed_main = des
+            end
+        end
+    end
+
+    if stashed_main then
+        deathstats.deserialize_inventory_list(inv, "main", stashed_main)
+        if data then
+            data.stashed_main = nil
+        end
+        if meta then
             meta:set_string("deathstats:stashed_main", "")
         end
-        if meta:get_string("deathstats:stashed_offhand") ~= "" then
-            meta:set_string("deathstats:stashed_offhand", "")
-        end
+        restored = true
+    elseif meta and meta:get_string("deathstats:stashed_main") ~= "" then
+        meta:set_string("deathstats:stashed_main", "")
+    end
+
+    if meta and meta:get_string("deathstats:stashed_offhand") ~= "" then
+        meta:set_string("deathstats:stashed_offhand", "")
     end
 
     -- 2. Restore Hand Inventory Slot / Reach
@@ -2324,6 +2442,17 @@ function deathstats.set_death_camera(player, death_info)
             end
         elseif saved_hand_stack or saved_hand_size > 0 then
             meta:set_string("deathstats:stashed_hand", core.serialize({ size = saved_hand_size, stack = saved_hand_stack }))
+        end
+    end
+
+    local stashed_main = nil
+    if meta then
+        local raw_main = meta:get_string("deathstats:stashed_main")
+        if raw_main and raw_main ~= "" then
+            local des_main = core.deserialize(raw_main)
+            if type(des_main) == "table" then
+                stashed_main = des_main
+            end
         end
     end
 
@@ -2510,6 +2639,7 @@ function deathstats.set_death_camera(player, death_info)
         old_nametag_attributes = old_nametag_attributes,
         saved_hand_size = saved_hand_size,
         saved_hand_stack = saved_hand_stack,
+        stashed_main = stashed_main,
     }
 
     -- 7. Immediately orient camera to starting orbit vantage
@@ -2760,6 +2890,34 @@ end
 if core.register_on_item_eat then
     core.register_on_item_eat(function(hp_change, replace_with_item, itemstack, user, pointed_thing)
         if user and user:is_player() and deathstats.dead_players[user:get_player_name()] then
+            return itemstack
+        end
+    end)
+end
+
+if core.register_on_punchplayer then
+    core.register_on_punchplayer(function(player, hitter, time_from_last_punch, tool_capabilities, dir, damage)
+        local p_name = player and player:is_player() and player:get_player_name()
+        local h_name = hitter and hitter:is_player() and hitter:get_player_name()
+        if (p_name and deathstats.dead_players[p_name]) or (h_name and deathstats.dead_players[h_name]) then
+            return true
+        end
+    end)
+end
+
+if core.register_on_rightclickplayer then
+    core.register_on_rightclickplayer(function(player, clicker)
+        local p_name = player and player:is_player() and player:get_player_name()
+        local c_name = clicker and clicker:is_player() and clicker:get_player_name()
+        if (p_name and deathstats.dead_players[p_name]) or (c_name and deathstats.dead_players[c_name]) then
+            return true
+        end
+    end)
+end
+
+if core.register_on_item_pickup then
+    core.register_on_item_pickup(function(itemstack, picker, pointed_thing)
+        if picker and picker:is_player() and deathstats.dead_players[picker:get_player_name()] then
             return itemstack
         end
     end)

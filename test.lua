@@ -87,7 +87,11 @@ core = {
         ["mcl_mobs:creeper"] = { description = "Creeper" },
     },
     get_current_modname = function() return "deathstats" end,
-    get_modpath = function() return "." end,
+    loaded_mods = { ["deathstats"] = ".", ["hudbars"] = "." },
+    get_modpath = function(modname)
+        if not modname or modname == "deathstats" then return "." end
+        return core.loaded_mods and core.loaded_mods[modname]
+    end,
     colorize = function(color, text)
         return "\27(c@" .. color .. ")" .. text .. "\27E"
     end,
@@ -125,6 +129,9 @@ core = {
         local k = string.format("%d,%d,%d", math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5))
         local val = core.world_nodes[k] or pos.node_name or "air"
         return { name = (type(val) == "table" and val.name) or val }
+    end,
+    get_node_or_nil = function(pos)
+        return core.get_node(pos)
     end,
     set_node = function(pos, node)
         local k = string.format("%d,%d,%d", math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5))
@@ -203,6 +210,17 @@ core = {
     end,
     after = function(delay, func, ...)
         table.insert(deferred_tasks, { func = func, args = { ... } })
+    end,
+    active_particlespawners = {},
+    next_particlespawner_id = 1,
+    add_particlespawner = function(def)
+        local id = core.next_particlespawner_id
+        core.next_particlespawner_id = core.next_particlespawner_id + 1
+        core.active_particlespawners[id] = def
+        return id
+    end,
+    delete_particlespawner = function(id, _playername)
+        core.active_particlespawners[id] = nil
     end,
     spawned_entities = {},
     add_entity = function(pos, name)
@@ -380,6 +398,8 @@ core.register_on_dignode, core.on_dignode = make_dispatcher()
 core.register_on_placenode, core.on_placenode = make_dispatcher()
 core.register_on_craft, core.on_craft = make_dispatcher()
 core.register_on_item_eat, core.on_item_eat = make_dispatcher()
+core.register_on_rightclickplayer, core.on_rightclickplayer = make_dispatcher()
+core.register_on_item_pickup, core.on_item_pickup = make_dispatcher()
 core.register_on_player_hpchange, core.on_player_hpchange = make_dispatcher()
 core.register_on_joinplayer, core.on_joinplayer = make_dispatcher()
 core.register_on_leaveplayer, core.on_leaveplayer = make_dispatcher()
@@ -1098,6 +1118,9 @@ local expected_methods = {
     "is_player_online",
     "zero_player_velocity",
     "restore_player_inventory_and_hand",
+    "is_inventory_list_empty",
+    "serialize_inventory_list",
+    "deserialize_inventory_list",
 }
 
 for _, method_name in ipairs(expected_methods) do
@@ -2358,11 +2381,15 @@ end
 do
     print("\n--- TEST 34: Orbiting Camera Non-Pointability & Zero-Reach Protection ---")
 
-    -- A. Item registration verification: deathstats:camera_hand must have range = 0 and pointable = false
+    -- A. Item registration verification: deathstats:camera_hand must have range = 0, pointable = false, liquids_pointable = false, pointabilities
     local hand_def = core.registered_items["deathstats:camera_hand"]
     assert(hand_def ~= nil, "deathstats:camera_hand item must be registered")
     assert(hand_def.range == 0, "deathstats:camera_hand range must be exactly 0")
     assert(hand_def.pointable == false, "deathstats:camera_hand pointable must be false")
+    assert(hand_def.liquids_pointable == false, "deathstats:camera_hand liquids_pointable must be false")
+    assert(type(hand_def.pointabilities) == "table", "deathstats:camera_hand pointabilities must be a table")
+    assert(type(hand_def.pointabilities.nodes) == "table" and type(hand_def.pointabilities.objects) == "table",
+        "deathstats:camera_hand pointabilities must define empty nodes and objects tables")
 
     -- B. Verify corpse entity selectionbox and pointable
     local corpse_def = core.registered_entities["deathstats:corpse"]
@@ -2424,7 +2451,16 @@ do
     assert(re_hand_name == "deathstats:camera_hand",
         "update_death_camera must re-enforce deathstats:camera_hand in hand inventory list")
 
-    -- E. Action cancellation guards: punch, place, dig, eat callbacks blocked while dead
+    -- Verify main inventory is stashed and cleared on globalstep tick so camera_hand takes effect
+    local main_during_orbit = inv:get_list("main")
+    local is_main_empty = true
+    for _, st in ipairs(main_during_orbit or {}) do
+        if st and not st:is_empty() then is_main_empty = false end
+    end
+    assert(is_main_empty, "Main inventory must be cleared to empty during camera orbit so camera_hand takes effect")
+    assert(cdata.stashed_main ~= nil and #cdata.stashed_main >= 3, "Stashed main inventory must be preserved in camera data")
+
+    -- E. Action cancellation guards: punch, place, dig, eat, rightclick, pickup callbacks blocked while dead
     deathstats.dead_players["OrbitReachTester"] = true
 
     local punch_result = core.on_punchnode({ x = 120, y = 5, z = 121 }, { name = "default:stone" }, p_orbit_reach, {})
@@ -2438,6 +2474,19 @@ do
 
     local eat_result = core.on_item_eat(2, "", "default:apple", p_orbit_reach, {})
     assert(eat_result == "default:apple", "core.on_item_eat must prevent item consumption for dead player")
+
+    local punch_player_res = core.on_punchplayer(p_orbit_reach, player1, 1.0, nil, nil, 10)
+    assert(punch_player_res == true, "core.on_punchplayer must block dead victim from receiving punch damage")
+
+    local punch_by_dead_res = core.on_punchplayer(player1, p_orbit_reach, 1.0, nil, nil, 10)
+    assert(punch_by_dead_res == true, "core.on_punchplayer must block dead player from punching others")
+
+    local rc_res = core.on_rightclickplayer(p_orbit_reach, player1)
+    assert(rc_res == true, "core.on_rightclickplayer must block rightclick interaction for dead player")
+
+    local pickup_item = rawget(_G, "ItemStack")("default:diamond 5")
+    local pickup_res = core.on_item_pickup(pickup_item, p_orbit_reach, {})
+    assert(pickup_res == pickup_item, "core.on_item_pickup must return uncollected itemstack for dead player")
 
     -- F. Respawn restores original inventory and hand
     deathstats.reset_camera(p_orbit_reach)
@@ -2880,6 +2929,5 @@ do
     print("  [PASS] Server disconnect during death screen & engine show_death_screen reconnect persistence")
 end
 
-print("\nALL 38 TEST SUITES PASSED SUCCESSFULLY!")
 
-
+print("\nALL 38 TEST SUITES PASSED SUCCESSFULLY!\n")
