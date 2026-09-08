@@ -10,9 +10,6 @@
 
 local S = core.get_translator(core.get_current_modname())
 local F = core.formspec_escape
-local C = core.colorize or function(color, text)
-    return "\27(c@" .. color .. ")" .. text .. "\27E"
-end
 local copy = table.copy
 local atan2 = math.atan2 or math.atan
 
@@ -1873,7 +1870,7 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
     elseif effect_type == "fire" then
         -- Billowing ash smoke rising continuously into the air from the charred corpse
         return {
-            amount = 8,
+            amount = 12,
             time = 0, -- Continuous spawner
             collisiondetection = true,
             collision_removal = false,
@@ -2105,7 +2102,6 @@ function deathstats.get_player_visuals(player)
     local clothing_mod = rawget(_G, "clothing")
 
     local mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or props.mesh or "character.b3d"
-    local textures = copy(props.textures or { "character.png" })
     local visual_size = copy(props.visual_size or { x = 1, y = 1, z = 1 })
     local yaw = player:get_look_horizontal() or 0
 
@@ -2115,18 +2111,118 @@ function deathstats.get_player_visuals(player)
 
     local drops_armor = deathstats.is_armor_dropped(player)
 
-    -- 1. 3d_armor support: composite skin, armor, wielditem textures
-    if armor_mod and armor_mod.textures and armor_mod.textures[name] then
-        local a_tex = armor_mod.textures[name]
-        local skin_tex = a_tex.skin or "character.png"
+    -- Detect if using the 4-slot skinsdb model (skinsdb_3d_armor_character_5.b3d)
+    local is_skinsdb = (mesh == "skinsdb_3d_armor_character_5.b3d")
+        or (mesh and mesh:find("skinsdb") ~= nil)
+        or (skins_mod and skins_mod.armor_loaded == true)
+        or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props.textures and #props.textures >= 4)))
+
+    -- Detect if using the standard 3-slot 3d_armor model (3d_armor_character.b3d)
+    local is_3d_armor = not is_skinsdb and (
+        (mesh == "3d_armor_character.b3d")
+        or (armor_mod and ((armor_mod.textures and armor_mod.textures[name]) or (mesh and mesh:find("3d_armor"))))
+        or (armor_mod and props.textures and #props.textures == 3)
+    )
+
+    local textures
+
+    -- 1. skinsdb + 3d_armor support: 4 material slots
+    -- Slot 1: v10 (1.0 skin or blank.png, + cape)
+    -- Slot 2: v18 (1.8 skin or blank.png, + clothing overlays)
+    -- Slot 3: 3d_armor geometry overlay (blank.png if dropped/naked)
+    -- Slot 4: wielditem (blank.png on corpse)
+    if is_skinsdb then
+        mesh = "skinsdb_3d_armor_character_5.b3d"
+
+        local ver = "1.0"
+        local skin_tex = "character.png"
+
+        if skins_mod and skins_mod.get_player_skin then
+            local skin = skins_mod.get_player_skin(player)
+            if skin then
+                ver = (skin.get_meta and skin:get_meta("format")) or "1.0"
+                skin_tex = (skin.get_texture and skin:get_texture()) or skin_tex
+                local vs_x = skin.get_meta and skin:get_meta("visual_size_x")
+                local vs_y = skin.get_meta and skin:get_meta("visual_size_y")
+                if vs_x and vs_y then
+                    visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
+                end
+            end
+        elseif props.textures and #props.textures >= 2 then
+            if props.textures[2] and props.textures[2] ~= "blank.png" and props.textures[2] ~= "" then
+                ver = "1.8"
+                skin_tex = props.textures[2]
+            elseif props.textures[1] and props.textures[1] ~= "blank.png" and props.textures[1] ~= "" then
+                ver = "1.0"
+                skin_tex = props.textures[1]
+            end
+        end
+
+        local v10_texture = (ver == "1.8") and "blank.png" or skin_tex
+        local v18_texture = (ver == "1.8") and skin_tex or "blank.png"
+
+        -- Support for clothing on skinsdb
+        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
+            local c = clothing_mod.player_textures[name]
+            local cape = c.cape
+            local layers = {}
+            for k, v in pairs(c) do
+                if k ~= "skin" and k ~= "cape" and v and v ~= "" and v ~= "blank.png" then
+                    table.insert(layers, v)
+                end
+            end
+            if #layers > 0 then
+                local overlay = table.concat(layers, "^")
+                v18_texture = (v18_texture == "blank.png") and overlay or (v18_texture .. "^" .. overlay)
+            end
+            if cape and cape ~= "" and cape ~= "blank.png" then
+                v10_texture = (v10_texture == "blank.png") and cape or (v10_texture .. "^" .. cape)
+            end
+        end
+
+        -- Slot 3: 3D Armor mesh geometry
+        local armor_texture = "blank.png"
+        if not drops_armor and armor_mod and armor_mod.textures and armor_mod.textures[name] then
+            local a_tex = armor_mod.textures[name]
+            if a_tex.armor and a_tex.armor ~= "" and a_tex.armor ~= "blank.png" and a_tex.armor ~= "3d_armor_trans.png" then
+                armor_texture = a_tex.armor
+            end
+        elseif not drops_armor and props.textures and props.textures[3] and props.textures[3] ~= "blank.png" and props.textures[3] ~= "3d_armor_trans.png" then
+            armor_texture = props.textures[3]
+        end
+
+        -- Slot 4: Wielditem (corpse holds nothing, so keep blank.png)
+        local wielditem_texture = "blank.png"
+
+        textures = {
+            v10_texture,
+            v18_texture,
+            armor_texture,
+            wielditem_texture,
+        }
+
+    -- 2. Standalone 3d_armor support: 3 material slots (skin, armor, wielditem)
+    elseif is_3d_armor then
+        mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or "3d_armor_character.b3d"
+        local a_tex = (armor_mod and armor_mod.textures and armor_mod.textures[name]) or {}
+        local skin_tex = a_tex.skin or (props.textures and props.textures[1]) or "character.png"
         local armor_tex = a_tex.armor or "3d_armor_trans.png"
         local wield_tex = a_tex.wielditem or "3d_armor_trans.png"
 
         if drops_armor then
-            -- Armor was/will be ejected from inventory on death (dropped into bones or on ground).
-            -- Reflect the corpse without armor and without wielded weapon.
             armor_tex = "3d_armor_trans.png"
             wield_tex = "3d_armor_trans.png"
+        end
+
+        -- Clothing support on 3d_armor
+        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
+            local c = clothing_mod.player_textures[name]
+            if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
+                skin_tex = skin_tex .. "^" .. c.clothing
+            end
+            if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
+                skin_tex = skin_tex .. "^" .. c.cape
+            end
         end
 
         textures = {
@@ -2134,59 +2230,60 @@ function deathstats.get_player_visuals(player)
             armor_tex,
             wield_tex,
         }
-    -- 2. skinsdb support
-    elseif skins_mod and skins_mod.get_player_skin then
-        local skin = skins_mod.get_player_skin(player)
-        if skin then
-            local skin_tex = skin:get_texture()
-            if skin_tex then
-                textures[1] = skin_tex
+
+    -- 3. Fallback skin mods: skinsdb (legacy/without armor), simple_skins, wardrobe, player_api, mcl_skins
+    else
+        textures = copy(props.textures or { "character.png" })
+
+        if skins_mod and skins_mod.get_player_skin then
+            local skin = skins_mod.get_player_skin(player)
+            if skin then
+                local skin_tex = skin.get_texture and skin:get_texture()
+                if skin_tex then
+                    textures[1] = skin_tex
+                end
+                local vs_x = skin.get_meta and skin:get_meta("visual_size_x")
+                local vs_y = skin.get_meta and skin:get_meta("visual_size_y")
+                if vs_x and vs_y then
+                    visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
+                end
             end
-            local vs_x = skin:get_meta("visual_size_x")
-            local vs_y = skin:get_meta("visual_size_y")
-            if vs_x and vs_y then
-                visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
+        elseif skins_mod and skins_mod.skins and skins_mod.skins[name] then
+            textures = { skins_mod.skins[name] .. ".png" }
+        elseif wardrobe_mod and wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
+            textures = { wardrobe_mod.playerSkins[name] }
+        elseif player_api_mod and player_api_mod.get_textures then
+            local p_tex = player_api_mod.get_textures(player)
+            if p_tex and #p_tex > 0 then
+                textures = copy(p_tex)
+            end
+        elseif mcl_skins_mod and mcl_skins_mod.get_player_skin then
+            local skin_data = mcl_skins_mod.get_player_skin(player)
+            if type(skin_data) == "table" and skin_data.texture then
+                textures[1] = skin_data.texture
+            elseif type(skin_data) == "string" then
+                textures[1] = skin_data
             end
         end
-    -- 3. simple_skins support
-    elseif skins_mod and skins_mod.skins and skins_mod.skins[name] then
-        textures = { skins_mod.skins[name] .. ".png" }
-    -- 4. wardrobe support
-    elseif wardrobe_mod and wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
-        textures = { wardrobe_mod.playerSkins[name] }
-    -- 5. player_api support
-    elseif player_api_mod and player_api_mod.get_textures then
-        local p_tex = player_api_mod.get_textures(player)
-        if p_tex and #p_tex > 0 then
-            textures = copy(p_tex)
-        end
-    -- 6. mcl_skins support
-    elseif mcl_skins_mod and mcl_skins_mod.get_player_skin then
-        local skin_data = mcl_skins_mod.get_player_skin(player)
-        if type(skin_data) == "table" and skin_data.texture then
-            textures[1] = skin_data.texture
-        elseif type(skin_data) == "string" then
-            textures[1] = skin_data
+
+        -- Clothing support
+        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
+            local c = clothing_mod.player_textures[name]
+            if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
+                textures[1] = (textures[1] or "character.png") .. "^" .. c.clothing
+            end
+            if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
+                textures[1] = (textures[1] or "character.png") .. "^" .. c.cape
+            end
         end
     end
 
-    -- 7. clothing support (layer clothing on top of skin)
-    if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
-        local c = clothing_mod.player_textures[name]
-        if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
-            textures[1] = (textures[1] or "character.png") .. "^" .. c.clothing
-        end
-        if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
-            textures[1] = (textures[1] or "character.png") .. "^" .. c.cape
-        end
-    end
-
-    -- 8. Fallback for transparent texture trap:
+    -- 4. Fallback for transparent texture trap:
     -- If textures only contains deathstats_transparent.png, recover original textures from metadata or default
     local is_transparent = true
     if type(textures) == "table" and #textures > 0 then
         for _, tex in ipairs(textures) do
-            if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" then
+            if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" and tex ~= "3d_armor_trans.png" then
                 is_transparent = false
                 break
             end
@@ -2207,7 +2304,13 @@ function deathstats.get_player_visuals(player)
         end
     end
     if is_transparent then
-        textures = { "character.png" }
+        if is_skinsdb then
+            textures = { "character.png", "blank.png", "blank.png", "blank.png" }
+        elseif is_3d_armor then
+            textures = { "character.png", "3d_armor_trans.png", "3d_armor_trans.png" }
+        else
+            textures = { "character.png" }
+        end
     end
 
     if meta then
@@ -3146,6 +3249,14 @@ function deathstats.set_death_camera(player, death_info)
         })
     end
     if player.set_properties then
+        local trans_tex = "deathstats_transparent.png"
+        local hidden_textures = { trans_tex }
+        if visuals.mesh == "skinsdb_3d_armor_character_5.b3d" or (visuals.mesh and visuals.mesh:find("skinsdb")) then
+            hidden_textures = { trans_tex, trans_tex, trans_tex, trans_tex }
+        elseif visuals.mesh == "3d_armor_character.b3d" or (visuals.mesh and visuals.mesh:find("3d_armor")) then
+            hidden_textures = { trans_tex, trans_tex, trans_tex }
+        end
+
         player:set_properties({
             is_visible = false,
             visual_size = { x = 0, y = 0, z = 0 },
@@ -3153,7 +3264,7 @@ function deathstats.set_death_camera(player, death_info)
             selectionbox = { 0, 0, 0, 0, 0, 0 },
             pointable = false,
             interaction_range = 0,
-            textures = { "deathstats_transparent.png" },
+            textures = hidden_textures,
             use_texture_alpha = true,
             show_on_minimap = false,
         })
@@ -4031,7 +4142,9 @@ function deathstats.show_death_formspec(player, death_info)
 
         -- Header: Last Life Summary
         "image[0.5,0.35;0.35,0.35;deathstats_icon_clock.png]",
-        "label[0.95,0.58;", F(C(c.text_gold, S("Last Life Summary"))), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_gold),
+        "label[0.95,0.58;", F(S("Last Life Summary")), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
         "label[0.95,0.85;", F(S("Survived: @1", time_str)), "]",
 
         -- Row 1: Combat Stats
@@ -4052,7 +4165,9 @@ function deathstats.show_death_formspec(player, death_info)
 
         -- Row 5: Fatal Blow Inset Box
         "box[0.5,2.88;4.6,1.52;" .. c.card_inset .. "]",
-        "label[0.7,3.16;", F(C(c.text_crimson, S("Fatal Blow:"))), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_crimson),
+        "label[0.7,3.16;", F(S("Fatal Blow:")), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
         "label[0.7,3.52;", F(deathstats.truncate_str(fatal_cause, 30)), "]",
         "label[0.7,3.95;", F(deathstats.truncate_str(fatal_weapon, 20) .. "  |  " .. dist_str), "]",
 
@@ -4104,7 +4219,9 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
 
         -- Header
         "image[0.7,0.32;0.4,0.4;deathstats_icon_skull.png]",
-        "label[1.25,0.58;", F(C(c.text_gold, S("LIFETIME DOSSIER: @1", name))), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_gold),
+        "label[1.25,0.58;", F(S("LIFETIME DOSSIER: @1", name)), "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
 
         -- Tab Bar Background Container
         "box[0.4,0.8;13.7,0.68;" .. c.tab_bar_bg .. "]",
@@ -4161,7 +4278,9 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
         table.insert(fs, "image[7.6,3.55;0.4,0.4;deathstats_icon_heart.png]")
         table.insert(fs, "label[8.2,3.75;" .. F(S("Items: @1 crafted / @2 eaten", deathstats.format_number(life.items_crafted or 0), deathstats.format_number(life.items_consumed or 0))) .. "]")
         table.insert(fs, "label[8.2,4.18;" .. F(S("Most Recent Cause:")) .. "]")
-        table.insert(fs, "label[8.2,4.58;" .. F(C(c.text_crimson, deathstats.truncate_str(life.last_cause or "None", 36))) .. "]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_crimson))
+        table.insert(fs, "label[8.2,4.58;" .. F(deathstats.truncate_str(life.last_cause or "None", 36)) .. "]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
 
     elseif tab == "ores" then
         -- Ores Breakdown Table (Dynamic Scrollable 2-Column Grid)

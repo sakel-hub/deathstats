@@ -1217,14 +1217,16 @@ deathstats.show_death_formspec(player1, {
     funny_note = "A royal execution.",
 })
 assert(core.last_formspec ~= nil, "Death formspec must be shown")
-assert(core.last_formspec.fs:find("\27%(c@"), "Death formspec must use core.colorize escape sequences for styled labels")
+assert(core.last_formspec.fs:find("style_type%[label;textcolor="), "Death formspec must use style_type[label;textcolor= for styled labels")
+assert(not core.last_formspec.fs:find("\27"), "Death formspec must not contain escape sequences to prevent translation errors")
 assert(not core.last_formspec.fs:find("style%[lbl_"), "Death formspec must not use non-functional style[lbl_ identifiers")
 
 deathstats.show_lifetime_stats_formspec(player1, "overview")
 assert(core.last_formspec ~= nil, "Lifetime formspec must be shown")
-assert(core.last_formspec.fs:find("\27%(c@"), "Lifetime formspec must use core.colorize escape sequences for styled labels")
+assert(core.last_formspec.fs:find("style_type%[label;textcolor="), "Lifetime formspec must use style_type[label;textcolor= for styled labels")
+assert(not core.last_formspec.fs:find("\27"), "Lifetime formspec must not contain escape sequences to prevent translation errors")
 assert(not core.last_formspec.fs:find("style%[lbl_"), "Lifetime formspec must not use non-functional style[lbl_ identifiers")
-print("  [PASS] Formspec colorization: core.colorize applied & non-functional style[lbl_ eliminated")
+print("  [PASS] Formspec colorization: style_type applied & escape sequences eliminated")
 
 -- TEST 20: Camera Look Packet Throttling & Globalstep Idle Fast Exit
 -- 1. Idle fast-exit: no dead players and no animations
@@ -1486,7 +1488,7 @@ assert(vis_fallback.textures[2] == "armor_chest.png", "Armor texture must be pre
 
 rawset(_G, "armor", nil)
 
--- 3. skinsdb compatibility
+-- 3. skinsdb compatibility (legacy / standalone without armor)
 rawset(_G, "skins", {
     get_player_skin = function(p)
         return {
@@ -1502,6 +1504,65 @@ rawset(_G, "skins", {
 local vis_skinsdb = deathstats.get_player_visuals(p_skin)
 assert(vis_skinsdb.textures[1] == "skinsdb_custom_texture.png", "skinsdb custom texture must be inherited")
 assert(vis_skinsdb.visual_size.x == 1.15, "skinsdb visual size must be inherited")
+
+-- 3b. skinsdb + 3d_armor unified 4-slot model compatibility
+-- Model: skinsdb_3d_armor_character_5.b3d
+-- Slot 1: v10 (1.0 skin/cape), Slot 2: v18 (1.8 skin/clothing), Slot 3: armor, Slot 4: wielditem
+p_skin:set_properties({ mesh = "skinsdb_3d_armor_character_5.b3d" })
+rawset(_G, "armor", {
+    textures = { ["SkinUser"] = { skin = "armor_skin.png", armor = "diamond_armor.png", wielditem = "sword.png" } },
+    config = { drop = false, destroy = false },
+})
+rawset(_G, "skins", {
+    armor_loaded = true,
+    get_player_skin = function(p)
+        return {
+            get_texture = function() return "steve_18.png" end,
+            get_meta = function(self, k)
+                if k == "format" then return "1.8" end
+                return nil
+            end,
+        }
+    end,
+})
+
+-- 3b-1: 1.8 skin format: Slot 1 is blank, Slot 2 is 1.8 skin, Slot 3 is armor, Slot 4 is blank
+local vis_skins_18 = deathstats.get_player_visuals(p_skin)
+assert(vis_skins_18.mesh == "skinsdb_3d_armor_character_5.b3d", "skinsdb mesh must be skinsdb_3d_armor_character_5.b3d")
+assert(#vis_skins_18.textures == 4, "skinsdb 3d_armor model must have exactly 4 texture slots")
+assert(vis_skins_18.textures[1] == "blank.png", "Slot 1 (v10) must be blank.png for 1.8 skin")
+assert(vis_skins_18.textures[2] == "steve_18.png", "Slot 2 (v18) must receive 1.8 skin texture")
+assert(vis_skins_18.textures[3] == "diamond_armor.png", "Slot 3 (armor) must receive 3d_armor mesh overlay")
+assert(vis_skins_18.textures[4] == "blank.png", "Slot 4 (wielditem) must be blank.png on corpse")
+
+-- 3b-2: 1.0 skin format: Slot 1 is 1.0 skin, Slot 2 is blank, Slot 3 is armor, Slot 4 is blank
+rawset(_G, "skins", {
+    armor_loaded = true,
+    get_player_skin = function(p)
+        return {
+            get_texture = function() return "classic_10.png" end,
+            get_meta = function(self, k)
+                if k == "format" then return "1.0" end
+                return nil
+            end,
+        }
+    end,
+})
+local vis_skins_10 = deathstats.get_player_visuals(p_skin)
+assert(#vis_skins_10.textures == 4, "skinsdb 1.0 skin must have 4 texture slots")
+assert(vis_skins_10.textures[1] == "classic_10.png", "Slot 1 (v10) must receive 1.0 skin texture")
+assert(vis_skins_10.textures[2] == "blank.png", "Slot 2 (v18) must be blank.png for 1.0 skin")
+assert(vis_skins_10.textures[3] == "diamond_armor.png", "Slot 3 (armor) must receive diamond armor")
+
+-- 3b-3: Dropped armor: Slot 3 must be blank.png (naked corpse)
+rawget(_G, "armor").config = { drop = true, destroy = false }
+local vis_skins_dropped = deathstats.get_player_visuals(p_skin)
+assert(vis_skins_dropped.textures[3] == "blank.png", "Slot 3 must be blank.png when armor is dropped")
+assert(vis_skins_dropped.armor_dropped == true, "armor_dropped must be true")
+
+-- Reset mock state
+rawset(_G, "armor", nil)
+p_skin:set_properties({ mesh = "character.b3d" })
 rawset(_G, "skins", nil)
 
 -- 4. simple_skins compatibility
