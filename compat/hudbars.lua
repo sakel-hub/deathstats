@@ -24,7 +24,7 @@ local compat = deathstats.compat_hudbars
 if hb.unhide_hudbar then
     compat.orig_unhide_hudbar = hb.unhide_hudbar
     function hb.unhide_hudbar(player, identifier)
-        if not player or not player.is_player or not player:is_player() then
+        if not player or not player:is_player() then
             return false
         end
         local name = player:get_player_name()
@@ -40,7 +40,7 @@ end
 if hb.change_hudbar then
     compat.orig_change_hudbar = hb.change_hudbar
     function hb.change_hudbar(player, identifier, ...)
-        if not player or not player.is_player or not player:is_player() then
+        if not player or not player:is_player() then
             return false
         end
         local name = player:get_player_name()
@@ -56,7 +56,7 @@ end
 if hb.init_hudbar then
     compat.orig_init_hudbar = hb.init_hudbar
     function hb.init_hudbar(player, identifier, start_value, start_max, start_hidden)
-        if not player or not player.is_player or not player:is_player() then
+        if not player or not player:is_player() then
             return false
         end
         local name = player:get_player_name()
@@ -70,47 +70,46 @@ end
 --- Forcibly hide all hudbars and pause hudbars globalstep updates for a deceased player
 ---@param player ObjectRef The deceased player object
 function compat.hide(player)
-    if not player or not player.is_player or not player:is_player() then return end
+    if not player or not player:is_player() then return end
     local name = player:get_player_name()
     if not name then return end
 
+    local hb_mod = rawget(_G, "hb")
+    if not hb_mod then return end
+
     -- 1. Pause hudbars automatic globalstep updates by removing player from hb.players
-    if hb.players and hb.players[name] then
+    if hb_mod.players and hb_mod.players[name] then
         compat.paused_players[name] = true
-        hb.players[name] = nil
+        hb_mod.players[name] = nil
     end
 
     -- 2. Forcibly hide and zero-scale all registered HUD bars across all bar types
     -- Covers: progress_bar, statbar_classic, and statbar_modern
-    if hb.hudtables then
-        for identifier, hudtable in pairs(hb.hudtables) do
+    if hb_mod.hudtables then
+        for identifier, hudtable in pairs(hb_mod.hudtables) do
             -- Call built-in hide
-            pcall(function()
-                if compat.orig_hide_hudbar then
-                    compat.orig_hide_hudbar(player, identifier)
-                elseif hb.hide_hudbar then
-                    hb.hide_hudbar(player, identifier)
-                end
-            end)
+            if compat.orig_hide_hudbar then
+                compat.orig_hide_hudbar(player, identifier)
+            elseif hb_mod.hide_hudbar then
+                hb_mod.hide_hudbar(player, identifier)
+            end
 
             -- Direct zero-scaling on all underlying engine HUD IDs to guarantee invisibility
             local ids = hudtable.hudids and hudtable.hudids[name]
             if ids then
                 if ids.bg then
-                    pcall(function() player:hud_change(ids.bg, "scale", { x = 0, y = 0 }) end)
+                    player:hud_change(ids.bg, "scale", { x = 0, y = 0 })
                 end
                 if ids.icon then
-                    pcall(function() player:hud_change(ids.icon, "scale", { x = 0, y = 0 }) end)
+                    player:hud_change(ids.icon, "scale", { x = 0, y = 0 })
                 end
                 if ids.bar then
-                    pcall(function()
-                        player:hud_change(ids.bar, "scale", { x = 0, y = 0 })
-                        player:hud_change(ids.bar, "number", 0)
-                        player:hud_change(ids.bar, "item", 0)
-                    end)
+                    player:hud_change(ids.bar, "scale", { x = 0, y = 0 })
+                    player:hud_change(ids.bar, "number", 0)
+                    player:hud_change(ids.bar, "item", 0)
                 end
                 if ids.text then
-                    pcall(function() player:hud_change(ids.text, "text", "") end)
+                    player:hud_change(ids.text, "text", "")
                 end
             end
 
@@ -136,32 +135,33 @@ end
 --- Restore hudbars visibility and resume hudbars globalstep updates upon player respawn
 ---@param player ObjectRef The respawned player object
 function compat.unhide(player)
-    if not player or not player.is_player or not player:is_player() then return end
+    if not player or not player:is_player() then return end
     local name = player:get_player_name()
     if not name then return end
 
+    local hb_mod = rawget(_G, "hb")
+    if not hb_mod then return end
+
     -- 1. Resume hudbars automatic globalstep updates
-    if compat.paused_players[name] or (hb.players and not hb.players[name]) then
+    if compat.paused_players[name] or (hb_mod.players and not hb_mod.players[name]) then
         compat.paused_players[name] = nil
-        if hb.players then
-            hb.players[name] = player
+        if hb_mod.players then
+            hb_mod.players[name] = player
         end
     end
 
     -- 2. Restore all HUD bars
-    if hb.hudtables then
-        for identifier, hudtable in pairs(hb.hudtables) do
+    if hb_mod.hudtables then
+        for identifier, hudtable in pairs(hb_mod.hudtables) do
             local ids = hudtable.hudids and hudtable.hudids[name]
             if ids and ids.bar then
-                pcall(function() player:hud_change(ids.bar, "scale", { x = 1, y = 1 }) end)
+                player:hud_change(ids.bar, "scale", { x = 1, y = 1 })
             end
-            pcall(function()
-                if compat.orig_unhide_hudbar then
-                    compat.orig_unhide_hudbar(player, identifier)
-                elseif hb.unhide_hudbar then
-                    hb.unhide_hudbar(player, identifier)
-                end
-            end)
+            if compat.orig_unhide_hudbar then
+                compat.orig_unhide_hudbar(player, identifier)
+            elseif hb_mod.unhide_hudbar then
+                hb_mod.unhide_hudbar(player, identifier)
+            end
         end
     end
 
@@ -174,7 +174,7 @@ function compat.unhide(player)
     if compat.manages_breathbar() then
         suppress_flags.breathbar = false
     end
-    if next(suppress_flags) and player.hud_set_flags then
+    if next(suppress_flags) then
         player:hud_set_flags(suppress_flags)
     end
 end
