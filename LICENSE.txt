@@ -481,6 +481,7 @@ Copyright (C) 2026 SaKeL
 - deathstats_you_died_drown.png
 - deathstats_you_died_fire.png
 - deathstats_you_died_lava.png
+- deathstats_transparent.png
 - screenshot.png
 
 ### Sounds
