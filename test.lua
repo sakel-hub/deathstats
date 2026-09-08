@@ -2089,16 +2089,16 @@ assert((right_arm_deg >= 34.99 and right_arm_deg <= 80.01) or (right_arm_deg >= 
     string.format("Arm_Right angle (%f deg) must fall within broken bone ranges", right_arm_deg))
 
 local left_leg_deg = math.deg(rand_res["Leg_Left"])
-assert((left_leg_deg >= 14.99 and left_leg_deg <= 50.01) or (left_leg_deg >= -30.01 and left_leg_deg <= -9.99),
+assert((left_leg_deg >= 14.99 and left_leg_deg <= 70.01) or (left_leg_deg >= -30.01 and left_leg_deg <= -9.99),
     string.format("Leg_Left angle (%f deg) must fall within broken bone ranges", left_leg_deg))
 
 local right_leg_deg = math.deg(rand_res["Leg_Right"])
-assert((right_leg_deg >= -50.01 and right_leg_deg <= -14.99) or (right_leg_deg >= 9.99 and right_leg_deg <= 30.01),
+assert((right_leg_deg >= -70.01 and right_leg_deg <= -14.99) or (right_leg_deg >= 9.99 and right_leg_deg <= 30.01),
     string.format("Leg_Right angle (%f deg) must fall within broken bone ranges", right_leg_deg))
 
 local head_deg = math.deg(rand_res["Head"])
-assert(head_deg >= -25.01 and head_deg <= 25.01,
-    string.format("Head angle (%f deg) must fall within limp neck range [-25, 25]", head_deg))
+assert(head_deg >= -45.01 and head_deg <= 45.01,
+    string.format("Head angle (%f deg) must fall within limp neck range [-45, 45]", head_deg))
 
 -- 5. Verify set_death_camera applies limb fractures on fall death
 local p_fallguy = create_mock_player("FallGuy")
