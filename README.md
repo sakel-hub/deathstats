@@ -2,7 +2,7 @@
 
 A cinematic, pixel art-themed death screen and lifetime player statistics mod for Luanti.
 
-![YOU DIED](textures/deathstats_you_died.png)
+![YOU DIED](screenshot.png)
 
 ## Features
 
@@ -60,7 +60,7 @@ The following options can be customized in `minetest.conf` or the in-game Settin
   - Plays authentic CC0 human death sound effects from Freesound picked at random on death (expressive death groans and hurt sounds by kreha). Automatically randomized across 5 engine audio variants (`deathstats_death.1.ogg` through `deathstats_death.5.ogg`).
 
 - **Multiplayer Performance**:
-  - High performance, memory-efficient in-memory tracking ($O(1)$ operations).
+  - High performance, memory-efficient in-memory tracking.
   - Asynchronous / zero-lag Mod Storage persistence upon death, disconnect, and server shutdown.
   - Clean fallbacks for all engine versions.
 
