@@ -7,12 +7,16 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
 ## Features
 
 - **Cinematic Death Presentation**:
-  - Custom pixel art "YOU DIED" banner with blood dripping font.
+  - **Dynamic Thematic Banners & Vignette Overlays**:
+    The "YOU DIED" banner typography and fullscreen vignette backdrop dynamically adapt to the cause of death:
+    - **Lava / Magma**: Molten glowing lava banner (`deathstats_you_died_lava.png`) and intense magma splatter with fiery embers vignette (`deathstats_lava_splatter.png`).
+    - **Fire / Burning**: Burning scorched flame banner (`deathstats_you_died_fire.png`) and charred ash smoke with flame splatter vignette (`deathstats_fire_splatter.png`).
+    - **Drowning / Water**: Submerged waterlogged banner (`deathstats_you_died_drown.png`) and underwater splash droplets with aquatic blue vignette (`deathstats_drown_splatter.png`).
+    - **Combat, Fall, Starvation, Suffocation, Void & Generic**: Iconic dripping crimson blood banner (`deathstats_you_died.png`) and visceral blood splatter with dark vignette (`deathstats_blood_splatter.png`).
   - Visceral "slapped on screen from distance" animation: accelerates forward from distant perspective, impacts the screen glass with an overshoot bounce, settling firmly into view with synchronous subtitle reveal.
-  - Fullscreen pixel art blood splatter and dark vignette overlay.
   - Dynamic camera perspective:
     - **Smooth Circular Orbit**: Smoothly orbits around the fallen player corpse or bones block in a circular path in first-person mode, eliminating third-person camera offsets.
-    - **Corpse Placeholder Entity**: Spawns an immortal, non-physical corpse mesh entity lying flat on the ground that inherits the player's exact character model and composite skins across `skinsdb`, `simple_skins`, `wardrobe`, `3d_armor`, `clothing`, `player_api`, and `mcl_skins`.
+    - **Corpse Placeholder Entity**: Spawns an immortal, non-physical corpse mesh entity lying flat on the ground that inherits the player's exact character model, wielditem, and composite skins across 13+ appearance mods (`skinsdb`, `3d_armor`, `clothing`, `player_api`, `mcl_skins`, `simple_skins`, `wardrobe`, `edit_skin`, `collectible_skins`, `myappearance`, `nc_skins`, `u_skins`, `csm_skins`).
     - **Atmospheric Corpse Particles**: Spawns natural particle effects from the corpse:
       - **Water**: continuous animated bubbling air bubbles (5x5 px pixel art) floating upward through water.
       - **Lava**: continuous animated licking fire & ember sparks (5x5 px pixel art) leaping with high glow.
@@ -27,8 +31,8 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
   - Identifies killers (players or mobs), weapon/tool used for the killing blow (swords, tools, bare hands).
   - Full projectile & ranged weapon attribution: tracks kills and damage from arrows (`x_bows`), sword projectiles (`x_obsidianmese`), and custom ranged weapons directly to the shooter player.
   - Full mob combat damage tracking: tracks all damage dealt to mobs across `mobs_redo`, `creatura`, and custom entities.
-  - Robust fallback environmental inspection when engine `reason` is `nil` or generic: detects drowning (breath/water), lava melting, burning in fire, falling impact velocity, suffocation in solid blocks, falling into the void, and hunger starvation.
-  - **Hunger & Starvation Integration**: Seamlessly detects starvation deaths across popular hunger frameworks including `hbhunger`, `hudbars`, `stamina`, `hunger_ng`, and `mcl_hunger` (even when damage is applied via generic `set_hp` calls).
+  - Robust fallback environmental inspection when engine `reason` is `nil` or generic: detects drowning (breath/water), lava melting, burning in fire, falling impact velocity, suffocation in solid blocks, falling into the void, hunger starvation, and dehydration.
+  - **Hunger & Thirst Integration**: Seamlessly detects starvation and dehydration deaths across popular hunger and thirst frameworks including `hbhunger`, `hudbars`, `stamina`, `hunger_ng`, `mcl_hunger`, `thirsty`, and `unified_stamina` (even when damage is applied via generic `set_hp` calls).
   - Hilarious, curated epitaph notes for every cause of death in high-contrast white text.
 
 - **Interactive Death Interface (Modern Formspec v6)**:
@@ -49,11 +53,11 @@ The following options can be customized in `minetest.conf` or the in-game Settin
 - `deathstats_orbit_speed = 0.4` (orbit rotation speed in rad/s, ~15.7s for full circle)
 - `deathstats_enable_animation = true` (toggle zoom & fade animation)
 - `deathstats_animation_duration = 2.4` (duration of screen slap animation in seconds)
-- `deathstats_blood_opacity = 240` (opacity of blood splatter overlay, 0-255)
+- `deathstats_blood_opacity = 240` (opacity of fullscreen splatter vignette overlay across all death causes, 0-255)
 - `deathstats_formspec_side = right` (`right`, `left`, or `center` screen alignment)
 
 - **Sound Effects**:
-  - Plays authentic CC0 sound cues from Freesound picked at random on death (retro 8-bit game over, dark bell chime, dramatic defeat impact). Supported sound groups automatically resolve across Luanti engine sound variants (`deathstats_death.1.ogg`, `deathstats_death.2.ogg`, `deathstats_death.3.ogg`).
+  - Plays authentic CC0 human death sound effects from Freesound picked at random on death (expressive death groans and hurt sounds by kreha). Automatically randomized across 5 engine audio variants (`deathstats_death.1.ogg` through `deathstats_death.5.ogg`).
 
 - **Multiplayer Performance**:
   - High performance, memory-efficient in-memory tracking ($O(1)$ operations).
@@ -61,15 +65,11 @@ The following options can be customized in `minetest.conf` or the in-game Settin
   - Clean fallbacks for all engine versions.
 
 ## Sound Credits (Freesound CC0 / Public Domain)
-- `deathstats_death.1.ogg`: by krega (CC0, Freesound)
-- `deathstats_death.2.ogg`: by krega (CC0, Freesound)
-- `deathstats_death.3.ogg`: by krega (CC0, Freesound)
-- `deathstats_death.4.ogg`: by krega (CC0, Freesound)
-- `deathstats_death.5.ogg`: by krega (CC0, Freesound)
+- `deathstats_death.1.ogg` – `deathstats_death.5.ogg`: by kreha (CC0, [Freesound](https://freesound.org/people/kreha))
 
 ## Testing
 
-DeathStats includes automated unit tests covering death reason analysis, live stat tracking, formspec layouts, corpse mechanics, and reconnect persistence:
+DeathStats includes automated unit tests covering death reason analysis, live stat tracking, formspec layouts, corpse mechanics, hunger/thirst compatibility, appearance synchronization, and reconnect persistence:
 
 ```bash
 lua test.lua
