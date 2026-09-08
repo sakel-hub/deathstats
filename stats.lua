@@ -130,10 +130,19 @@ core.register_on_player_hpchange(function(player, hp_change, reason)
 
         -- Record recent starvation damage if starving or reason is starvation
         local is_starve = reason and (reason.type == "starve" or reason.type == "hunger"
+                or (reason.hunger and tostring(reason.hunger):find("starve"))
                 or (reason.cause and (tostring(reason.cause):find("starve") or tostring(reason.cause):find("hunger"))))
         local is_combat_or_env = reason and (reason.type == "punch" or reason.type == "fall" or reason.type == "burn" or reason.type == "drown")
-        if is_starve or (not is_combat_or_env and deathstats.is_player_starving and deathstats.is_player_starving(player)) then
+        if is_starve or (not is_combat_or_env and deathstats.is_player_starving(player)) then
             deathstats.recent_starvations[name] = core.get_gametime()
+        end
+
+        -- Record recent dehydration damage if dehydrated or reason is thirst
+        local is_thirst = reason and (reason.type == "thirst" or reason.type == "dehydrate"
+                or (reason.thirst ~= nil)
+                or (reason.cause and (tostring(reason.cause):find("thirst") or tostring(reason.cause):find("dehydrat"))))
+        if is_thirst or (not is_combat_or_env and deathstats.is_player_dehydrated(player)) then
+            deathstats.recent_dehydrations[name] = core.get_gametime()
         end
     end
     return hp_change
@@ -266,6 +275,7 @@ core.register_on_leaveplayer(function(player)
     deathstats.recent_punches[name] = nil
     deathstats.recent_falls[name] = nil
     deathstats.recent_starvations[name] = nil
+    deathstats.recent_dehydrations[name] = nil
 end)
 
 core.register_on_shutdown(function()
