@@ -27,7 +27,7 @@ if not table.copy then
     end)
 end
 
--- Mock core / minetest engine environment
+-- Mock core / Luanti engine environment
 vector = {
     new = function(x, y, z) return { x = x or 0, y = y or 0, z = z or 0 } end,
     copy = function(v) return { x = v.x, y = v.y, z = v.z } end,
@@ -88,6 +88,7 @@ core = {
     },
     get_current_modname = function() return "deathstats" end,
     loaded_mods = { ["deathstats"] = ".", ["hudbars"] = "." },
+    global_exists = function(name) return rawget(_G, name) ~= nil end,
     get_modpath = function(modname)
         if not modname or modname == "deathstats" then return "." end
         return core.loaded_mods and core.loaded_mods[modname]
@@ -267,8 +268,67 @@ core = {
                 end
                 return vector.zero(), vector.zero()
             end,
-            remove = function(self) self.removed = true end,
+            children = {},
+            get_children = function(self)
+                return self.children or {}
+            end,
+            set_attach = function(self, parent, bone, position, rotation, forced_visible)
+                if self.attachment and self.attachment.parent and self.attachment.parent.children then
+                    for idx, c in ipairs(self.attachment.parent.children) do
+                        if c == self then
+                            table.remove(self.attachment.parent.children, idx)
+                            break
+                        end
+                    end
+                end
+                self.attachment = {
+                    parent = parent,
+                    bone = bone,
+                    position = position,
+                    rotation = rotation,
+                    forced_visible = forced_visible,
+                }
+                if parent then
+                    parent.children = parent.children or {}
+                    table.insert(parent.children, self)
+                end
+            end,
+            get_attach = function(self)
+                if self.attachment then
+                    return self.attachment.parent, self.attachment.bone, self.attachment.position, self.attachment.rotation, self.attachment.forced_visible
+                end
+                return nil
+            end,
+            set_detach = function(self)
+                if self.attachment and self.attachment.parent and self.attachment.parent.children then
+                    for idx, c in ipairs(self.attachment.parent.children) do
+                        if c == self then
+                            table.remove(self.attachment.parent.children, idx)
+                            break
+                        end
+                    end
+                end
+                self.attachment = nil
+            end,
+            remove = function(self)
+                self.removed = true
+                if self.attachment and self.attachment.parent and self.attachment.parent.children then
+                    for idx, c in ipairs(self.attachment.parent.children) do
+                        if c == self then
+                            table.remove(self.attachment.parent.children, idx)
+                            break
+                        end
+                    end
+                end
+            end,
         }
+        local luaentity = {}
+        if def then
+            for k, v in pairs(def) do luaentity[k] = v end
+        end
+        luaentity.object = ent
+        ent.luaentity = luaentity
+        ent.get_luaentity = function(self) return self.luaentity end
         table.insert(core.spawned_entities, ent)
         return ent
     end,
@@ -451,6 +511,8 @@ rawset(_G, "player_api", {
 })
 
 dofile(modpath .. "/api.lua")
+dofile(modpath .. "/compat/hunger.lua")
+dofile(modpath .. "/compat/skins.lua")
 dofile(modpath .. "/stats.lua")
 dofile(modpath .. "/reason.lua")
 dofile(modpath .. "/gui.lua")
@@ -581,11 +643,15 @@ local function create_mock_player(name)
         end,
         get_physics_override = function(self) return self.physics_override end,
         get_wielded_item = function(self)
+            if self._wielded_item ~= nil then
+                return self._wielded_item
+            end
             return {
                 get_name = function() return "default:sword_steel" end,
                 get_definition = function() return core.registered_items["default:sword_steel"] end,
             }
         end,
+        get_wield_index = function(self) return self.wield_index or 1 end,
         set_camera = function(self, cam) self.camera = cam end,
         get_camera = function(self) return self.camera end,
         look_horizontal = 0,
@@ -618,6 +684,9 @@ local function create_mock_player(name)
                 self.hud_flags[k] = v
             end
         end,
+        get_player_control = function(self)
+            return self.control or {}
+        end,
         get_meta = function(self)
             self.meta_obj = self.meta_obj or {
                 fields = {},
@@ -625,6 +694,8 @@ local function create_mock_player(name)
                 set_string = function(s, k, v) s.fields[k] = v or "" end,
                 get_int = function(s, k) return tonumber(s.fields[k]) or 0 end,
                 set_int = function(s, k, v) s.fields[k] = tostring(v) end,
+                get_float = function(s, k) return tonumber(s.fields[k]) or 0.0 end,
+                set_float = function(s, k, v) s.fields[k] = tostring(v) end,
             }
             return self.meta_obj
         end,
@@ -1027,8 +1098,9 @@ print("  [PASS] Player join HP check, death screen recovery & comprehensive effe
 
 -- TEST 14: Engine Death Screen Override & Delegate
 assert(type(core.show_death_screen) == "function", "core.show_death_screen must be defined and overridden")
+-- Verify legacy `minetest` alias is synchronized with `core` (backward compat shim)
 if minetest then
-    assert(type(minetest.show_death_screen) == "function", "minetest.show_death_screen must be synchronized")
+    assert(type(minetest.show_death_screen) == "function", "minetest.show_death_screen must be synchronized with core")
 end
 local test_reason = { type = "fall" }
 core.show_death_screen(player1, test_reason)
@@ -1062,7 +1134,7 @@ for _, scr in ipairs(test_screens) do
     end
     local sx, sy = deathstats.get_banner_responsive_scale(player1)
     assert(sx < 0 and sy < 0, "Scale values must be negative percentages")
-    -- In Minetest, sx and sy are percentages of screen width and screen height
+    -- In Luanti, sx and sy are percentages of screen width and screen height
     local rendered_w = (-sx / 100) * scr.w
     local rendered_h = (-sy / 100) * scr.h
     local rendered_aspect = rendered_w / rendered_h
@@ -1463,7 +1535,9 @@ local vis_armor_kept = deathstats.get_player_visuals(p_skin)
 assert(vis_armor_kept.mesh == "3d_armor_character.b3d", "3d_armor mesh must be inherited")
 assert(vis_armor_kept.textures[1] == "armor_skin.png", "3d_armor skin texture must be inherited")
 assert(vis_armor_kept.textures[2] == "armor_chest.png", "Worn armor texture must be kept on corpse when drop=false")
-assert(vis_armor_kept.textures[3] == "armor_sword.png", "Worn wielditem texture must be inherited when drop=false")
+assert(vis_armor_kept.textures[3] == "3d_armor_trans.png", "Corpse wielditem mesh slot must remain transparent to avoid duplicate 2D quad with attached 3D wielditem entity")
+assert(vis_armor_kept.wield_item == "default:sword_steel", "Worn wielditem must be extracted into visuals.wield_item")
+assert(vis_armor_kept.inventory_dropped == false, "inventory_dropped must be false when armor is kept")
 assert(vis_armor_kept.armor_dropped == false, "armor_dropped must be false when armor is kept")
 
 -- 2b. Ejected/dropped armor (drop == true): corpse reflects body without armor
@@ -2483,7 +2557,7 @@ assert(yaw_calls == 0,
 p_network.set_look_horizontal = saved_set_yaw
 deathstats.reset_camera(p_network)
 
--- D. zero_player_velocity helper: modern Luanti 5.9+ vs legacy Minetest <= 5.8
+-- D. zero_player_velocity helper: modern Luanti 5.9+ vs legacy Luanti <= 5.8
 local modern_player = {
     vel = { x = 3, y = -15, z = 4 },
     get_velocity = function(self) return self.vel end,
@@ -3253,6 +3327,9 @@ do
                 is_empty = function() return true end,
             }
         end,
+        get_wielded_item = function() return { get_name = function() return "" end } end,
+        get_wield_index = function() return 1 end,
+        hud_set_flags = function() end,
         hud_add = function() return 1 end,
         hud_change = function() end,
         hud_remove = function() end,
@@ -3335,11 +3412,14 @@ do
                 end,
             }
         end,
+        get_player_control = function() return {} end,
+        hud_change = function() end,
         get_meta = function()
             local store = {}
             return {
                 get_string = function(self, k) return store[k] or "" end,
                 set_string = function(self, k, v) store[k] = v end,
+                get_float = function(self, k) return tonumber(store[k]) or 0.0 end,
             }
         end,
     }
@@ -3596,7 +3676,850 @@ do
     print("  [PASS] Bones mod settings compatibility, corpse suppression & bones fallback")
 end
 
-print("\nALL 42 TEST SUITES PASSED SUCCESSFULLY!")
+-- =========================================================================
+-- SUITE 43: DEDICATED CORPSE ATTACHED WIELDITEM ENTITY & INVENTORY LOGIC
+-- =========================================================================
+do
+    -- 1. Entity registration inspection
+    local went_def = core.registered_entities["deathstats:corpse_wielditem"]
+    assert(went_def ~= nil, "deathstats:corpse_wielditem must be registered in core.registered_entities")
+    assert(went_def.initial_properties ~= nil, "initial_properties must exist")
+    assert(went_def.initial_properties.visual == "wielditem", "visual must be wielditem")
+    assert(went_def.initial_properties.visual_size.x == 0.25, "visual_size.x must be 0.25")
+    assert(went_def.initial_properties.pointable == false, "pointable must be false")
+    assert(went_def.initial_properties.physical == false, "physical must be false")
+    assert(went_def.initial_properties.static_save == false, "static_save must be false")
+
+    -- 2. Test deathstats.is_inventory_dropped across conditions
+    local test_player = create_mock_player("WieldUser", 0, { x = 10, y = 5, z = 10 })
+    mock_players["WieldUser"] = test_player
+
+    -- 2a. Creative mode enabled: inventory kept
+    core.is_creative_enabled = function(name) return name == "WieldUser" end
+    assert(deathstats.is_inventory_dropped(test_player) == false, "Creative mode must return inventory not dropped")
+    core.is_creative_enabled = function() return false end
+
+    -- 2b. Settings keep_inventory: inventory kept
+    core.settings:set_bool("keep_inventory", true)
+    assert(deathstats.is_inventory_dropped(test_player) == false, "keep_inventory=true must return inventory not dropped")
+    core.settings:set_bool("keep_inventory", false)
+
+    -- 2c. bones mod bones_mode == "keep": inventory kept
+    core.loaded_mods["bones"] = true
+    core.settings:set("bones_mode", "keep")
+    assert(deathstats.is_inventory_dropped(test_player) == false, "bones_mode=keep must return inventory not dropped")
+
+    -- 2d. bones mod bones_mode == "drop": inventory dropped
+    core.settings:set("bones_mode", "drop")
+    assert(deathstats.is_inventory_dropped(test_player) == true, "bones_mode=drop must return inventory dropped")
+
+    -- 2e. bones mod bones_mode == "bones": inventory dropped to bones
+    core.settings:set("bones_mode", "bones")
+    assert(deathstats.is_inventory_dropped(test_player) == true, "bones_mode=bones must return inventory dropped")
+    core.loaded_mods["bones"] = nil
+
+    -- 2f. Default engine without drop mods: inventory kept
+    core.settings:set("bones_mode", nil)
+    assert(deathstats.is_inventory_dropped(test_player) == false, "Default engine without bones must return inventory not dropped")
+
+    -- 3. Test deathstats.get_player_wield_item
+    -- 3a. Active wielded item
+    test_player._wielded_item = {
+        name = "default:sword_diamond",
+        get_name = function(self) return self.name end,
+        to_string = function(self) return self.name end,
+    }
+    local item_found = deathstats.get_player_wield_item(test_player)
+    assert(item_found == "default:sword_diamond", "get_player_wield_item must find direct wielded item")
+
+    -- 3b. camera_hand ignored, falls back to main inventory
+    test_player._wielded_item = {
+        name = "deathstats:camera_hand",
+        get_name = function(self) return self.name end,
+        to_string = function(self) return self.name end,
+    }
+    test_player:get_inventory():set_stack("main", 1, "default:pick_mese")
+    local fallback_item = deathstats.get_player_wield_item(test_player)
+    assert(fallback_item == "default:pick_mese", "get_player_wield_item must ignore camera_hand and read main inv")
+
+    -- 3c. Stashed main inventory from metadata
+    test_player._wielded_item = ""
+    test_player:get_inventory():set_stack("main", 1, "")
+    test_player:get_meta():set_string("deathstats:stashed_main", core.serialize({ "default:axe_steel" }))
+    local meta_item = deathstats.get_player_wield_item(test_player)
+    assert(meta_item == "default:axe_steel", "get_player_wield_item must recover from metadata stashed_main")
+    test_player:get_meta():set_string("deathstats:stashed_main", "")
+
+    -- 4. Test deathstats.spawn_and_setup_corpse with attached wielditem entity
+    local corpse_pos = { x = 12, y = 5, z = 12 }
+    local visuals_with_item = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 1.57,
+        wield_item = "default:sword_diamond",
+        inventory_dropped = false,
+    }
+    local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_with_item)
+    assert(corpse ~= nil, "Corpse must be spawned")
+    local went = deathstats.get_corpse_wielditem(corpse)
+    assert(went ~= nil, "Attached wielditem entity must be created")
+    assert(went.name == "deathstats:corpse_wielditem", "Attached entity must be deathstats:corpse_wielditem")
+    assert(went.properties.wield_item == "default:sword_diamond", "Wielditem property must match")
+    assert(went.properties.textures[1] == "default:sword_diamond", "Wielditem texture must match")
+
+    -- Verify attachment bone and offset
+    local att_parent, att_bone, att_pos, att_rot, att_forced = went:get_attach()
+    assert(att_parent == corpse, "Parent of wielditem must be corpse")
+    assert(att_bone == "Arm_Right", "Attachment bone must be Arm_Right")
+    assert(att_pos.x == 0 and att_pos.y == 6.0 and att_pos.z == 1.5, "Attachment offset must be {x=0, y=6.0, z=1.5}")
+    assert(att_rot.x == 90 and att_rot.y == 0 and att_rot.z == 90, "Attachment rotation must be {x=90, y=0, z=90}")
+    assert(att_forced == true, "Forced visible must be true")
+
+    -- 5. When inventory IS dropped, wielditem is NOT attached
+    local visuals_dropped = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 1.57,
+        wield_item = "default:sword_diamond",
+        inventory_dropped = true,
+    }
+    local corpse_dropped = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_dropped)
+    assert(corpse_dropped ~= nil, "Corpse must be spawned")
+    assert(deathstats.get_corpse_wielditem(corpse_dropped) == nil, "Wielditem must NOT be attached when inventory is dropped")
+
+    -- 6. When wield_item is empty, wielditem is NOT attached
+    local visuals_empty = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 1.57,
+        wield_item = "",
+        inventory_dropped = false,
+    }
+    local corpse_empty = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_empty)
+    assert(corpse_empty ~= nil, "Corpse must be spawned")
+    assert(deathstats.get_corpse_wielditem(corpse_empty) == nil, "Wielditem must NOT be attached when wield_item is empty")
+
+    -- 7. Test deathstats.remove_corpse cleans up both entities
+    assert(corpse.removed == false, "Corpse initially active")
+    assert(went.removed == false, "Wielditem initially active")
+    deathstats.remove_corpse(corpse)
+    assert(corpse.removed == true, "Corpse must be removed")
+    assert(went.removed == true, "Attached wielditem must be removed")
+
+    -- 8. Test orphan self-cleanup in on_step
+    local orphan_went = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+    assert(orphan_went ~= nil, "Orphan entity spawned")
+    assert(orphan_went.removed == false, "Orphan not yet removed")
+    -- Since it has no attachment parent, on_step should remove it
+    went_def.on_step({ object = orphan_went })
+    assert(orphan_went.removed == true, "Orphaned wielditem entity must remove itself on step")
+
+    -- Clean up test player
+    mock_players["WieldUser"] = nil
+    core.settings:set("bones_mode", "bones")
+
+    print("  [PASS] Dedicated corpse attached wielditem entity & inventory drop logic")
+end
+
+-- =========================================================================
+-- SUITE 44: X_BOWS BONE-SPECIFIC ARROW ATTACHMENT & CORPSE TRANSFER LIFECYCLE
+-- =========================================================================
+local function run_test_suite_44()
+    print("\n--- TEST 44: x_bows Bone-Specific Arrow Attachment & Corpse Transfer Lifecycle ---")
+
+    core.settings:set("bones_mode", nil)
+    core.loaded_mods["x_bows"] = "../x_bows"
+    dofile("../x_bows/api.lua")
+    core.register_on_respawnplayer(XBows.on_respawnplayer)
+    dofile("../x_bows/mod_support_deathstats.lua")
+    core.on_mods_loaded()
+
+    local xbmod = rawget(_G, "XBows")
+    assert(xbmod ~= nil, "XBows must be loaded")
+    assert(type(xbmod.calculate_impact_bone) == "function", "XBows.calculate_impact_bone must exist")
+    assert(type(xbmod.transfer_arrows_to_corpse) == "function", "XBows.transfer_arrows_to_corpse must exist")
+    assert(type(xbmod.get_attached_arrows) == "function", "XBows.get_attached_arrows must exist")
+    assert(type(xbmod.clear_attached_arrows) == "function", "XBows.clear_attached_arrows must exist")
+    assert(type(xbmod.cleanup_corpse_arrows) == "function", "XBows.cleanup_corpse_arrows must exist")
+
+    -- 2. Bone calculation precision across all humanoid body parts
+    local p_dummy = create_mock_player("DummyTarget")
+
+    -- 2a. Head: y >= 12.5
+    local head_bone, head_pos, head_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(0.5, 13.5, -0.2),
+        { x = 10, y = 30, z = 5 }
+    )
+    assert(head_bone == "Head", "Impact at y=13.5 must map to Head bone, got: " .. tostring(head_bone))
+    assert(math.abs(head_pos.x - (-0.5)) < 0.001, "Head local pos X must be -x")
+    assert(math.abs(head_pos.y - (13.5 - 12.8)) < 0.001, "Head local pos Y must be y - 12.8")
+    assert(math.abs(head_pos.z - (0.2)) < 0.001, "Head local pos Z must be -z")
+    assert(head_rot.x == 10, "Head local rot X must be rx")
+    assert(head_rot.y == 210, "Head local rot Y must be (ry + 180) % 360")
+    assert(head_rot.z == 5, "Head local rot Z must be rz")
+
+    -- 2b. Leg_Right: y < 6.5 and x > 0
+    local leg_r_bone, leg_r_pos, leg_r_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(1.2, 4.0, 0.1),
+        { x = 15, y = 45, z = 0 }
+    )
+    assert(leg_r_bone == "Leg_Right", "Impact at y=4.0, x=1.2 must map to Leg_Right, got: " .. tostring(leg_r_bone))
+    assert(math.abs(leg_r_pos.x - (1.0 - 1.2)) < 0.001, "Leg_Right local pos X must be 1.0 - x")
+    assert(math.abs(leg_r_pos.y - (6.5 - 4.0)) < 0.001, "Leg_Right local pos Y must be 6.5 - y")
+    assert(math.abs(leg_r_pos.z - 0.1) < 0.001, "Leg_Right local pos Z must be z")
+    assert(leg_r_rot.x == 15, "Leg_Right local rot X must be rx")
+    assert(leg_r_rot.y == 45, "Leg_Right local rot Y must be ry")
+    assert(leg_r_rot.z == 180, "Leg_Right local rot Z must be (rz + 180) % 360")
+
+    -- 2c. Leg_Left: y < 6.5 and x <= 0
+    local leg_l_bone, leg_l_pos, leg_l_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(-1.4, 2.5, -0.3),
+        { x = 20, y = -10, z = 0 }
+    )
+    assert(leg_l_bone == "Leg_Left", "Impact at y=2.5, x=-1.4 must map to Leg_Left, got: " .. tostring(leg_l_bone))
+    assert(math.abs(leg_l_pos.x - (-1.0 - (-1.4))) < 0.001, "Leg_Left local pos X must be -1.0 - x")
+    assert(math.abs(leg_l_pos.y - (6.5 - 2.5)) < 0.001, "Leg_Left local pos Y must be 6.5 - y")
+    assert(math.abs(leg_l_pos.z - (-0.3)) < 0.001, "Leg_Left local pos Z must be z")
+    assert(leg_l_rot.x == 20, "Leg_Left local rot X must be rx")
+    assert(leg_l_rot.y == -10, "Leg_Left local rot Y must be ry")
+    assert(leg_l_rot.z == 180, "Leg_Left local rot Z must be (rz + 180) % 360")
+
+    -- 2d. Arm_Right: 6.5 <= y < 12.5 and x > 2.0
+    local arm_r_bone, arm_r_pos, arm_r_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(2.8, 9.5, 0.4),
+        { x = 0, y = 60, z = 10 }
+    )
+    assert(arm_r_bone == "Arm_Right", "Impact at y=9.5, x=2.8 must map to Arm_Right, got: " .. tostring(arm_r_bone))
+    assert(math.abs(arm_r_pos.x - (3.15 - 2.8)) < 0.001, "Arm_Right local pos X must be 3.15 - x")
+    assert(math.abs(arm_r_pos.y - (12.0 - 9.5)) < 0.001, "Arm_Right local pos Y must be 12.0 - y")
+    assert(math.abs(arm_r_pos.z - 0.4) < 0.001, "Arm_Right local pos Z must be z")
+    assert(arm_r_rot.x == 0, "Arm_Right local rot X must be rx")
+    assert(arm_r_rot.y == 60, "Arm_Right local rot Y must be ry")
+    assert(arm_r_rot.z == 190, "Arm_Right local rot Z must be (rz + 180) % 360")
+
+    -- 2e. Arm_Left: 6.5 <= y < 12.5 and x < -2.0
+    local arm_l_bone, arm_l_pos, arm_l_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(-3.0, 8.0, -0.5),
+        { x = -5, y = 90, z = 0 }
+    )
+    assert(arm_l_bone == "Arm_Left", "Impact at y=8.0, x=-3.0 must map to Arm_Left, got: " .. tostring(arm_l_bone))
+    assert(math.abs(arm_l_pos.x - (-3.15 - (-3.0))) < 0.001, "Arm_Left local pos X must be -3.15 - x")
+    assert(math.abs(arm_l_pos.y - (12.0 - 8.0)) < 0.001, "Arm_Left local pos Y must be 12.0 - y")
+    assert(math.abs(arm_l_pos.z - (-0.5)) < 0.001, "Arm_Left local pos Z must be z")
+    assert(arm_l_rot.x == -5, "Arm_Left local rot X must be rx")
+    assert(arm_l_rot.y == 90, "Arm_Left local rot Y must be ry")
+    assert(arm_l_rot.z == 180, "Arm_Left local rot Z must be (rz + 180) % 360")
+
+    -- 2f. Body: 6.5 <= y < 12.5 and |x| <= 2.0
+    local body_bone, body_pos, body_rot = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(0.8, 8.5, 0.2),
+        { x = 12, y = -45, z = -2 }
+    )
+    assert(body_bone == "Body", "Impact at y=8.5, x=0.8 must map to Body, got: " .. tostring(body_bone))
+    assert(math.abs(body_pos.x - (-0.8)) < 0.001, "Body local pos X must be -x")
+    assert(math.abs(body_pos.y - (8.5 - 6.5)) < 0.001, "Body local pos Y must be y - 6.5")
+    assert(math.abs(body_pos.z - (-0.2)) < 0.001, "Body local pos Z must be -z")
+    assert(body_rot.x == 12, "Body local rot X must be rx")
+    assert(body_rot.y == 135, "Body local rot Y must be (ry + 180) % 360")
+    assert(body_rot.z == -2, "Body local rot Z must be rz")
+
+    -- 2g. Body Front Shot Extra Penetration: z > 1.0 embeds inward into chest (pz = -z + 2.8, capped at 0.2)
+    local body_front_bone, body_front_pos, _ = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(0.0, 9.0, 3.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(body_front_bone == "Body", "Impact at y=9.0, z=3.0 must map to Body")
+    assert(math.abs(body_front_pos.z - (-0.2)) < 0.001, "Body front shot must penetrate inward into chest (pz = -0.2), got: " .. tostring(body_front_pos.z))
+
+    -- 2h. Body Back Shot Extra Penetration: z < -1.0 embeds inward into back (pz = -z - 2.8, floor at -0.2)
+    local body_back_bone, body_back_pos, _ = xbmod.calculate_impact_bone(
+        p_dummy,
+        vector.new(0.0, 9.0, -3.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(body_back_bone == "Body", "Impact at y=9.0, z=-3.0 must map to Body")
+    assert(math.abs(body_back_pos.z - 0.2) < 0.001, "Body back shot must penetrate inward into back (pz = 0.2), got: " .. tostring(body_back_pos.z))
+
+    -- 2i. Non-humanoid fallback (e.g. quadrupeds, non-player entities)
+    local mock_mob = {
+        is_player = function() return false end,
+        get_properties = function() return { mesh = "mobs_animal_cow.b3d" } end,
+    }
+    local mob_bone, mob_pos, mob_rot = xbmod.calculate_impact_bone(
+        mock_mob,
+        vector.new(1.0, 14.0, 2.0),
+        { x = 10, y = 20, z = 30 }
+    )
+    assert(mob_bone == "", "Non-humanoid target must attach to root node ''")
+    assert(mob_pos.y == 14.0 and mob_rot.x == 10, "Non-humanoid transform must be untouched")
+
+    -- 2j. Missing bone in target model fallback to Body
+    local mock_missing_head = {
+        is_player = function() return false end,
+        get_properties = function() return { mesh = "character.b3d" } end,
+        get_bone_position = function(self, b)
+            if b == "Body" then return vector.new(0, 0, 0) end
+            return nil
+        end,
+    }
+    local fb_bone = xbmod.calculate_impact_bone(
+        mock_missing_head,
+        vector.new(0.0, 14.0, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(fb_bone == "Body", "Missing Head bone on humanoid target must fall back to Body")
+
+    -- 3. Arrow Tracking and Reparenting to Corpse
+    local p_victim = create_mock_player("VictimPlayer", 0, { x = 20, y = 5, z = 20 })
+    mock_players["VictimPlayer"] = p_victim
+
+    -- Register a mock x_bows arrow entity definition
+    core.register_entity("x_bows:arrow_bronze_entity", {
+        _is_arrow = true,
+        initial_properties = { visual = "mesh", visual_size = { x = 1, y = 1 } },
+    })
+
+    -- Helper to spawn and attach arrow
+    local function spawn_mock_arrow(parent, bone, pos, rot)
+        local arrow = core.add_entity({ x = 20, y = 5, z = 20 }, "x_bows:arrow_bronze_entity")
+        arrow:set_attach(parent, bone, pos, rot, true)
+        local ent = arrow:get_luaentity()
+        ent._is_arrow = true
+        ent._attached = true
+        ent._attached_bone = bone
+        return arrow
+    end
+
+    local arr1 = spawn_mock_arrow(p_victim, "Head", head_pos, head_rot)
+    local arr2 = spawn_mock_arrow(p_victim, "Arm_Right", arm_r_pos, arm_r_rot)
+    local arr3 = spawn_mock_arrow(p_victim, "", vector.new(0, 8, 0), { x = 0, y = 0, z = 0 })
+
+    -- Also attach an unrelated non-arrow child (e.g. wielditem or particle anchor)
+    core.register_entity("other_mod:shield", {
+        initial_properties = { visual = "wielditem" },
+    })
+    local shield = core.add_entity({ x = 20, y = 5, z = 20 }, "other_mod:shield")
+    shield:set_attach(p_victim, "Arm_Left", vector.new(0, 0, 0), { x = 0, y = 0, z = 0 }, true)
+
+    -- Assert get_attached_arrows identifies only x_bows arrows
+    local victim_arrows = xbmod.get_attached_arrows(p_victim)
+    assert(#victim_arrows == 3, "get_attached_arrows must return exactly 3 arrows, got: " .. tostring(#victim_arrows))
+
+    -- 4. Player dies -> deathstats.spawn_and_setup_corpse transfers arrows
+    local corpse_pos = { x = 20, y = 5, z = 20 }
+    local corpse_visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        wield_item = "",
+        inventory_dropped = true,
+    }
+    local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, corpse_visuals, p_victim)
+    assert(corpse ~= nil, "Corpse must be spawned")
+
+    -- Verify arrows are transferred to corpse and cleared from player
+    local corpse_arrows_after = xbmod.get_attached_arrows(corpse)
+    assert(#corpse_arrows_after == 3, "Corpse must have 3 transferred arrows, got: " .. tostring(#corpse_arrows_after))
+    assert(#xbmod.get_attached_arrows(p_victim) == 0, "Living player must have 0 attached arrows remaining")
+
+    -- Verify non-arrow shield remained attached to victim
+    local p_children = p_victim:get_children()
+    assert(#p_children == 1 and p_children[1] == shield, "Non-arrow shield must remain on player")
+
+    -- Verify preserved bone mappings on corpse
+    local c_par1, c_bone1 = arr1:get_attach()
+    assert(c_par1 == corpse and c_bone1 == "Head", "Arrow 1 must remain attached to Head bone on corpse")
+
+    local c_par2, c_bone2 = arr2:get_attach()
+    assert(c_par2 == corpse and c_bone2 == "Arm_Right", "Arrow 2 must remain attached to Arm_Right bone on corpse")
+
+    local c_par3, c_bone3 = arr3:get_attach()
+    assert(c_par3 == corpse and c_bone3 == "Body", "Root-attached arrow must map to Body bone on corpse")
+
+    -- 5. Corpse arrow cap (max 5 arrows)
+    -- Attach 4 more arrows to the corpse (total 7)
+    local arr4 = spawn_mock_arrow(corpse, "Leg_Left", leg_l_pos, leg_l_rot)
+    local arr5 = spawn_mock_arrow(corpse, "Leg_Right", leg_r_pos, leg_r_rot)
+    local arr6 = spawn_mock_arrow(corpse, "Arm_Left", arm_l_pos, arm_l_rot)
+    local arr7 = spawn_mock_arrow(corpse, "Body", body_pos, body_rot)
+    for _, a in ipairs({ arr3, arr4, arr5, arr6 }) do
+        assert(a.removed == false, "Arrows 3-6 must initially be active")
+    end
+
+    -- Trigger corpse arrow capping via transfer_arrows_to_corpse
+    xbmod.transfer_arrows_to_corpse(p_victim, corpse)
+    local capped_corpse_arrows = xbmod.get_attached_arrows(corpse)
+    assert(#capped_corpse_arrows == 5, "Corpse must cap attached arrows to 5, got: " .. tostring(#capped_corpse_arrows))
+    assert(arr1.removed == true, "Oldest arrow 1 must be removed by cap")
+    assert(arr2.removed == true, "Oldest arrow 2 must be removed by cap")
+    assert(arr7.removed == false, "Newest arrow 7 must still be active")
+
+    -- 6. Corpse Despawn Cleanup
+    deathstats.remove_corpse(corpse)
+    assert(corpse.removed == true, "Corpse must be removed")
+    for _, arr in ipairs(capped_corpse_arrows) do
+        assert(arr.removed == true, "All corpse arrows must be removed upon corpse removal")
+    end
+    assert(#xbmod.get_attached_arrows(corpse) == 0, "get_attached_arrows on removed corpse must be empty")
+
+    -- 7. Living Player Respawn Cleanup
+    local p_resp = create_mock_player("RespawnTester", 20, { x = 0, y = 10, z = 0 })
+    local resp_arr1 = spawn_mock_arrow(p_resp, "Body", body_pos, body_rot)
+    local resp_arr2 = spawn_mock_arrow(p_resp, "Arm_Right", arm_r_pos, arm_r_rot)
+    assert(#xbmod.get_attached_arrows(p_resp) == 2, "Player should initially have 2 attached arrows")
+
+    core.on_respawnplayer(p_resp)
+    assert(#xbmod.get_attached_arrows(p_resp) == 0, "Living player must have 0 attached arrows after respawn")
+    assert(resp_arr1.removed == true and resp_arr2.removed == true, "Respawn must clean up arrow entities")
+
+    -- 8. Tier 2 Catch-up: Fatal Arrow attached via core.after(0)
+    local p_fatal = create_mock_player("FatalVictim")
+    mock_players["FatalVictim"] = p_fatal
+    p_fatal.hp = 0
+
+    -- Fire dieplayer hook (triggers deathstats corpse creation)
+    core.on_dieplayer(p_fatal)
+    local fatal_corpse = deathstats.get_corpse("FatalVictim")
+    assert(fatal_corpse ~= nil, "Corpse must be spawned by deathstats on_dieplayer")
+
+    -- Arrow hits and attaches in next tick (after dieplayer)
+    local fatal_arrow = spawn_mock_arrow(p_fatal, "Head", head_pos, head_rot)
+    assert(#xbmod.get_attached_arrows(p_fatal) == 1, "Player should have lethal arrow attached")
+    assert(#xbmod.get_attached_arrows(fatal_corpse) == 0, "Corpse has not received lethal arrow yet")
+
+    -- Execute core.after tasks
+    run_deferred_tasks()
+
+    -- Verify lethal arrow was automatically caught up and transferred to the corpse!
+    assert(#xbmod.get_attached_arrows(p_fatal) == 0, "Player must have 0 arrows after catch-up")
+    assert(#xbmod.get_attached_arrows(fatal_corpse) == 1, "Corpse must have received the lethal arrow via catch-up")
+    local f_par, f_bone = fatal_arrow:get_attach()
+    assert(f_par == fatal_corpse and f_bone == "Head", "Lethal arrow must be attached to corpse Head")
+
+    -- Clean up
+    deathstats.remove_corpse(fatal_corpse)
+    mock_players["VictimPlayer"] = nil
+    mock_players["FatalVictim"] = nil
+    mock_players["RespawnTester"] = nil
+    mock_players["DummyTarget"] = nil
+
+    print("  [PASS] x_bows bone-specific arrow attachment & corpse transfer lifecycle (6 bones, root conversion, cap 5, cleanup, catch-up)")
+end
+run_test_suite_44()
+
+-- TEST 45: Extended Hunger Frameworks, Thirst/Dehydration, Sprint Exhaustion & Standalone HUDs
+local function run_test_suite_45()
+    print("\n--- TEST 45: Extended Hunger Frameworks, Thirst/Dehydration, Sprint Exhaustion & Standalone HUDs ---")
+
+    local p = create_mock_player("Explorer")
+    mock_players["Explorer"] = p
+    local _
+
+    -- 1. Satiation Multi-Framework Detection
+    -- 1a. hbhunger
+    _G.hbhunger = { hunger = { ["Explorer"] = 14 } }
+    local cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 14 and max == 30 and math.abs(ratio - 14/30) < 0.001 and mod_name == "hbhunger" and is_starving == false,
+        "hbhunger detection failed")
+    _G.hbhunger.hunger["Explorer"] = 0
+    assert(deathstats.is_player_starving(p) == true, "hbhunger at 0 must be starving")
+    _G.hbhunger = nil
+
+    -- 1b. stamina (get_saturation & get & settings.starve_lvl)
+    _G.stamina = {
+        settings = { starve_lvl = 4 },
+        get_saturation = function(_pl) return 8 end,
+    }
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 8 and max == 20 and ratio == 8/20 and mod_name == "stamina" and is_starving == false,
+        "stamina detection via get_saturation failed")
+    _G.stamina.get_saturation = function(_pl) return 3 end
+    assert(deathstats.is_player_starving(p) == true,
+        "stamina at 3 (below starve_lvl 4) must be starving")
+    -- Fallback to stamina.get
+    _G.stamina.get_saturation = nil
+    _G.stamina.get = function(_pl) return 2 end
+    assert(deathstats.is_player_starving(p) == true,
+        "stamina fallback to stamina.get must detect starvation")
+    _G.stamina = nil
+
+    -- 1c. mcl_hunger
+    _G.mcl_hunger = {
+        get_hunger = function(_pl) return 15 end,
+    }
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 15 and max == 20 and ratio == 15/20 and mod_name == "mcl_hunger" and is_starving == false,
+        "mcl_hunger detection failed")
+    _G.mcl_hunger.get_hunger = function(_pl) return 0 end
+    assert(deathstats.is_player_starving(p) == true, "mcl_hunger at 0 must be starving")
+    _G.mcl_hunger = nil
+
+    -- 1d. hunger_ng
+    _G.hunger_ng = {
+        get_hunger = function(_pl) return 12 end,
+    }
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 12 and max == 20 and ratio == 12/20 and mod_name == "hunger_ng" and is_starving == false,
+        "hunger_ng detection failed")
+    _G.hunger_ng.get_hunger = function(_pl) return 0 end
+    assert(deathstats.is_player_starving(p) == true, "hunger_ng at 0 must be starving")
+    _G.hunger_ng = nil
+
+    -- 1e. classic hunger mod
+    _G.hunger = {
+        hunger = { ["Explorer"] = 18 },
+        get_hunger = function(_pl) return 18 end,
+    }
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 18 and max == 20 and ratio == 18/20 and mod_name == "hunger" and is_starving == false,
+        "classic hunger detection failed")
+    _G.hunger = nil
+
+    -- 1f. hudbars fallback
+    _G.hb = {
+        get_hudbar_state = function(_pl, id)
+            if id == "hunger" then
+                return { value = 10, max = 20 }
+            end
+            return nil
+        end,
+    }
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
+    assert(cur == 10 and max == 20 and ratio == 0.5 and mod_name:find("hudbars") and is_starving == false,
+        "hudbars fallback detection failed")
+    _G.hb = nil
+
+    -- 2. Thirst & Dehydration Detection
+    -- 2a. Player metadata thirsty_hydro
+    local meta = p:get_meta()
+    meta:set_string("thirsty_hydro", "16.5")
+    cur, max, ratio, mod_name, is_starving = deathstats.get_player_hydration(p)
+    assert(cur == 16.5 and max == 20 and math.abs(ratio - 16.5/20) < 0.001 and mod_name == "thirsty" and is_starving == false,
+        "thirsty metadata detection failed")
+    assert(deathstats.is_player_dehydrated(p) == false, "player with hydro 16.5 must not be dehydrated")
+
+    meta:set_string("thirsty_hydro", "0.0")
+    cur, _, _, _, is_starving = deathstats.get_player_hydration(p)
+    assert(cur == 0.0 and is_starving == true, "hydro at 0.0 must be dehydrated")
+    assert(deathstats.is_player_dehydrated(p) == true, "is_player_dehydrated must return true at 0.0")
+
+    -- 2b. Global thirsty table fallback
+    meta:set_string("thirsty_hydro", "")
+    _G.thirsty = { hydro = { ["Explorer"] = 5.0 } }
+    cur, max, _, mod_name, is_starving = deathstats.get_player_hydration(p)
+    assert(cur == 5.0 and max == 20 and mod_name == "thirsty" and is_starving == false,
+        "thirsty global table fallback failed")
+    _G.thirsty.hydro["Explorer"] = 0
+    assert(deathstats.is_player_dehydrated(p) == true, "thirsty table at 0 must be dehydrated")
+    _G.thirsty = nil
+
+    -- 3. Sprint Exhaustion Detection
+    -- 3a. hbsprint
+    _G.sprint = { stamina = { ["Explorer"] = 0 } }
+    assert(deathstats.is_player_sprint_exhausted(p) == true, "hbsprint at 0 must be sprint exhausted")
+    _G.sprint.stamina["Explorer"] = 10
+    assert(deathstats.is_player_sprint_exhausted(p) == false, "hbsprint at 10 must not be sprint exhausted")
+    _G.sprint = nil
+
+    -- 3b. sprint_lite
+    _G.sprint_lite = { players = { ["Explorer"] = { stamina = 0 } } }
+    assert(deathstats.is_player_sprint_exhausted(p) == true, "sprint_lite at 0 must be sprint exhausted")
+    _G.sprint_lite = nil
+
+    -- 3c. unified_stamina
+    _G.unified_stamina = { get_stamina = function(_pl) return 0 end }
+    assert(deathstats.is_player_sprint_exhausted(p) == true, "unified_stamina at 0 must be sprint exhausted")
+    _G.unified_stamina = nil
+
+    -- 4. Death Analysis for Thirst
+    -- 4a. Explicit { type = "thirst" }
+    local thirst_reason = { type = "thirst" }
+    local a_thirst = deathstats.analyze_death(p, thirst_reason)
+    assert(a_thirst.category == "thirst", "analyze_death must identify thirst category")
+    assert(a_thirst.reason_text == "Died of dehydration", "reason_text must be 'Died of dehydration'")
+    assert(a_thirst.funny_note ~= nil and #a_thirst.funny_note > 0, "funny_note must be provided for thirst")
+
+    -- 4b. Cause string containing "dehydrat"
+    local dehydrat_reason = { type = "set_hp", cause = "thirsty:dehydrate" }
+    local a_dehydrat = deathstats.analyze_death(p, dehydrat_reason)
+    assert(a_dehydrat.category == "thirst", "thirsty:dehydrate cause must identify thirst category")
+
+    -- 4c. Set_hp when dehydrated (thirsty mod deals set_hp)
+    meta:set_string("thirsty_hydro", "0.0")
+    local a_set_hp_thirst = deathstats.analyze_death(p, { type = "set_hp" })
+    assert(a_set_hp_thirst.category == "thirst", "set_hp while dehydrated must identify thirst category")
+
+    -- 4d. Environmental fallback with nil reason while dehydrated
+    local a_nil_thirst = deathstats.analyze_death(p, nil)
+    assert(a_nil_thirst.category == "thirst", "Environmental fallback must identify thirst category when dehydrated")
+
+    -- 4e. Hazard Priority: Fall / PvP / Lava take precedence over thirst
+    local a_fall_thirst = deathstats.analyze_death(p, { type = "fall" })
+    assert(a_fall_thirst.category == "fall", "Fall damage must take precedence over thirst")
+
+    -- 5. Death Analysis for hunger_ng ({ hunger = "starve" })
+    meta:set_string("thirsty_hydro", "20.0")
+    local hunger_ng_reason = { type = "set_hp", hunger = "starve" }
+    local a_hunger_ng = deathstats.analyze_death(p, hunger_ng_reason)
+    assert(a_hunger_ng.category == "starve", "hunger_ng hunger='starve' must identify starve category")
+
+    -- 6. Sprint-Exhausted Starvation Funny Note
+    _G.hbhunger = { hunger = { ["Explorer"] = 0 } }
+    _G.sprint = { stamina = { ["Explorer"] = 0 } }
+    local a_sprint_starve = deathstats.analyze_death(p, { type = "starve" })
+    assert(a_sprint_starve.category == "starve", "Must be starve category")
+    assert(a_sprint_starve.funny_note ~= nil, "Must have funny note")
+    _G.hbhunger = nil
+    _G.sprint = nil
+
+    -- 7. Dehydration hpchange tracking & reset cleanup
+    deathstats.recent_dehydrations["Explorer"] = nil
+    meta:set_string("thirsty_hydro", "0.0")
+    core.on_player_hpchange(p, -1, { type = "set_hp" })
+    assert(deathstats.recent_dehydrations["Explorer"] ~= nil,
+        "on_player_hpchange must record recent_dehydrations when dehydrated")
+
+    -- Race condition check: player died, hydro reset to 20 before death screen
+    meta:set_string("thirsty_hydro", "20.0")
+    local a_thirst_race = deathstats.analyze_death(p, { type = "set_hp" })
+    assert(a_thirst_race.category == "thirst",
+        "recent_dehydrations timestamp must protect against race condition where hydro was reset early")
+
+    -- Reset effects cleans up recent_dehydrations
+    deathstats.reset_player_effects(p)
+    assert(deathstats.recent_dehydrations["Explorer"] == nil,
+        "reset_player_effects must clean up recent_dehydrations")
+
+    -- 8. Standalone HUD Hiding & Restoring (for non-hudbars hunger/stamina/thirsty HUDs)
+    local raw_hud1 = p:hud_add({ type = "statbar", text = "stamina_hud_fg.png", scale = { x = 1, y = 1 } })
+    local raw_hud2 = p:hud_add({ type = "image", text = "thirsty_bar.png", scale = { x = 2, y = 2 } })
+    local raw_hud3 = p:hud_add({ type = "text", text = "Some Text", scale = { x = 1, y = 1 } })
+
+    -- Hide standalone HUDs
+    deathstats.compat_hunger.hide_standalone_huds(p)
+    assert(p.huds[raw_hud1].scale.x == 0 and p.huds[raw_hud1].scale.y == 0, "stamina HUD scale must be hidden (0, 0)")
+    assert(p.huds[raw_hud2].scale.x == 0 and p.huds[raw_hud2].scale.y == 0, "thirsty HUD scale must be hidden (0, 0)")
+    assert(p.huds[raw_hud3].scale.x == 1, "Unrelated text HUD must not be altered")
+
+    -- Restore standalone HUDs
+    deathstats.compat_hunger.restore_standalone_huds(p)
+    assert(p.huds[raw_hud1].scale.x == 1 and p.huds[raw_hud1].scale.y == 1, "stamina HUD scale must be restored")
+    assert(p.huds[raw_hud2].scale.x == 2 and p.huds[raw_hud2].scale.y == 2, "thirsty HUD scale must be restored")
+
+    -- Clean up mock
+    p:hud_remove(raw_hud1)
+    p:hud_remove(raw_hud2)
+    p:hud_remove(raw_hud3)
+    mock_players["Explorer"] = nil
+
+    print("  [PASS] Extended hunger frameworks, thirst category, sprint exhaustion & standalone HUD management")
+end
+run_test_suite_45()
+
+-- ====================================================================
+-- TEST 46: Unified Human Appearance & Skin Mod Compatibility
+-- ====================================================================
+local function run_test_suite_46()
+    print("\n--- TEST 46: Unified Human Appearance & Skin Mod Compatibility ---")
+    local p = create_mock_player("CustomStylist")
+    local meta = p:get_meta()
+
+    -- 1. edit_skin procedural layer compilation (active in-memory)
+    rawset(_G, "edit_skin", {
+        player_skins = {
+            [p] = { base = "steve.png", hair = "curly_brown", hair_color = "#331100" },
+        },
+        compile_skin = function(skin_tbl)
+            assert(skin_tbl.base == "steve.png", "compile_skin must receive player skin table")
+            return "edit_skin_compiled_composite.png"
+        end,
+    })
+    local vis_es = deathstats.get_player_visuals(p)
+    assert(vis_es.textures[1] == "edit_skin_compiled_composite.png",
+        "edit_skin compiled texture must be inherited by corpse")
+
+    -- 1b. edit_skin offline / metadata fallback (when in-memory table is nil upon death)
+    rawget(_G, "edit_skin").player_skins[p] = nil
+    meta:set_string("edit_skin:skin", core.serialize({ base = "steve.png", offline = true }))
+    local vis_es_meta = deathstats.get_player_visuals(p)
+    assert(vis_es_meta.textures[1] == "edit_skin_compiled_composite.png",
+        "edit_skin metadata fallback must compile serialized skin")
+    rawset(_G, "edit_skin", nil)
+    meta:set_string("edit_skin:skin", "")
+
+    -- 2. collectible_skins registry with custom human model (e.g. character_female.b3d)
+    rawset(_G, "collectible_skins", {
+        get_player_skin = function(name)
+            assert(name == "CustomStylist", "collectible_skins must receive player name")
+            return {
+                texture = "collectible_valkyrie.png",
+                model = "character_female.b3d",
+            }
+        end,
+    })
+    local vis_cs = deathstats.get_player_visuals(p)
+    assert(vis_cs.textures[1] == "collectible_valkyrie.png",
+        "collectible_skins texture must be inherited")
+    assert(vis_cs.mesh == "character_female.b3d",
+        "collectible_skins humanoid custom model must be inherited")
+    rawset(_G, "collectible_skins", nil)
+
+    -- 3. myappearance 9-part modular texture assembly
+    rawset(_G, "myappearance", {
+        ["CustomStylist"] = {
+            skin = "ap_skin.png^",
+            pants = "ap_pants.png^",
+            shirt = "ap_shirt.png^",
+            shoes = "ap_shoes.png^",
+            face = "ap_face.png^",
+            eyes = "ap_eyes.png^",
+            belt = "ap_belt.png^",
+            overlay = "ap_overlay.png^",
+            hair = "ap_hair.png^",
+        },
+    })
+    local vis_ma = deathstats.get_player_visuals(p)
+    assert(vis_ma.mesh == "myappearance_character.b3d",
+        "myappearance humanoid model must be myappearance_character.b3d")
+    local expected_ma = "ap_skin.png^ap_pants.png^ap_shirt.png^ap_shoes.png^ap_face.png^ap_eyes.png^ap_belt.png^ap_overlay.png^ap_hair.png"
+    assert(vis_ma.textures[1] == expected_ma,
+        "myappearance 9 parts must be concatenated and trailing '^' stripped")
+    rawset(_G, "myappearance", nil)
+
+    -- 4. clothing multi-layer overlays (SFENCE / stu)
+    -- 4a. On skinsdb (4 slots)
+    p:set_properties({ mesh = "skinsdb_3d_armor_character_5.b3d" })
+    rawset(_G, "skins", {
+        armor_loaded = true,
+        get_player_skin = function(_)
+            return {
+                get_texture = function() return "base_skinsdb_18.png" end,
+                get_meta = function(_, k)
+                    if k == "format" then return "1.8" end
+                    return nil
+                end,
+            }
+        end,
+    })
+    rawset(_G, "clothing", {
+        player_textures = {
+            ["CustomStylist"] = {
+                shirt = "linen_shirt.png",
+                pants = "linen_pants.png",
+                hat = "straw_hat.png",
+                cape = "royal_cape.png",
+            },
+        },
+    })
+    local vis_cloth_skinsdb = deathstats.get_player_visuals(p)
+    assert(vis_cloth_skinsdb.textures[1]:find("royal_cape%.png"),
+        "Cape overlay must be routed to slot 1 (v10) on skinsdb")
+    assert(vis_cloth_skinsdb.textures[2]:find("linen_shirt%.png"),
+        "Clothing overlays must be concatenated to slot 2 (v18) on skinsdb")
+    assert(vis_cloth_skinsdb.textures[2]:find("linen_pants%.png"),
+        "Pants overlay must be concatenated to slot 2 on skinsdb")
+    assert(vis_cloth_skinsdb.textures[2]:find("straw_hat%.png"),
+        "Hat overlay must be concatenated to slot 2 on skinsdb")
+    rawset(_G, "skins", nil)
+    p:set_properties({ mesh = "character.b3d" })
+
+    -- 4b. On 3d_armor (3 slots)
+    rawset(_G, "armor", {
+        textures = { ["CustomStylist"] = { skin = "armor_knight_skin.png", armor = "iron_armor.png", wielditem = "" } },
+        models = { ["CustomStylist"] = "3d_armor_character.b3d" },
+        config = { drop = false, destroy = false },
+    })
+    local vis_cloth_armor = deathstats.get_player_visuals(p)
+    assert(vis_cloth_armor.textures[1]:find("armor_knight_skin%.png"),
+        "Base skin must remain at start of slot 1")
+    assert(vis_cloth_armor.textures[1]:find("linen_shirt%.png"),
+        "Clothing overlays must be concatenated to slot 1 on 3d_armor")
+    assert(vis_cloth_armor.textures[1]:find("royal_cape%.png"),
+        "Cape overlay must be concatenated to slot 1 on 3d_armor")
+    rawset(_G, "clothing", nil)
+    rawset(_G, "armor", nil)
+
+    -- 5. Additional skin registries: nc_skins, u_skins, multiskin
+    -- 5a. nc_skins
+    rawset(_G, "nc_skins", {
+        get_skin = function(name)
+            if name == "CustomStylist" then return "nodecore_character_skin.png" end
+        end,
+    })
+    local vis_nc = deathstats.get_player_visuals(p)
+    assert(vis_nc.textures[1] == "nodecore_character_skin.png",
+        "nc_skins texture must be inherited")
+    rawset(_G, "nc_skins", nil)
+
+    -- 5b. u_skins
+    rawset(_G, "u_skins", {
+        u_skins = { ["CustomStylist"] = "classic_ranger" },
+    })
+    local vis_us = deathstats.get_player_visuals(p)
+    assert(vis_us.textures[1] == "classic_ranger.png",
+        "u_skins texture must be inherited with .png appended")
+    rawset(_G, "u_skins", nil)
+
+    -- 5c. multiskin
+    rawset(_G, "multiskin", {
+        layers = { ["CustomStylist"] = { skin = "multiskin_mage.png" } },
+    })
+    local vis_multi = deathstats.get_player_visuals(p)
+    assert(vis_multi.textures[1] == "multiskin_mage.png",
+        "multiskin texture must be inherited")
+    rawset(_G, "multiskin", nil)
+
+    -- 5d. character_creator visual scaling
+    meta:set_float("character_creator:width", 1.25)
+    meta:set_float("character_creator:height", 1.10)
+    local vis_cc = deathstats.get_player_visuals(p)
+    assert(vis_cc.visual_size.x == 1.25 and vis_cc.visual_size.y == 1.10,
+        "character_creator width and height metadata must scale corpse visual_size")
+    meta:set_float("character_creator:width", 0)
+    meta:set_float("character_creator:height", 0)
+
+    -- 6. Strict Non-Humanoid Morph Rejection: Non-human mesh must be sanitized to humanoid
+    p:set_properties({ mesh = "mobs_cow.b3d" })
+    local vis_morph_cow = deathstats.get_player_visuals(p)
+    assert(vis_morph_cow.mesh == "character.b3d",
+        "Non-humanoid mesh (mobs_cow.b3d) must be rejected and sanitized to character.b3d")
+
+    p:set_properties({ mesh = "disguises_creeper.b3d" })
+    local vis_morph_disguise = deathstats.get_player_visuals(p)
+    assert(vis_morph_disguise.mesh == "character.b3d",
+        "Disguise/morph mesh must be sanitized to character.b3d")
+    p:set_properties({ mesh = "character.b3d" })
+
+    -- 7. Invisibility / Transparent Texture Trap Recovery
+    p:set_properties({ textures = { "deathstats_transparent.png" } })
+    meta:set_string("deathstats:orig_textures", core.serialize({ "restored_player_skin.png" }))
+    local vis_trans_rec = deathstats.get_player_visuals(p)
+    assert(vis_trans_rec.textures[1] == "restored_player_skin.png",
+        "Transparent texture trap must restore original textures from metadata")
+    meta:set_string("deathstats:orig_textures", "")
+
+    -- 8. Offline player safety check
+    local vis_offline = deathstats.get_player_visuals(nil)
+    assert(vis_offline.mesh == "character.b3d", "Nil player must safely return default humanoid mesh")
+    assert(vis_offline.textures[1] == "character.png", "Nil player must safely return default character.png")
+
+    mock_players["CustomStylist"] = nil
+    print("  [PASS] Extended skin frameworks (edit_skin, collectible_skins, myappearance, clothing, nc_skins, u_skins) & humanoid model validation")
+end
+run_test_suite_46()
+
+print("\nALL 46 TEST SUITES PASSED SUCCESSFULLY!")
 
 
 
