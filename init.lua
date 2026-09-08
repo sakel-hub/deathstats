@@ -11,6 +11,8 @@
 local modpath = core.get_modpath("deathstats")
 
 dofile(modpath .. "/api.lua")
+dofile(modpath .. "/compat/hunger.lua")
+dofile(modpath .. "/compat/skins.lua")
 dofile(modpath .. "/stats.lua")
 dofile(modpath .. "/reason.lua")
 dofile(modpath .. "/gui.lua")

@@ -97,8 +97,11 @@ deathstats = {
     recent_punches = {},
     recent_falls = {},
     recent_starvations = {},
+    recent_dehydrations = {},
     respawn_immunity = {},
     left_players = {},
+    compat_hunger = {},
+    compat_skins = {},
 }
 
 -- ==========================================
@@ -120,16 +123,11 @@ function deathstats.is_player_online(player_or_name)
     return true
 end
 
---- Cancel any player momentum / velocity safely across Minetest / Luanti engine versions
+--- Cancel any player momentum / velocity safely across Luanti engine versions
 --- Uses modern player:get_velocity() / player:add_velocity() without triggering deprecation warnings
 ---@param player ObjectRef The player object
 function deathstats.zero_player_velocity(player)
     if not player then return end
-    pcall(function()
-        if player.set_velocity then
-            player:set_velocity(vector.zero())
-        end
-    end)
     local v
     if player.get_velocity then
         v = player:get_velocity()
@@ -142,6 +140,8 @@ function deathstats.zero_player_velocity(player)
         elseif player.add_player_velocity then
             player:add_player_velocity(vector.multiply(v, -1))
         end
+    elseif player.set_velocity and not player:is_player() then
+        player:set_velocity(vector.zero())
     end
 end
 
@@ -253,17 +253,19 @@ function deathstats.get_stack_name(stack)
     if not stack then
         return ""
     end
-    if type(stack) == "string" then
+    local t = type(stack)
+    if t == "string" then
         return stack:match("^([^%s]+)") or ""
-    end
-    local ok, name = pcall(function()
+    elseif t == "userdata" or t == "table" then
         if stack.get_name then
-            return stack:get_name()
+            local name = stack:get_name()
+            if type(name) == "string" then
+                return name
+            end
         end
-        return stack.name
-    end)
-    if ok and type(name) == "string" then
-        return name
+        if t == "table" and stack.name then
+            return tostring(stack.name)
+        end
     end
     return ""
 end
@@ -275,23 +277,19 @@ function deathstats.is_stack_empty(stack)
     if not stack then
         return true
     end
-    if type(stack) == "string" then
+    local t = type(stack)
+    if t == "string" then
         return stack == "" or stack:match("^%s*$") ~= nil
-    end
-    local ok, empty = pcall(function()
+    elseif t == "userdata" or t == "table" then
         if stack.is_empty then
-            return stack:is_empty()
+            return stack:is_empty() == true
         end
         if stack.get_name then
             return stack:get_name() == ""
         end
-        if stack.name then
-            return stack.name == "" or (stack.count and stack.count <= 0)
+        if t == "table" and stack.name then
+            return stack.name == "" or (stack.count ~= nil and stack.count <= 0)
         end
-        return false
-    end)
-    if ok and type(empty) == "boolean" then
-        return empty
     end
     return false
 end
@@ -305,27 +303,26 @@ function deathstats.stack_to_string(stack)
     if not stack then
         return ""
     end
-    if type(stack) == "string" then
+    local t = type(stack)
+    if t == "string" then
         return stack
-    end
-    local ok, res = pcall(function()
+    elseif t == "userdata" or t == "table" then
         if stack.to_string then
-            return stack:to_string()
-        end
-        if stack.name then
-            local cnt = stack.count and stack.count > 1 and (" " .. tostring(stack.count)) or ""
-            return tostring(stack.name) .. cnt
+            local str = stack:to_string()
+            if type(str) == "string" then
+                return str
+            end
         end
         if stack.get_name then
             local n = stack:get_name()
             local cnt = stack.get_count and stack:get_count() or 1
-            local cnt_str = cnt > 1 and (" " .. tostring(cnt)) or ""
-            return tostring(n) .. cnt_str
+            local cnt_str = (cnt and cnt > 1) and (" " .. tostring(cnt)) or ""
+            return tostring(n or "") .. cnt_str
         end
-        return ""
-    end)
-    if ok and type(res) == "string" then
-        return res
+        if t == "table" and stack.name then
+            local cnt = stack.count and stack.count > 1 and (" " .. tostring(stack.count)) or ""
+            return tostring(stack.name) .. cnt
+        end
     end
     return ""
 end
@@ -337,10 +334,7 @@ end
 function deathstats.is_inventory_list_empty(inv, list_name)
     if not inv then return true end
     if inv.is_empty then
-        local ok, empty = pcall(function() return inv:is_empty(list_name) end)
-        if ok and type(empty) == "boolean" then
-            return empty
-        end
+        return inv:is_empty(list_name) == true
     end
     if inv.get_list then
         local list = inv:get_list(list_name)
@@ -709,7 +703,7 @@ deathstats.funny_notes = {
         S("The monsters are currently celebrating at the tavern."),
         S("Don't take it personally. They hate everyone equally."),
         S("Pro tip: running away is an ancient and honorable martial art."),
-        S("Defeated by an enemy with an AI script shorter than a tweet."),
+        S("Defeated by an enemy with a mob script shorter than a tweet."),
         S("The monsters didn't even break a sweat. Do monsters sweat?"),
         S("You were outsmarted by an opponent without a cerebral cortex."),
         S("They didn't just bite you, they insulted your entire lineage."),
@@ -914,6 +908,43 @@ deathstats.funny_notes = {
         S("The hunger monster inside you won the ultimate argument."),
         S("Remember: food goes into the mouth, health goes up. Simple math."),
         S("You perished of malnutrition while surrounded by wild berries."),
+        S("Sprinted a marathon, forgot to pack a sandwich."),
+        S("Burned calories at Olympic speeds until none were left."),
+        S("Ran until your stomach was completely empty."),
+    },
+    starve_sprint = {
+        S("You sprinted everywhere until your metabolism gave out."),
+        S("Sprinting on an empty stomach: highly discouraged by doctors."),
+        S("Sprinted a marathon, forgot to pack a sandwich."),
+        S("Burned calories at Olympic speeds until none were left."),
+        S("Ran until your stomach was completely empty."),
+    },
+    thirst = {
+        S("Water, water everywhere, nor any drop to drink."),
+        S("You dried up faster than a puddle on scorching sand."),
+        S("Dehydration level: 100%. Vitality level: 0%."),
+        S("Forgot to drink? Even cacti manage to stay hydrated."),
+        S("A single glass of water would have prevented this funeral."),
+        S("You turned into a human mummy while staring at an ocean."),
+        S("Your throat was drier than the desert at high noon."),
+        S("Next time, bring a canteen instead of thirty iron ingots."),
+        S("You ignored thirst until your bodily fluids resigned in protest."),
+        S("Dehydration strikes again. Hydrate or diedrate!"),
+        S("You carried five buckets of lava, but not one of water."),
+        S("Dried out like an ancient raisin found behind the couch."),
+        S("Your internal organs requested water. You gave them cobblestone."),
+        S("Even fish know how to stay wet. Be more like fish."),
+        S("Water fountain was ten meters away. Laziness level: lethal."),
+        S("Hydro points hit zero. System shutdown inevitable."),
+        S("You sprinted through the desert without a water flask."),
+        S("Thirst took your life, but left your dignity equally parched."),
+        S("Doctor's prescription: drink 8 cups of water a day, preferably while alive."),
+        S("You turned to dust and blew away in the gentle breeze."),
+        S("Total desiccation achieved. Achievement unlocked: Dried Sponge."),
+        S("A canteen full of water weighs very little. Regret weighs a ton."),
+        S("You fell victim to the ultimate summer heat wave."),
+        S("Your tongue stuck to the roof of your mouth permanently."),
+        S("Water is life. Literally."),
     },
     unknown = {
         S("Spontaneous biological failure. Cause: existence was too difficult."),
@@ -992,125 +1023,68 @@ function deathstats.resolve_entity_info(obj)
     return "Creature", false, "Creature", nil
 end
 
+--- Get current satiation / hunger metrics for a player across all supported hunger mods
+--- Delegated to deathstats.compat_hunger.get_player_satiation
+---@param player ObjectRef The player object
+---@return number|nil current The current hunger/satiation points
+---@return number|nil max The maximum hunger/satiation capacity
+---@return number|nil ratio The normalized saturation ratio from 0.0 (empty) to 1.0 (full)
+---@return string|nil mod_name The technical identifier of the detected hunger framework
+---@return boolean is_starving True if hunger is at or below the framework's starvation damage threshold
+function deathstats.get_player_satiation(player)
+    if deathstats.compat_hunger and deathstats.compat_hunger.get_player_satiation then
+        return deathstats.compat_hunger.get_player_satiation(player)
+    end
+    return nil, nil, nil, nil, false
+end
+
 --- Check if a player is in a starving state (satiation/hunger depleted)
 --- Seamlessly integrates with hbhunger, hudbars, stamina, hunger_ng, mcl_hunger, and classic hunger
 ---@param player ObjectRef The player object
 ---@return boolean is_starving True if hunger level is at or below starvation threshold
 function deathstats.is_player_starving(player)
-    if not player or not player:is_player() then return false end
-    local name = player:get_player_name()
-    if not name or name == "" then return false end
+    if deathstats.compat_hunger and deathstats.compat_hunger.is_player_starving then
+        return deathstats.compat_hunger.is_player_starving(player)
+    end
+    local _, _, _, _, is_starving = deathstats.get_player_satiation(player)
+    return is_starving == true
+end
 
-    local starving = false
-    pcall(function()
-        -- 1. Check hbhunger mod (Wuzzy's hbhunger)
-        local hbh = rawget(_G, "hbhunger")
-        if hbh then
-            -- In hbhunger, starvation damage is dealt when h <= 1
-            if hbh.hunger and hbh.hunger[name] ~= nil then
-                local h = tonumber(hbh.hunger[name])
-                if h and h <= 1 then
-                    starving = true
-                    return
-                end
-            end
-            if hbh.get_hunger_raw then
-                local raw = tonumber(hbh.get_hunger_raw(player))
-                if raw and raw <= 1 then
-                    starving = true
-                    return
-                end
-            end
-        end
+--- Get hydration status and metrics for a player from thirsty mod
+--- Delegated to deathstats.compat_hunger.get_player_hydration
+---@param player ObjectRef The player object
+---@return number|nil current Current hydro points (0-20)
+---@return number|nil max Maximum hydration (20)
+---@return number|nil ratio Normalized hydration ratio (0.0 to 1.0)
+---@return string|nil mod_name Mod identifier ("thirsty")
+---@return boolean is_dehydrated True if hydro points <= 0
+function deathstats.get_player_hydration(player)
+    if deathstats.compat_hunger and deathstats.compat_hunger.get_player_hydration then
+        return deathstats.compat_hunger.get_player_hydration(player)
+    end
+    return nil, nil, nil, nil, false
+end
 
-        -- 2. Check hudbars (hb) "satiation" or "hunger" registered bar state
-        local hb_mod = rawget(_G, "hb")
-        if hb_mod then
-            local tables = hb_mod.hudtables
-            for _, bar_id in ipairs({ "satiation", "hunger" }) do
-                -- Direct safe inspection of hudstate without calling get_hudbar_state which crashes on unregistered bars
-                if tables and tables[bar_id] and tables[bar_id].hudstate and tables[bar_id].hudstate[name] then
-                    local val = tonumber(tables[bar_id].hudstate[name].value)
-                    if val and val <= 1 then
-                        starving = true
-                        return
-                    end
-                elseif hb_mod.get_hudbar_state and tables and tables[bar_id] then
-                    local ok, state = pcall(hb_mod.get_hudbar_state, player, bar_id)
-                    if ok and state and state.value ~= nil then
-                        local val = tonumber(state.value)
-                        if val and val <= 1 then
-                            starving = true
-                            return
-                        end
-                    end
-                end
-            end
-        end
+--- Check if player is dehydrated (thirst hydro depleted)
+---@param player ObjectRef
+---@return boolean
+function deathstats.is_player_dehydrated(player)
+    if deathstats.compat_hunger and deathstats.compat_hunger.is_player_dehydrated then
+        return deathstats.compat_hunger.is_player_dehydrated(player)
+    end
+    local _, _, _, _, is_dehydrated = deathstats.get_player_hydration(player)
+    return is_dehydrated == true
+end
 
-        -- 3. Check stamina mod
-        local stam = rawget(_G, "stamina")
-        if stam then
-            local sval = (stam.get and stam.get(player))
-                or (stam.get_stamina and stam.get_stamina(player))
-            if sval ~= nil and tonumber(sval) <= 0 then
-                starving = true
-                return
-            end
-            local meta = player:get_meta()
-            if meta and meta:get_string("stamina:level") ~= "" then
-                local slvl = tonumber(meta:get_string("stamina:level"))
-                if slvl and slvl <= 0 then
-                    starving = true
-                    return
-                end
-            end
-        end
-
-        -- 4. Check hunger_ng mod
-        local hng = rawget(_G, "hunger_ng")
-        if hng then
-            local val = (hng.get_hunger and hng.get_hunger(player))
-                or (hng.hunger and hng.hunger[name])
-            if val ~= nil and tonumber(val) <= 0 then
-                starving = true
-                return
-            end
-        end
-
-        -- 5. Check MineClone mcl_hunger
-        local mcl_h = rawget(_G, "mcl_hunger")
-        if mcl_h and mcl_h.get_hunger then
-            local val = tonumber(mcl_h.get_hunger(player))
-            if val and val <= 0 then
-                starving = true
-                return
-            end
-        end
-
-        -- 6. Check classic hunger mod
-        local hmod = rawget(_G, "hunger")
-        if hmod then
-            local val = (hmod.hunger and hmod.hunger[name])
-                or (hmod.get_hunger and hmod.get_hunger(player))
-            if val ~= nil and tonumber(val) <= 1 then
-                starving = true
-                return
-            end
-        end
-
-        -- 7. Direct inventory "hunger" stack count check (hbhunger stores count = hunger + 1)
-        local inv = player:get_inventory()
-        if inv and inv.get_size and inv:get_size("hunger") > 0 and inv.get_stack then
-            local st = inv:get_stack("hunger", 1)
-            if st and not st:is_empty() and st:get_count() <= 2 then
-                starving = true
-                return
-            end
-        end
-    end)
-
-    return starving
+--- Check if player was recently sprinting or sprint-stamina exhausted
+--- Supports hbsprint, sprint_lite, unified_stamina, stamina
+---@param player ObjectRef
+---@return boolean
+function deathstats.is_player_sprint_exhausted(player)
+    if deathstats.compat_hunger and deathstats.compat_hunger.is_player_sprint_exhausted then
+        return deathstats.compat_hunger.is_player_sprint_exhausted(player)
+    end
+    return false
 end
 
 --- Deep environmental and state inspection fallback when engine reason table is nil or incomplete
@@ -1217,18 +1191,35 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 8. Check starvation (hbhunger, stamina, hunger_ng, hudbars, or inventory hunger)
-    local was_starving = deathstats.is_player_starving(player)
-        or (deathstats.recent_starvations[name] and (core.get_gametime() - deathstats.recent_starvations[name] <= 3.5))
-    if was_starving then
+    -- 8. Check dehydration / thirst (thirsty mod)
+    local was_dehydrated = deathstats.is_player_dehydrated(player)
+        or (deathstats.recent_dehydrations[name] and (core.get_gametime() - deathstats.recent_dehydrations[name] <= 3.5))
+    if was_dehydrated then
         return {
-            category = "starve",
-            reason_text = S("Starved to death"),
-            funny_note = deathstats.get_funny_note("starve"),
+            category = "thirst",
+            reason_text = S("Died of dehydration"),
+            funny_note = deathstats.get_funny_note("thirst"),
         }
     end
 
-    -- 9. Fallback unknown
+    -- 9. Check starvation (hbhunger, stamina, hunger_ng, hudbars, or inventory hunger)
+    local was_starving = deathstats.is_player_starving(player)
+        or (deathstats.recent_starvations[name] and (core.get_gametime() - deathstats.recent_starvations[name] <= 3.5))
+    if was_starving then
+        local note
+        if deathstats.is_player_sprint_exhausted(player) then
+            note = deathstats.get_funny_note("starve_sprint") or deathstats.get_funny_note("starve")
+        else
+            note = deathstats.get_funny_note("starve")
+        end
+        return {
+            category = "starve",
+            reason_text = S("Starved to death"),
+            funny_note = note,
+        }
+    end
+
+    -- 10. Fallback unknown
     return {
         category = "unknown",
         reason_text = "Died from mysterious causes",
@@ -1262,8 +1253,8 @@ function deathstats.analyze_death(player, reason)
     end
 
     -- If reason table is provided and valid
-    if reason and type(reason) == "table" and reason.type then
-        local rtype = reason.type
+    if reason and type(reason) == "table" and (reason.type or reason.hunger or reason.thirst or reason.cause) then
+        local rtype = reason.type or (reason.hunger and "starve") or (reason.thirst and "thirst") or "set_hp"
 
         -- PUNCH / KILL COMBAT
         if rtype == "punch" or rtype == "kill" then
@@ -1366,24 +1357,37 @@ function deathstats.analyze_death(player, reason)
             }
         end
 
-        -- STARVATION (explicit reason type or cause from hunger mods e.g. stamina, mcl_hunger)
-        if rtype == "starve" or rtype == "hunger"
-            or (reason.cause and (tostring(reason.cause):find("starve") or tostring(reason.cause):find("hunger"))) then
+        -- DEHYDRATION / THIRST (thirsty mod or explicit thirst reason)
+        local was_dehydrated = deathstats.is_player_dehydrated(player)
+            or (deathstats.recent_dehydrations[pname] and (core.get_gametime() - deathstats.recent_dehydrations[pname] <= 3.5))
+        if rtype == "thirst" or rtype == "dehydrate"
+            or (reason.thirst ~= nil)
+            or (reason.cause and (tostring(reason.cause):find("thirst") or tostring(reason.cause):find("dehydrat")))
+            or (rtype == "set_hp" and was_dehydrated) then
             return {
-                category = "starve",
-                reason_text = S("Starved to death"),
-                funny_note = deathstats.get_funny_note("starve"),
+                category = "thirst",
+                reason_text = S("Died of dehydration"),
+                funny_note = deathstats.get_funny_note("thirst"),
             }
         end
 
-        -- SET_HP from hunger mod (e.g. hbhunger calling player:set_hp without extra reason)
+        -- STARVATION (explicit reason type or cause from hunger mods e.g. stamina, mcl_hunger, hunger_ng)
         local was_starving = deathstats.is_player_starving(player)
             or (deathstats.recent_starvations[pname] and (core.get_gametime() - deathstats.recent_starvations[pname] <= 3.5))
-        if rtype == "set_hp" and was_starving then
+        if rtype == "starve" or rtype == "hunger"
+            or (reason.hunger and tostring(reason.hunger):find("starve"))
+            or (reason.cause and (tostring(reason.cause):find("starve") or tostring(reason.cause):find("hunger")))
+            or (rtype == "set_hp" and was_starving) then
+            local note
+            if deathstats.is_player_sprint_exhausted(player) then
+                note = deathstats.get_funny_note("starve_sprint") or deathstats.get_funny_note("starve")
+            else
+                note = deathstats.get_funny_note("starve")
+            end
             return {
                 category = "starve",
                 reason_text = S("Starved to death"),
-                funny_note = deathstats.get_funny_note("starve"),
+                funny_note = note,
             }
         end
     end
@@ -1417,6 +1421,39 @@ core.register_entity("deathstats:corpse", {
                     selectionbox = { 0, 0, 0, 0, 0, 0 },
                     pointable = false,
                 })
+            end
+        end
+    end,
+})
+
+--- Register attached wielditem entity displayed in the corpse's right hand when inventory is retained
+core.register_entity("deathstats:corpse_wielditem", {
+    initial_properties = {
+        visual = "wielditem",
+        visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+        pointable = false,
+        physical = false,
+        collide_with_objects = false,
+        static_save = false,
+    },
+    on_activate = function(self)
+        if self.object then
+            self.object:set_armor_groups({ immortal = 1 })
+            if self.object.set_properties then
+                self.object:set_properties({
+                    selectionbox = { 0, 0, 0, 0, 0, 0 },
+                    pointable = false,
+                    physical = false,
+                    collide_with_objects = false,
+                })
+            end
+        end
+    end,
+    on_step = function(self)
+        local parent = self.object and self.object.get_attach and self.object:get_attach()
+        if not parent then
+            if self.object and self.object.remove then
+                self.object:remove()
             end
         end
     end,
@@ -1528,11 +1565,11 @@ function deathstats.pose_corpse(corpse, mesh_name)
     end
 
     -- Freeze pose on the final frame of the lay animation so corpse lies completely flat
-    -- Note: frame_speed must be non-zero (1) for Irrlicht/Minetest to seek to the frame; loop must be false
+    -- Note: frame_speed must be non-zero (1) for the Luanti engine to seek to the frame; loop must be false
     local target_frame = (type(anim_range) == "table" and (anim_range.y or anim_range[2])) or 166
-    pcall(function()
+    if corpse.set_animation then
         corpse:set_animation({ x = target_frame, y = target_frame }, 1, 0, false)
-    end)
+    end
 end
 
 --- Rotate a corpse bone in 3D space (local X, Y, Z axes)
@@ -1547,43 +1584,53 @@ function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
     -- Luanti >= 5.9.0 ObjectRef:set_bone_override
     -- Vec rotation is in radians; absolute = false applies relative to the frozen lay animation pose
     if corpse.set_bone_override then
-        local ok = pcall(function()
-            corpse:set_bone_override(bone_name, {
-                rotation = {
-                    vec = vector.new(rot_vec.x or 0, rot_vec.y or 0, rot_vec.z or 0),
-                    absolute = false,
-                    interpolation = 0,
-                },
-            })
-        end)
-        if ok then return true end
+        local success = corpse:set_bone_override(bone_name, {
+            rotation = {
+                vec = vector.new(rot_vec.x or 0, rot_vec.y or 0, rot_vec.z or 0),
+                absolute = false,
+                interpolation = 0,
+            },
+        })
+        if success ~= false then return true end
     end
 
     -- Luanti <= 5.8 fallback: set_bone_position(bone, pos, rot_deg)
     if corpse.set_bone_position then
-        local ok = pcall(function()
-            if not corpse._base_bone_rot then
-                corpse._base_bone_rot = {}
+        local luaent = corpse.get_luaentity and corpse:get_luaentity()
+        local base_store = (type(luaent) == "table" and luaent) or (type(corpse) == "table" and corpse) or nil
+        local base
+        if base_store then
+            if not base_store._base_bone_rot then
+                base_store._base_bone_rot = {}
             end
-            if not corpse._base_bone_rot[bone_name] then
+            if not base_store._base_bone_rot[bone_name] then
                 local cur_pos, cur_rot
                 if corpse.get_bone_position then
                     cur_pos, cur_rot = corpse:get_bone_position(bone_name)
                 end
-                corpse._base_bone_rot[bone_name] = {
+                base_store._base_bone_rot[bone_name] = {
                     pos = cur_pos or vector.zero(),
                     rot = cur_rot or vector.zero(),
                 }
             end
-            local base = corpse._base_bone_rot[bone_name]
-            local deg_vec = vector.new(
-                base.rot.x + math.deg(rot_vec.x or 0),
-                base.rot.y + math.deg(rot_vec.y or 0),
-                base.rot.z + math.deg(rot_vec.z or 0)
-            )
-            corpse:set_bone_position(bone_name, base.pos, deg_vec)
-        end)
-        if ok then return true end
+            base = base_store._base_bone_rot[bone_name]
+        else
+            local cur_pos, cur_rot
+            if corpse.get_bone_position then
+                cur_pos, cur_rot = corpse:get_bone_position(bone_name)
+            end
+            base = {
+                pos = cur_pos or vector.zero(),
+                rot = cur_rot or vector.zero(),
+            }
+        end
+        local deg_vec = vector.new(
+            base.rot.x + math.deg(rot_vec.x or 0),
+            base.rot.y + math.deg(rot_vec.y or 0),
+            base.rot.z + math.deg(rot_vec.z or 0)
+        )
+        corpse:set_bone_position(bone_name, base.pos, deg_vec)
+        return true
     end
 
     return false
@@ -1648,11 +1695,51 @@ function deathstats.fracture_corpse_limbs(corpse, custom_angles)
     return applied
 end
 
+--- Get the active corpse entity for a player name if currently spawned
+---@param player_name string
+---@return ObjectRef|nil corpse The active corpse entity or nil
+function deathstats.get_corpse(player_name)
+    if not player_name or player_name == "" then return nil end
+    local data = deathstats.player_camera_data and deathstats.player_camera_data[player_name]
+    return data and data.corpse
+end
+
+--- Get the attached wielditem entity from a corpse
+---@param corpse ObjectRef|nil The corpse entity object
+---@return ObjectRef|nil went The attached wielditem entity or nil
+function deathstats.get_corpse_wielditem(corpse)
+    if not corpse then return nil end
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    return luaent and luaent._wielditem_entity
+end
+
+--- Safely remove a corpse entity and any attached wielditem entity
+---@param corpse ObjectRef|nil The corpse object reference
+function deathstats.remove_corpse(corpse)
+    if not corpse then return end
+    local xbows_mod = rawget(_G, "XBows")
+    if xbows_mod and type(xbows_mod.cleanup_corpse_arrows) == "function" then
+        xbows_mod.cleanup_corpse_arrows(corpse)
+    end
+    local went = deathstats.get_corpse_wielditem(corpse)
+    if went and (not went.is_valid or went:is_valid()) and went.remove then
+        went:remove()
+    end
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    if luaent then
+        luaent._wielditem_entity = nil
+    end
+    if (not corpse.is_valid or corpse:is_valid()) and corpse.remove then
+        corpse:remove()
+    end
+end
+
 --- Spawn and configure the corpse placeholder entity at the given position
 ---@param corpse_pos table The {x, y, z} coordinates where corpse should be placed
 ---@param visuals table The player visual appearance table (mesh, textures, visual_size, yaw)
+---@param player ObjectRef|nil Optional player reference for transferring attached arrows
 ---@return ObjectRef|nil corpse The spawned corpse entity or nil if failed (e.g. mapblock not loaded)
-function deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
     if not corpse_pos or not visuals then return nil end
     local corpse = core.add_entity(corpse_pos, "deathstats:corpse")
     if corpse then
@@ -1674,6 +1761,33 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
             and (deathstats.config.enable_fall_fractures ~= false)
         if fractures_enabled then
             deathstats.fracture_corpse_limbs(corpse)
+        end
+
+        -- Attach 3D wielditem entity to right hand if inventory items are retained on death
+        if visuals.wield_item and visuals.wield_item ~= "" and not visuals.inventory_dropped then
+            local wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+            if wield_ent then
+                wield_ent:set_properties({
+                    textures = { visuals.wield_item },
+                    wield_item = visuals.wield_item,
+                    visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+                    pointable = false,
+                })
+                if wield_ent.set_attach then
+                    -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
+                    wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
+                end
+                local luaent = corpse.get_luaentity and corpse:get_luaentity()
+                if luaent then
+                    luaent._wielditem_entity = wield_ent
+                end
+            end
+        end
+
+        -- Transfer attached x_bows arrows from player to corpse if x_bows is loaded
+        local xbows_loaded = rawget(_G, "XBows")
+        if player and xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
+            xbows_loaded.transfer_arrows_to_corpse(player, corpse)
         end
     end
     return corpse
@@ -1746,7 +1860,7 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
     return "impact"
 end
 
---- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti/Minetest clients
+--- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti clients
 ---@param effect_type string "water"|"lava"|"fire"|"impact"
 ---@param corpse_pos table The {x, y, z} position of the corpse
 ---@return table|nil def ParticleSpawner definition table
@@ -2008,7 +2122,7 @@ end
 
 
 --- Wrap an animation function to prevent death animation looping while a player is dead
---- In minetest_game / repixture, player_api.globalstep calls player_set_animation(player, "lay") every tick
+--- In minetest_game / repixture (Luanti games), player_api.globalstep calls player_set_animation(player, "lay") every tick
 --- which defaults to loop = true at 30 fps, causing a violent 0.13s death replay loop.
 --- This hook forces loop = false and speed = 1 so the character cleanly stays in the final flat pose.
 ---@param mod_table table|nil The mod table containing the animation function
@@ -2087,10 +2201,126 @@ function deathstats.is_armor_dropped(player)
     return false
 end
 
+--- Check if player inventory/items are dropped or lost on death
+--- If false, the player keeps items in inventory, so corpse should display wielded item
+---@param player ObjectRef|nil Optional player reference
+---@return boolean dropped True if items are dropped on death, false if kept
+function deathstats.is_inventory_dropped(player)
+    -- 1. Creative mode: players do not lose inventory
+    if player and player:is_player() then
+        local name = player:get_player_name()
+        if name and core.is_creative_enabled(name) then
+            return false
+        end
+    end
+
+    -- 2. Engine & Game Settings: keep_inventory flags
+    local setting_keys = {
+        "keep_inventory",
+        "keepinventory",
+        "mcl_keepInventory",
+        "gamerule:keepInventory",
+    }
+    for _, key in ipairs(setting_keys) do
+        if core.settings:get_bool(key) == true then
+            return false
+        end
+    end
+
+    -- 3. Bones mod configuration (minetest_game / default Luanti games)
+    local _, bones_mode, has_bones_mod = deathstats.get_bones_mode()
+    if has_bones_mod then
+        if bones_mode == "keep" then
+            return false
+        elseif bones_mode == "drop" or bones_mode == "bones" then
+            return true
+        end
+    else
+        local mode_setting = core.settings:get("bones_mode")
+        if mode_setting == "keep" then
+            return false
+        elseif mode_setting == "drop" then
+            return true
+        end
+    end
+
+    -- 4. Mod-specific drop handlers
+    if rawget(_G, "mcl_death_drop") ~= nil or rawget(_G, "rp_drop_items_on_die") ~= nil then
+        return true
+    end
+
+    -- 5. Default engine behavior (without bones or drop mods, inventory is kept)
+    return false
+end
+
+--- Extract the player's active wielded item name, ignoring internal camera hands
+---@param player ObjectRef The player object
+---@return string item_name The item technical name (e.g. "default:sword_steel"), or "" if empty/hand
+function deathstats.get_player_wield_item(player)
+    if not player or not player:is_player() then
+        return ""
+    end
+
+    -- 1. Check player's direct wielded item
+    local stack = player:get_wielded_item()
+    local name = deathstats.get_stack_name(stack)
+    if name ~= "" and name ~= "deathstats:camera_hand" then
+        return name
+    end
+
+    -- 2. Check inventory main list at wield index
+    local inv = player:get_inventory()
+    local wield_idx = player:get_wield_index() or 1
+    if inv then
+        local main_stack = inv:get_stack("main", wield_idx)
+        local main_name = deathstats.get_stack_name(main_stack)
+        if main_name ~= "" and main_name ~= "deathstats:camera_hand" then
+            return main_name
+        end
+    end
+
+    -- 3. Check stashed main inventory from player metadata if available
+    local meta = player:get_meta()
+    if meta then
+        local raw_main = meta:get_string("deathstats:stashed_main")
+        if raw_main and raw_main ~= "" then
+            local des_main = core.deserialize(raw_main)
+            if type(des_main) == "table" then
+                local idx = wield_idx or 1
+                if des_main[idx] and des_main[idx] ~= "" and des_main[idx] ~= "deathstats:camera_hand" then
+                    return deathstats.get_stack_name(des_main[idx])
+                end
+            end
+        end
+    end
+
+    -- 4. Check 3d_armor textures table if available
+    local armor_mod = rawget(_G, "armor")
+    if armor_mod and armor_mod.textures then
+        local pname = player:get_player_name()
+        local a_tex = pname and armor_mod.textures[pname]
+        if a_tex and a_tex.wielditem and a_tex.wielditem ~= "" and a_tex.wielditem ~= "3d_armor_trans.png" and a_tex.wielditem ~= "blank.png" then
+            local item_clean = a_tex.wielditem:gsub("%.png$", ""):gsub("_", ":", 1)
+            if core.registered_items[a_tex.wielditem] then
+                return a_tex.wielditem
+            elseif core.registered_items[item_clean] then
+                return item_clean
+            else
+                return a_tex.wielditem
+            end
+        end
+    end
+
+    return ""
+end
+
 --- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
 ---@param player ObjectRef The player object
 ---@return table visuals { mesh = string, textures = table, visual_size = table, yaw = number, armor_dropped = boolean }
 function deathstats.get_player_visuals(player)
+    if deathstats.compat_skins and deathstats.compat_skins.get_player_visuals then
+        return deathstats.compat_skins.get_player_visuals(player)
+    end
     local name = player:get_player_name()
     local props = player:get_properties() or {}
 
@@ -2110,6 +2340,8 @@ function deathstats.get_player_visuals(player)
     end
 
     local drops_armor = deathstats.is_armor_dropped(player)
+    local drops_inventory = deathstats.is_inventory_dropped(player)
+    local wield_item = deathstats.get_player_wield_item(player)
 
     -- Detect if using the 4-slot skinsdb model (skinsdb_3d_armor_character_5.b3d)
     local is_skinsdb = (mesh == "skinsdb_3d_armor_character_5.b3d")
@@ -2207,11 +2439,11 @@ function deathstats.get_player_visuals(player)
         local a_tex = (armor_mod and armor_mod.textures and armor_mod.textures[name]) or {}
         local skin_tex = a_tex.skin or (props.textures and props.textures[1]) or "character.png"
         local armor_tex = a_tex.armor or "3d_armor_trans.png"
-        local wield_tex = a_tex.wielditem or "3d_armor_trans.png"
+        -- Keep slot 3 transparent so the attached 3D wielditem entity renders without 2D quad duplication
+        local wield_tex = "3d_armor_trans.png"
 
         if drops_armor then
             armor_tex = "3d_armor_trans.png"
-            wield_tex = "3d_armor_trans.png"
         end
 
         -- Clothing support on 3d_armor
@@ -2339,6 +2571,8 @@ function deathstats.get_player_visuals(player)
         visual_size = visual_size,
         yaw = yaw,
         armor_dropped = drops_armor,
+        inventory_dropped = drops_inventory,
+        wield_item = wield_item,
     }
 end
 
@@ -2562,22 +2796,24 @@ function deathstats.update_death_camera(player, dtime)
             data.orbit_center = new_center
             -- When bones are placed, remove any corpse entity so bones block is visible
             if data.corpse then
-                if data.corpse.remove then
-                    pcall(function() data.corpse:remove() end)
-                end
+                deathstats.remove_corpse(data.corpse)
                 data.corpse = nil
+            end
+            if data.corpse_wielditem then
+                if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                    data.corpse_wielditem:remove()
+                end
+                data.corpse_wielditem = nil
             end
             data.corpse_pos = nil
             data.corpse_visuals = nil
-            if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+            if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.set_pos then
                 data.anchor:set_pos(new_center)
             end
-            if player.set_detach then pcall(function() player:set_detach() end) end
+            if player.set_detach then player:set_detach() end
             if player.set_pos then player:set_pos(new_center) end
             if data.anchor and player.set_attach then
-                pcall(function()
-                    player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
-                end)
+                player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
             end
         end
     end
@@ -2587,9 +2823,10 @@ function deathstats.update_death_camera(player, dtime)
     local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
     if not bones_active then
         if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
-            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals)
+            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player)
             if new_corpse then
                 data.corpse = new_corpse
+                data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
             end
             if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners then
                 local effect_type = deathstats.get_corpse_effect_type(data.corpse_pos, data.death_info)
@@ -2601,10 +2838,14 @@ function deathstats.update_death_camera(player, dtime)
     else
         -- If bones are active, ensure any lingering corpse entity is removed
         if data.corpse then
-            if data.corpse.remove then
-                pcall(function() data.corpse:remove() end)
-            end
+            deathstats.remove_corpse(data.corpse)
             data.corpse = nil
+        end
+        if data.corpse_wielditem then
+            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                data.corpse_wielditem:remove()
+            end
+            data.corpse_wielditem = nil
         end
     end
 
@@ -2627,9 +2868,7 @@ function deathstats.update_death_camera(player, dtime)
             data.anchor = new_anchor
             if player.set_pos then player:set_pos(data.orbit_center) end
             if player.set_attach then
-                pcall(function()
-                    player:set_attach(new_anchor, "", vector.zero(), vector.zero(), false)
-                end)
+                player:set_attach(new_anchor, "", vector.zero(), vector.zero(), false)
             end
         end
     end
@@ -2739,7 +2978,7 @@ function deathstats.update_death_camera(player, dtime)
         local children = player:get_children()
         if children then
             for _, child in ipairs(children) do
-                if child and (not child.is_valid or child:is_valid()) and child ~= data.anchor and child ~= data.corpse then
+                if child and (not child.is_valid or child:is_valid()) and child ~= data.anchor and child ~= data.corpse and child ~= data.corpse_wielditem then
                     if child.get_properties and child.set_properties then
                         local cp = child:get_properties()
                         if cp and (cp.is_visible ~= false
@@ -2766,9 +3005,7 @@ function deathstats.update_death_camera(player, dtime)
     -- Keep player attached to camera anchor to prevent falling/rubber-banding if detached by external mods
     if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
         if player.get_attach and not player:get_attach() and player.set_attach then
-            pcall(function()
-                player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
-            end)
+            player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
         end
     end
 
@@ -2928,22 +3165,24 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
         local new_center = bones_pos
         data.orbit_center = new_center
         if data.corpse then
-            if data.corpse.remove then
-                pcall(function() data.corpse:remove() end)
-            end
+            deathstats.remove_corpse(data.corpse)
             data.corpse = nil
+        end
+        if data.corpse_wielditem then
+            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                data.corpse_wielditem:remove()
+            end
+            data.corpse_wielditem = nil
         end
         data.corpse_pos = nil
         data.corpse_visuals = nil
-        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.set_pos then
             data.anchor:set_pos(new_center)
         end
-        if player.set_detach then pcall(function() player:set_detach() end) end
+        if player.set_detach then player:set_detach() end
         if player.set_pos then player:set_pos(new_center) end
         if data.anchor and player.set_attach then
-            pcall(function()
-                player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
-            end)
+            player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
         end
         deathstats.update_death_camera(player, 0)
     end
@@ -3077,19 +3316,21 @@ function deathstats.set_death_camera(player, death_info)
     -- Clean up any existing anchor / camera session
     local old_data = deathstats.player_camera_data[name]
     if old_data then
-        if old_data.anchor and (not old_data.anchor.is_valid or old_data.anchor:is_valid()) then
-            pcall(function() old_data.anchor:remove() end)
+        if old_data.anchor and (not old_data.anchor.is_valid or old_data.anchor:is_valid()) and old_data.anchor.remove then
+            old_data.anchor:remove()
         end
         old_data.anchor = nil
         if old_data.particle_spawners then
             for _, sid in ipairs(old_data.particle_spawners) do
-                pcall(function() core.delete_particlespawner(sid, name) end)
+                if core.delete_particlespawner then
+                    core.delete_particlespawner(sid, name)
+                end
             end
         end
         old_data.particle_spawners = nil
     end
-    if player:get_attach() then
-        pcall(function() player:set_detach() end)
+    if player.get_attach and player:get_attach() and player.set_detach then
+        player:set_detach()
     end
     deathstats.zero_player_velocity(player)
 
@@ -3200,6 +3441,8 @@ function deathstats.set_death_camera(player, death_info)
         if saved_corpse.visual_size then visuals.visual_size = saved_corpse.visual_size end
         if saved_corpse.yaw then visuals.yaw = saved_corpse.yaw end
         if saved_corpse.armor_dropped ~= nil then visuals.armor_dropped = saved_corpse.armor_dropped end
+        if saved_corpse.inventory_dropped ~= nil then visuals.inventory_dropped = saved_corpse.inventory_dropped end
+        if saved_corpse.wield_item ~= nil then visuals.wield_item = saved_corpse.wield_item end
     elseif meta then
         meta:set_string("deathstats:orig_textures", core.serialize(visuals.textures))
         meta:set_string("deathstats:orig_mesh", visuals.mesh or "character.b3d")
@@ -3212,12 +3455,14 @@ function deathstats.set_death_camera(player, death_info)
             textures = visuals.textures,
             visual_size = visuals.visual_size,
             armor_dropped = visuals.armor_dropped,
+            inventory_dropped = visuals.inventory_dropped,
+            wield_item = visuals.wield_item,
         }))
     end
 
     local corpse = nil
     if not expect_bones then
-        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
     end
     local particle_spawners = nil
     if deathstats.config.enable_corpse_particles ~= false then
@@ -3229,9 +3474,10 @@ function deathstats.set_death_camera(player, death_info)
             local p = core.get_player_by_name(name)
             local cdata = deathstats.player_camera_data[name]
             if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse and not cdata.has_bones and not cdata.expect_bones then
-                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals)
+                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
+                    cdata.corpse_wielditem = deathstats.get_corpse_wielditem(retry_corpse)
                 end
                 if deathstats.config.enable_corpse_particles ~= false and not cdata.particle_spawners then
                     cdata.particle_spawners = deathstats.spawn_corpse_particles(corpse_pos, death_info)
@@ -3290,23 +3536,21 @@ function deathstats.set_death_camera(player, death_info)
     end
 
     -- Hide gameplay HUD elements and wielditem to ensure clean cinematic view
-    if player.hud_set_flags then
-        player:hud_set_flags({
-            crosshair = false,
-            hotbar = false,
-            healthbar = false,
-            breathbar = false,
-            minimap = false,
-            wielditem = false,
-        })
-    end
+    player:hud_set_flags({
+        crosshair = false,
+        hotbar = false,
+        healthbar = false,
+        breathbar = false,
+        minimap = false,
+        wielditem = false,
+    })
     if deathstats.compat_hudbars and deathstats.compat_hudbars.hide then
         deathstats.compat_hudbars.hide(player)
     else
         local hb_mod = rawget(_G, "hb")
         if hb_mod and hb_mod.hudtables and hb_mod.hide_hudbar then
             for id in pairs(hb_mod.hudtables) do
-                pcall(function() hb_mod.hide_hudbar(player, id) end)
+                hb_mod.hide_hudbar(player, id)
             end
         end
     end
@@ -3356,9 +3600,7 @@ function deathstats.set_death_camera(player, death_info)
     end
     if player.set_pos then player:set_pos(anchor_pos) end
     if anchor and player.set_attach then
-        pcall(function()
-            player:set_attach(anchor, "", vector.zero(), vector.zero(), false)
-        end)
+        player:set_attach(anchor, "", vector.zero(), vector.zero(), false)
     end
 
     local initial_angle = visuals.yaw or 0
@@ -3379,6 +3621,7 @@ function deathstats.set_death_camera(player, death_info)
         orbit_height = height,
         orbit_speed = speed,
         corpse = corpse,
+        corpse_wielditem = deathstats.get_corpse_wielditem(corpse),
         anchor = anchor,
         old_armor_groups = old_armor_groups,
         old_is_visible = old_is_visible,
@@ -3410,24 +3653,32 @@ function deathstats.reset_camera(player, is_leaving)
     local data = deathstats.player_camera_data[name]
 
     -- 1. Detach player from camera anchor
-    pcall(function()
+    if player.set_detach then
         player:set_detach()
-    end)
+    end
 
     -- 2. Remove corpse placeholder, camera anchor entities, and particle spawners
     if data then
         if data.particle_spawners then
             for _, pid in ipairs(data.particle_spawners) do
-                pcall(function() core.delete_particlespawner(pid) end)
+                if core.delete_particlespawner then
+                    core.delete_particlespawner(pid)
+                end
             end
             data.particle_spawners = nil
         end
-        if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
-            pcall(function() data.corpse:remove() end)
+        if data.corpse then
+            deathstats.remove_corpse(data.corpse)
             data.corpse = nil
         end
-        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-            pcall(function() data.anchor:remove() end)
+        if data.corpse_wielditem then
+            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                data.corpse_wielditem:remove()
+            end
+            data.corpse_wielditem = nil
+        end
+        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.remove then
+            data.anchor:remove()
             data.anchor = nil
         end
     end
@@ -3544,11 +3795,11 @@ function deathstats.reset_camera(player, is_leaving)
         local def_mod = rawget(_G, "default")
         local mcl_p = rawget(_G, "mcl_player")
         if papi and papi.set_animation then
-            pcall(papi.set_animation, p, "stand", 30)
+            papi.set_animation(p, "stand", 30)
         elseif def_mod and def_mod.player_set_animation then
-            pcall(def_mod.player_set_animation, p, "stand", 30)
+            def_mod.player_set_animation(p, "stand", 30)
         elseif mcl_p and mcl_p.player_set_animation then
-            pcall(mcl_p.player_set_animation, p, "stand", 30)
+            mcl_p.player_set_animation(p, "stand", 30)
         end
     end
     restore_stand()
@@ -3567,25 +3818,26 @@ function deathstats.reset_camera(player, is_leaving)
     -- 9. Restore gameplay HUD flags and custom hudbars
     local is_hb_health = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar()
     local is_hb_breath = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_breathbar and deathstats.compat_hudbars.manages_breathbar()
-    if player.hud_set_flags then
-        player:hud_set_flags({
-            crosshair = true,
-            hotbar = true,
-            healthbar = not is_hb_health,
-            breathbar = not is_hb_breath,
-            minimap = true,
-            wielditem = true,
-        })
-    end
+    player:hud_set_flags({
+        crosshair = true,
+        hotbar = true,
+        healthbar = not is_hb_health,
+        breathbar = not is_hb_breath,
+        minimap = true,
+        wielditem = true,
+    })
     if deathstats.compat_hudbars and deathstats.compat_hudbars.unhide then
         deathstats.compat_hudbars.unhide(player)
     else
         local hb_mod = rawget(_G, "hb")
         if hb_mod and hb_mod.hudtables and hb_mod.unhide_hudbar then
             for id in pairs(hb_mod.hudtables) do
-                pcall(function() hb_mod.unhide_hudbar(player, id) end)
+                hb_mod.unhide_hudbar(player, id)
             end
         end
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.restore_standalone_huds then
+        deathstats.compat_hunger.restore_standalone_huds(player)
     end
 end
 
@@ -3603,15 +3855,24 @@ core.register_on_leaveplayer(function(player)
     if data then
         if data.particle_spawners then
             for _, pid in ipairs(data.particle_spawners) do
-                pcall(function() core.delete_particlespawner(pid) end)
+                if core.delete_particlespawner then
+                    core.delete_particlespawner(pid)
+                end
             end
             data.particle_spawners = nil
         end
-        if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
-            pcall(function() data.corpse:remove() end)
+        if data.corpse then
+            deathstats.remove_corpse(data.corpse)
+            data.corpse = nil
         end
-        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-            pcall(function() data.anchor:remove() end)
+        if data.corpse_wielditem then
+            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                data.corpse_wielditem:remove()
+            end
+            data.corpse_wielditem = nil
+        end
+        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.remove then
+            data.anchor:remove()
         end
     end
     deathstats.set_engine_player_attached(name, nil)
@@ -3724,6 +3985,7 @@ function deathstats.reset_player_effects(player, is_leaving)
     deathstats.is_respawning[name] = nil
     deathstats.active_animations[name] = nil
     deathstats.recent_starvations[name] = nil
+    deathstats.recent_dehydrations[name] = nil
 
     -- 2. Clear all death HUD elements
     deathstats.clear_death_hud(player)
@@ -3749,7 +4011,7 @@ function deathstats.get_banner_responsive_scale(player)
 
     -- Determine player's window aspect ratio (Luanti 5.7+)
     local screen_aspect = 16 / 9 -- graceful default for standard widescreen
-    if player and player.get_player_name and core.get_player_window_information then
+    if player and core.get_player_window_information then
         local name = player:get_player_name()
         local win = core.get_player_window_information(name)
         if win and win.size and win.size.x and win.size.y and win.size.x > 0 and win.size.y > 0 then
@@ -3782,7 +4044,7 @@ function deathstats.get_banner_responsive_scale(player)
         w_pct = h_pct * tex_aspect / screen_aspect
     end
 
-    -- In Minetest HUD image scale: negative value means percentage of screen dimension (-100 = 100%)
+    -- In Luanti HUD image scale: negative value means percentage of screen dimension (-100 = 100%)
     local scale_x = -w_pct * 100
     local scale_y = -h_pct * 100
 
@@ -3819,9 +4081,12 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         local hb_mod = rawget(_G, "hb")
         if hb_mod and hb_mod.hudtables and hb_mod.hide_hudbar then
             for id in pairs(hb_mod.hudtables) do
-                pcall(function() hb_mod.hide_hudbar(player, id) end)
+                hb_mod.hide_hudbar(player, id)
             end
         end
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.hide_standalone_huds then
+        deathstats.compat_hunger.hide_standalone_huds(player)
     end
 
     -- 3. Analyze death or recover previous death info for reconnecting dead player
@@ -4063,9 +4328,7 @@ function deathstats.on_player_respawn(player)
                 p:set_hp(cur_hp_max)
             end
             if deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar() then
-                if p.hud_set_flags then
-                    p:hud_set_flags({ healthbar = false, breathbar = false })
-                end
+                p:hud_set_flags({ healthbar = false, breathbar = false })
             end
         end
     end)
@@ -4078,9 +4341,7 @@ function deathstats.on_player_respawn(player)
                 p:set_hp(cur_hp_max)
             end
             if deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar() then
-                if p.hud_set_flags then
-                    p:hud_set_flags({ healthbar = false, breathbar = false })
-                end
+                p:hud_set_flags({ healthbar = false, breathbar = false })
             end
         end
     end)
