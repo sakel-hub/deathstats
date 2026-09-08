@@ -80,6 +80,7 @@ read_globals = {
     "creatura",
     "animalia",
     "x_bows",
+    "XBows",
     "x_obsidianmese",
     "armor",
     "skins",

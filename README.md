@@ -1,4 +1,4 @@
-# DeathStats for Luanti (Minetest)
+# DeathStats for Luanti
 
 A cinematic, pixel art-themed death screen and lifetime player statistics mod for Luanti.
 
@@ -61,9 +61,11 @@ The following options can be customized in `minetest.conf` or the in-game Settin
   - Clean fallbacks for all engine versions.
 
 ## Sound Credits (Freesound CC0 / Public Domain)
-- `deathstats_death.1.ogg`: *8-bit Game Over* by Euphrosyyn (CC0, Freesound #442127)
-- `deathstats_death.2.ogg`: *j1game_over_mono* by jivatma07 (CC0, Freesound #173859)
-- `deathstats_death.3.ogg`: *Life Lost Game Over* by noirenex (CC0, Freesound #159408)
+- `deathstats_death.1.ogg`: by krega (CC0, Freesound)
+- `deathstats_death.2.ogg`: by krega (CC0, Freesound)
+- `deathstats_death.3.ogg`: by krega (CC0, Freesound)
+- `deathstats_death.4.ogg`: by krega (CC0, Freesound)
+- `deathstats_death.5.ogg`: by krega (CC0, Freesound)
 
 ## Testing
 
