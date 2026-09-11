@@ -44,7 +44,7 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
     - **Combat & Mobs Tab**: Dynamic scrollable 2-column grid of mobs and players slain with individual kill counts.
 
 - **Tactical Multiplayer Live Scoreboard**:
-  - **Hold-to-View 2D HUD**: Press and hold **ZOOM** (default, configurable to **Sneak + Aux1** or other keys) to instantly overlay a tactical, semi-transparent scoreboard table on screen (`z_index = 1000`) without opening intrusive blocking windows. Releasing the key immediately tears down all HUD elements.
+  - **Hold-to-View 2D HUD**: Press and hold **Sneak + Aux1** (default, configurable to **ZOOM** or other keys) to instantly overlay a tactical, semi-transparent scoreboard table on screen (`z_index = 1000`) without opening intrusive blocking windows. Releasing the key immediately tears down all HUD elements.
   - **Current-Life Scoped Statistics**: Tracks active life metrics (`data.current_run`) that reset upon player death:
     - **Combined PvP / PvE Kills**: Displays combined combat records (`pvp / pve` or `pvp/pve` on compact screens) in a single column.
     - **Damage Dealt (DMG)**: Tracks live combat damage dealt during the active life.
@@ -93,7 +93,7 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
 
 The following options can be customized in `luanti.conf` or the in-game Settings menu:
 - `deathstats_enable_scoreboard = true` (toggle live multiplayer scoreboard feature)
-- `deathstats_scoreboard_key = zoom` (key/combination to hold for scoreboard HUD: `zoom`, `sneak_aux1` / `sneak+aux1`, `aux1`, `sneak`)
+- `deathstats_scoreboard_key = sneak_aux1` (key/combination to hold for scoreboard HUD: `sneak_aux1` / `sneak+aux1`, `zoom`, `aux1`, `sneak`)
 - `deathstats_time_format = 24h` (in-game time format in scoreboard header: `24h` or `12h`)
 - `deathstats_scoreboard_update_interval = 1.0` (scoreboard HUD live refresh rate in seconds while held)
 - `deathstats_scoreboard_suppress_chat = true` (suppress on-screen chat while the scoreboard HUD overlay is held open)

@@ -886,7 +886,7 @@ function deathstats.get_scoreboard_footer_text(total_count, visible_count)
     if hidden_players > 0 then
         return string.format(" (+%d more players)  •  Use /deathstats scores for full table", hidden_players)
     else
-        local key = (deathstats.config.scoreboard_key or "zoom"):gsub("_", "+"):upper()
+        local key = (deathstats.config.scoreboard_key or "sneak_aux1"):gsub("_", "+"):upper()
         return " Hold [" .. key .. "] to view  •  Use /deathstats scores for full table"
     end
 end
@@ -1207,7 +1207,7 @@ local cached_key_parts = {}
 ---@param key_setting string|nil Configured key combination string (e.g. "zoom", "sneak+aux1")
 ---@return table keys Array of string key names
 local function get_scoreboard_key_parts(key_setting)
-    key_setting = key_setting or deathstats.config.scoreboard_key or "zoom"
+    key_setting = key_setting or deathstats.config.scoreboard_key or "sneak_aux1"
     local parts = cached_key_parts[key_setting]
     if not parts then
         parts = {}
@@ -1263,7 +1263,7 @@ local function is_player_input_active(player, ctrl)
     end
 
     -- Check auxiliary keys only if they are not bound to the scoreboard HUD
-    local sb_key = deathstats.config.scoreboard_key or "zoom"
+    local sb_key = deathstats.config.scoreboard_key or "sneak_aux1"
     if ctrl.aux1 and not sb_key:find("aux1") then
         return true
     end
@@ -1616,7 +1616,7 @@ function deathstats.show_scoreboard_formspec(player)
     -- Footer bar with controls
     table.insert(fs, "box[0.5,7.75;14.2,0.45;" .. c.tab_bar_bg .. "]")
     table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_muted))
-    local sb_key_hint = (deathstats.config.scoreboard_key or "zoom"):gsub("_", "+"):upper()
+    local sb_key_hint = (deathstats.config.scoreboard_key or "sneak_aux1"):gsub("_", "+"):upper()
     table.insert(fs, "label[0.7,7.98;" .. F(S("Tip: Hold [@1] during gameplay for HUD quick-view", sb_key_hint)) .. "]")
 
     -- Close Button

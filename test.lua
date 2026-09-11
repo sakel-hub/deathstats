@@ -5535,8 +5535,8 @@ local function run_test_suite_52()
 
     -- Verify deathstats_scoreboard_key is valid and contains zoom and sneak_aux1
     assert(found_settings["deathstats_scoreboard_key"], "deathstats_scoreboard_key must be defined in settingtypes.txt")
-    assert(found_settings["deathstats_scoreboard_key"].default == "zoom", "Default must be zoom")
-    assert(found_settings["deathstats_scoreboard_key"].values:find("sneak_aux1"), "Values must include sneak_aux1")
+    assert(found_settings["deathstats_scoreboard_key"].default == "sneak_aux1", "Default must be sneak_aux1")
+    assert(found_settings["deathstats_scoreboard_key"].values:find("zoom"), "Values must include zoom")
 
     print("  [PASS] settingtypes.txt Syntax & Engine Compatibility Validation")
 end

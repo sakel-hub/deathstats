@@ -37,8 +37,8 @@ deathstats_enable_corpse_particles (Enable Corpse Particles) bool true
 deathstats_enable_scoreboard (Enable Scoreboard Feature) bool true
 
 # Key or key combination used to hold and display the live scoreboard HUD
-# Options: zoom, sneak_aux1, aux1, sneak
-deathstats_scoreboard_key (Scoreboard Activation Key) enum zoom zoom,sneak_aux1,aux1,sneak
+# Options: sneak_aux1, zoom, aux1, sneak
+deathstats_scoreboard_key (Scoreboard Activation Key) enum sneak_aux1 sneak_aux1,zoom,aux1,sneak
 
 # In-game time display format on scoreboard header (24h or 12h)
 deathstats_time_format (Scoreboard Time Format) enum 24h 24h,12h
