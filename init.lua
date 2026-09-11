@@ -16,6 +16,12 @@ dofile(modpath .. "/compat/skins.lua")
 dofile(modpath .. "/stats.lua")
 dofile(modpath .. "/reason.lua")
 dofile(modpath .. "/gui.lua")
+dofile(modpath .. "/scoreboard.lua")
 dofile(modpath .. "/compat/hudbars.lua")
+
+-- Optional mock scoreboard data for testing multi-player rosters (enable via setting deathstats_mock_scoreboard = true)
+if core.settings:get_bool("deathstats_mock_scoreboard", false) then
+    dofile(modpath .. "/mock_scoreboard.lua")
+end
 
 core.log("action", "[deathstats] Mod initialized successfully")

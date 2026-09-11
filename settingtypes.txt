@@ -32,3 +32,27 @@ deathstats_enable_limb_fractures (Enable Corpse Limb Fractures) bool true
 
 # Enable particle effects on corpse (bubbles in water, fire in lava, smoke in fire, impact debris on ground)
 deathstats_enable_corpse_particles (Enable Corpse Particles) bool true
+
+# Enable the live scoreboard feature (hold-to-view HUD overlay and /scores table)
+deathstats_enable_scoreboard (Enable Scoreboard Feature) bool true
+
+# Key or key combination used to hold and display the live scoreboard HUD
+# Options: zoom, sneak_aux1, aux1, sneak
+deathstats_scoreboard_key (Scoreboard Activation Key) enum zoom zoom,sneak_aux1,aux1,sneak
+
+# In-game time display format on scoreboard header (24h or 12h)
+deathstats_time_format (Scoreboard Time Format) enum 24h 24h,12h
+
+# Live scoreboard HUD update interval in seconds while key is held down
+deathstats_scoreboard_update_interval (Scoreboard Live Update Rate) float 1.0 0.2 5.0
+
+# Suppress on-screen chat while the scoreboard HUD overlay is held open
+deathstats_scoreboard_suppress_chat (Suppress Chat on Scoreboard) bool true
+
+# Enable mock players in scoreboard for testing large rosters and scrollable layouts
+deathstats_mock_scoreboard (Enable Mock Scoreboard Data) bool false
+
+# Inactivity time in seconds before a player is marked as AFK on the scoreboard
+deathstats_afk_timeout (Scoreboard AFK Timeout Seconds) int 120 15 3600
+
+

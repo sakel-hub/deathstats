@@ -14,6 +14,7 @@ local copy = table.copy
 local atan2 = math.atan2 or math.atan
 
 deathstats = {
+    modpath = core.get_modpath("deathstats") or ".",
     storage = core.get_mod_storage(),
     config = {
         enable_sounds = core.settings:get_bool("deathstats_enable_sounds", true),
@@ -31,6 +32,12 @@ deathstats = {
         orbit_height = tonumber(core.settings:get("deathstats_orbit_height")) or 1.5,
         orbit_speed = tonumber(core.settings:get("deathstats_orbit_speed")) or 0.4,
         enable_corpse_particles = core.settings:get_bool("deathstats_enable_corpse_particles", true),
+        enable_scoreboard = core.settings:get_bool("deathstats_enable_scoreboard", true),
+        scoreboard_key = core.settings:get("deathstats_scoreboard_key") or "zoom",
+        time_format = core.settings:get("deathstats_time_format") or "24h",
+        scoreboard_update_interval = tonumber(core.settings:get("deathstats_scoreboard_update_interval")) or 1.0,
+        scoreboard_suppress_chat = core.settings:get_bool("deathstats_scoreboard_suppress_chat", true),
+        afk_timeout = tonumber(core.settings:get("deathstats_afk_timeout")) or 120,
     },
     -- Common & Reusable Color Palette for UI Formspecs and HUD Elements
     colors = {
@@ -54,6 +61,11 @@ deathstats = {
         text_crimson = "#ff9999",
         text_white = "#ffffff",
         text_muted = "#b5b5c8",
+        text_ping_good = "#44ee44",
+        text_ping_warn = "#eeee44",
+        text_ping_bad = "#ee4444",
+        text_dead = "#997777",
+        text_afk = "#ddbb55",
 
         -- Primary Action Button (TRY AGAIN / Respawn)
         btn_primary_bg = "#881111",
@@ -86,10 +98,28 @@ deathstats = {
         -- HUD text colors (numeric 0xRRGGBB)
         hud_white = 0xFFFFFF,
         hud_soft_white = 0xEEEEEE,
+        hud_gold = 0xFFD700,
+        hud_crimson = 0xFF6666,
+        hud_muted = 0xAAAAAA,
+        hud_cyan = 0x66DDFF,
+        hud_green = 0x55FF88,
+        hud_ping_good = 0x44EE44,
+        hud_ping_warn = 0xEEEE44,
+        hud_ping_bad = 0xEE4444,
+        hud_dead = 0x997777,
+        hud_afk = 0xDDBB55,
     },
     -- Shared State Tracking Variables & Tables
     active_huds = {},
     active_animations = {},
+    active_scoreboard_huds = {},
+    scoreboard_states = {},
+    open_scoreboard_formspecs = {},
+    scoreboard_bg_cache = {},
+    registered_columns = {},
+    last_activity = {},
+    player_last_pos = {},
+    player_last_look = {},
     dead_players = {},
     player_camera_data = {},
     is_respawning = {},
@@ -571,7 +601,8 @@ function deathstats.get_player_data(player)
     if not data then
         data = deathstats.load_player_stats(name)
     end
-    if data and (not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" or (data.last_life.time_alive or 0) == 0) then
+    if data and not data._meta_last_life_checked and (not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" or (data.last_life.time_alive or 0) == 0) then
+        data._meta_last_life_checked = true
         local meta = player:get_meta()
         if meta then
             local meta_last_raw = meta:get_string("deathstats:last_life")
@@ -1518,7 +1549,8 @@ core.register_item("deathstats:camera_hand", {
     },
     wield_image = "deathstats_transparent.png",
     inventory_image = "deathstats_transparent.png",
-    description = "",
+    description = S("Death Camera Hand"),
+    short_description = S("Death Camera Hand"),
     groups = { not_in_creative_inventory = 1 },
     tool_capabilities = {
         full_punch_interval = 999999,
@@ -2105,7 +2137,6 @@ end
 function deathstats.spawn_corpse_particles(corpse_pos, death_info)
     if not corpse_pos then return {} end
     if deathstats.config.enable_corpse_particles == false then return {} end
-    if not core.add_particlespawner then return {} end
 
     local effect_type = deathstats.get_corpse_effect_type(corpse_pos, death_info)
     local def = deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
@@ -2122,7 +2153,7 @@ end
 
 
 --- Wrap an animation function to prevent death animation looping while a player is dead
---- In minetest_game / repixture (Luanti games), player_api.globalstep calls player_set_animation(player, "lay") every tick
+--- In Luanti Game (MTG) / Repixture, player_api.globalstep calls player_set_animation(player, "lay") every tick
 --- which defaults to loop = true at 30 fps, causing a violent 0.13s death replay loop.
 --- This hook forces loop = false and speed = 1 so the character cleanly stays in the final flat pose.
 ---@param mod_table table|nil The mod table containing the animation function
@@ -2191,12 +2222,10 @@ function deathstats.is_armor_dropped(player)
             return (armor_mod.config.drop == true) or (armor_mod.config.destroy == true)
         end
     end
-    if core.settings then
-        local drop_set = core.settings:get_bool("armor_drop")
-        local dest_set = core.settings:get_bool("armor_destroy")
-        if drop_set ~= nil or dest_set ~= nil then
-            return (drop_set == true) or (dest_set == true)
-        end
+    local drop_set = core.settings:get_bool("armor_drop")
+    local dest_set = core.settings:get_bool("armor_destroy")
+    if drop_set ~= nil or dest_set ~= nil then
+        return (drop_set == true) or (dest_set == true)
     end
     return false
 end
@@ -2227,7 +2256,7 @@ function deathstats.is_inventory_dropped(player)
         end
     end
 
-    -- 3. Bones mod configuration (minetest_game / default Luanti games)
+    -- 3. Bones mod configuration (Luanti Game / default games)
     local _, bones_mode, has_bones_mod = deathstats.get_bones_mode()
     if has_bones_mod then
         if bones_mode == "keep" then
@@ -2618,12 +2647,12 @@ end
 ---@return boolean has_bones_mod True if bones mod is loaded in the world
 function deathstats.get_bones_mode()
     local has_bones_mod = false
-    if core.get_modpath and core.get_modpath("bones") then
+    if core.get_modpath("bones") then
         has_bones_mod = true
     elseif rawget(_G, "bones") ~= nil and type(rawget(_G, "bones")) == "table" then
         has_bones_mod = true
     end
-    local mode = (core.settings and core.settings:get("bones_mode")) or "bones"
+    local mode = core.settings:get("bones_mode") or "bones"
     if mode ~= "bones" and mode ~= "drop" and mode ~= "keep" then
         mode = "bones"
     end
@@ -3322,9 +3351,7 @@ function deathstats.set_death_camera(player, death_info)
         old_data.anchor = nil
         if old_data.particle_spawners then
             for _, sid in ipairs(old_data.particle_spawners) do
-                if core.delete_particlespawner then
-                    core.delete_particlespawner(sid, name)
-                end
+                core.delete_particlespawner(sid, name)
             end
         end
         old_data.particle_spawners = nil
@@ -3661,9 +3688,7 @@ function deathstats.reset_camera(player, is_leaving)
     if data then
         if data.particle_spawners then
             for _, pid in ipairs(data.particle_spawners) do
-                if core.delete_particlespawner then
-                    core.delete_particlespawner(pid)
-                end
+                core.delete_particlespawner(pid)
             end
             data.particle_spawners = nil
         end
@@ -3855,9 +3880,7 @@ core.register_on_leaveplayer(function(player)
     if data then
         if data.particle_spawners then
             for _, pid in ipairs(data.particle_spawners) do
-                if core.delete_particlespawner then
-                    core.delete_particlespawner(pid)
-                end
+                core.delete_particlespawner(pid)
             end
             data.particle_spawners = nil
         end
@@ -3881,47 +3904,37 @@ core.register_on_leaveplayer(function(player)
 end)
 
 -- Cleanly verify and restore inventory and hand on player join
-if core.register_on_joinplayer then
-    core.register_on_joinplayer(function(player)
-        if not player or not player:is_player() then return end
-        if player:get_hp() > 0 then
-            deathstats.restore_player_inventory_and_hand(player)
-        end
-    end)
-end
+core.register_on_joinplayer(function(player)
+    if not player or not player:is_player() then return end
+    if player:get_hp() > 0 then
+        deathstats.restore_player_inventory_and_hand(player)
+    end
+end)
 
 -- Guard all interaction callbacks: orbiting dead players cannot punch, place, dig, or eat
-if core.register_on_punchnode then
-    core.register_on_punchnode(function(pos, node, puncher, pointed_thing)
-        if puncher and puncher:is_player() and deathstats.dead_players[puncher:get_player_name()] then
-            return true
-        end
-    end)
-end
+core.register_on_punchnode(function(pos, node, puncher, pointed_thing)
+    if puncher and puncher:is_player() and deathstats.dead_players[puncher:get_player_name()] then
+        return true
+    end
+end)
 
-if core.register_on_placenode then
-    core.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, pointed_thing)
-        if placer and placer:is_player() and deathstats.dead_players[placer:get_player_name()] then
-            return true
-        end
-    end)
-end
+core.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, pointed_thing)
+    if placer and placer:is_player() and deathstats.dead_players[placer:get_player_name()] then
+        return true
+    end
+end)
 
-if core.register_on_dignode then
-    core.register_on_dignode(function(pos, oldnode, digger)
-        if digger and digger:is_player() and deathstats.dead_players[digger:get_player_name()] then
-            return true
-        end
-    end)
-end
+core.register_on_dignode(function(pos, oldnode, digger)
+    if digger and digger:is_player() and deathstats.dead_players[digger:get_player_name()] then
+        return true
+    end
+end)
 
-if core.register_on_item_eat then
-    core.register_on_item_eat(function(hp_change, replace_with_item, itemstack, user, pointed_thing)
-        if user and user:is_player() and deathstats.dead_players[user:get_player_name()] then
-            return itemstack
-        end
-    end)
-end
+core.register_on_item_eat(function(hp_change, replace_with_item, itemstack, user, pointed_thing)
+    if user and user:is_player() and deathstats.dead_players[user:get_player_name()] then
+        return itemstack
+    end
+end)
 
 -- Block dead players from receiving punch damage or punching others
 core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _tool_capabilities, _dir, _damage)
@@ -3987,8 +4000,11 @@ function deathstats.reset_player_effects(player, is_leaving)
     deathstats.recent_starvations[name] = nil
     deathstats.recent_dehydrations[name] = nil
 
-    -- 2. Clear all death HUD elements
+    -- 2. Clear all death and scoreboard HUD elements
     deathstats.clear_death_hud(player)
+    if deathstats.hide_scoreboard_hud then
+        deathstats.hide_scoreboard_hud(player)
+    end
 
     -- 3. Close any open death screen or statistics formspecs
     core.close_formspec(name, "deathstats:death")
@@ -4065,6 +4081,9 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         return
     end
     deathstats.dead_players[name] = true
+    if deathstats.hide_scoreboard_hud then
+        deathstats.hide_scoreboard_hud(player)
+    end
 
     -- 2. Hide gameplay HUD elements (hotbar, healthbar, minimap, crosshair, wielditem) for clean cinematic death screen
     player:hud_set_flags({
@@ -4665,3 +4684,76 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
 end
 
 deathstats.show_lifetime_formspec = deathstats.show_lifetime_stats_formspec
+
+-- ============================================================================
+-- Section 11: Public Scoreboard & Current-Life Leaderboard API
+-- ============================================================================
+
+--- Register or override a scoreboard column definition
+---@param id string Unique identifier for the column (e.g. "kills", "damage", "ping")
+---@param def table Column definition specification (order, title, pct, min_w, icon, get_value, get_color)
+function deathstats.register_scoreboard_column(id, def)
+    if not id or type(id) ~= "string" or id == "" then return end
+    if not def or type(def) ~= "table" then return end
+
+    deathstats.registered_columns[id] = {
+        id = id,
+        order = def.order or 50,
+        title = def.title or id:upper(),
+        title_small = def.title_small or def.title or id:sub(1, 3):upper(),
+        pct = def.pct or 0.10,
+        pct_small = def.pct_small or def.pct or 0.10,
+        min_w = def.min_w or 40,
+        min_w_small = def.min_w_small or 25,
+        icon = def.icon or "deathstats_icon_star.png",
+        tooltip = def.tooltip or def.title or id,
+        get_value = def.get_value,
+        get_color = def.get_color,
+    }
+
+    -- Invalidate backdrop texture cache whenever columns change
+    deathstats.scoreboard_bg_cache = {}
+end
+
+--- Unregister an existing scoreboard column by id
+---@param id string Unique column identifier
+function deathstats.unregister_scoreboard_column(id)
+    if not id then return end
+    deathstats.registered_columns[id] = nil
+    deathstats.scoreboard_bg_cache = {}
+end
+
+--- Query active registered scoreboard columns sorted by their order attribute
+---@return table columns Sorted array of column definition tables
+function deathstats.get_ordered_scoreboard_columns()
+    local cols = {}
+    for id, col_def in pairs(deathstats.registered_columns or {}) do
+        local c = table.copy(col_def)
+        c.id = id
+        table.insert(cols, c)
+    end
+    table.sort(cols, function(a, b)
+        if (a.order or 50) ~= (b.order or 50) then
+            return (a.order or 50) < (b.order or 50)
+        end
+        return (a.id or "") < (b.id or "")
+    end)
+    return cols
+end
+
+-- Scoreboard HUD & Formspec Forward Declarations (Implemented in scoreboard.lua)
+deathstats.show_scoreboard_hud = deathstats.show_scoreboard_hud or function(_player) end
+deathstats.hide_scoreboard_hud = deathstats.hide_scoreboard_hud or function(_player) end
+deathstats.update_scoreboard_hud = deathstats.update_scoreboard_hud or function(_player) end
+deathstats.show_scoreboard_formspec = deathstats.show_scoreboard_formspec or function(_player) end
+deathstats.close_scoreboard_formspec = deathstats.close_scoreboard_formspec or function(_player) end
+deathstats.is_player_afk = deathstats.is_player_afk or function(_player_or_name) return false end
+deathstats.is_player_dead = deathstats.is_player_dead or function(_player_or_name) return false end
+deathstats.reset_player_activity = deathstats.reset_player_activity or function(_player_or_name) end
+deathstats.get_player_armor_points = deathstats.get_player_armor_points or function(_player) return 0 end
+deathstats.get_player_ping = deathstats.get_player_ping or function(_player_name) return 0 end
+deathstats.get_player_hp = deathstats.get_player_hp or function(_player) return 0 end
+deathstats.get_scoreboard_cell_color = deathstats.get_scoreboard_cell_color or function(_col, _player, _item, _row_idx) return 0xFFFFFF end
+deathstats.get_scoreboard_footer_text = deathstats.get_scoreboard_footer_text or function(_total, _visible) return "" end
+deathstats.get_scoreboard_data = deathstats.get_scoreboard_data or function(_viewer_player, _precomputed_base) return {}, {} end
+deathstats.calculate_player_score = deathstats.calculate_player_score or function(_pdata, _player, _cached_armor, _cached_hp) return 0, 0 end

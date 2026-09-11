@@ -88,6 +88,7 @@ end)
 -- 4. Consumed Items (Food / Potions)
 core.register_on_item_eat(function(_hp_change, _replace_with_item, _itemstack, user, _pointed_thing)
     if not user or not user:is_player() then return end
+    deathstats.reset_player_activity(user)
     local data = deathstats.get_player_data(user)
     if not data then return end
 
@@ -152,6 +153,7 @@ end, true)
 core.register_on_punchplayer(function(_player, hitter, time_from_last_punch, tool_capabilities, _dir, damage)
     local punch_player = deathstats.resolve_puncher_player(hitter)
     if punch_player and punch_player:is_player() then
+        deathstats.reset_player_activity(punch_player)
         local data = deathstats.get_player_data(punch_player)
         local dmg = (damage and damage > 0 and damage)
             or (tool_capabilities and tool_capabilities.damage_groups and tool_capabilities.damage_groups.fleshy)
@@ -187,6 +189,7 @@ local function hook_entity_punch(ent_name, ent_def)
         end
 
         if player and player:is_player() then
+            deathstats.reset_player_activity(player)
             local data = deathstats.get_player_data(player)
             if data then
                 -- Track mob health after punch to get exact damage applied
