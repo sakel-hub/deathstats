@@ -57,6 +57,33 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
     - **Ultra-Efficient AFK Tracking**: Players inactive for longer than `deathstats_afk_timeout` (120s default) display an amber Zzz icon (`deathstats_icon_afk.png`). AFK tracking uses event-driven hooks and throttled position/look inspection with zero packet spam.
   - **Pluggable Column Registration API**:
     - Easily extend, override, or reorder scoreboard columns with `deathstats.register_scoreboard_column(id, def)` and `deathstats.unregister_scoreboard_column(id)`.
+    - Example custom column registration:
+      ```lua
+      -- Register a custom "Coins" column
+      if deathstats and deathstats.register_scoreboard_column then
+          deathstats.register_scoreboard_column("coins", {
+              order = 65,                        -- Display order (built-in orders: rank=10, player=20, kills=30, dmg=40, mined=50, time=60, armor=70, hp=80, ping=90)
+              title = "COINS",                    -- Header title for standard displays
+              title_small = "C",                  -- Shorter title for compact screens
+              pct = 0.08,                         -- Width fraction of scoreboard table (8%)
+              min_w = 45,                         -- Minimum pixel width
+              icon = "deathstats_icon_star.png",  -- Header icon texture (32x32)
+              tooltip = "Gold coins collected",   -- Header tooltip
+              get_value = function(player, item, is_small)
+                  local coins = my_economy.get_coins(item.name) or 0
+                  return string.format("%d", coins)
+              end,
+              get_color = function(player, item)
+                  return 0xFFD700                 -- Optional custom text color (gold)
+              end,
+          })
+      end
+
+      -- Unregister an existing column (e.g. remove ping from scoreboard)
+      if deathstats and deathstats.unregister_scoreboard_column then
+          deathstats.unregister_scoreboard_column("ping")
+      end
+      ```
   - **In-Game Time Header**: Displays real-time in-game world time in 24-hour format (`19:30`) or 12-hour format (`07:30 PM`) alongside current connected player counts.
   - **Infographic Table Header Icons**: Header features crisp 32x32 pixel art icons before column labels (`trophy`, `player`, `sword`, `target`, `pickaxe`, `clock`, `shield`, `heart`, `ping`). On compact screen resolutions, the headers automatically collapse to show only icons to prevent text clipping.
   - **Adaptive Line Spacing & Row Budget**: Dynamically scales line heights and row capacity based on screen resolution and HUD scaling (inspired by `waysigns`), showing only as many rows as cleanly fit your display.
