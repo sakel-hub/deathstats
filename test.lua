@@ -209,6 +209,8 @@ core = {
     close_formspec = function(name, formname)
         core.closed_formspec = { name = name, formname = formname }
     end,
+    get_timeofday = function() return 0.5 end,
+    get_player_information = function(_name) return { avg_rtt = 0.02 } end,
     after = function(delay, func, ...)
         table.insert(deferred_tasks, { func = func, args = { ... } })
     end,
@@ -469,12 +471,15 @@ core.register_on_mods_loaded, core.on_mods_loaded = make_dispatcher()
 core.register_on_dieplayer, core.on_dieplayer = make_dispatcher()
 core.register_on_respawnplayer, core.on_respawnplayer = make_dispatcher()
 core.register_on_player_receive_fields, core.on_receive_fields = make_dispatcher()
+core.register_on_chat_message, core.on_chat_message = make_dispatcher()
 core.get_connected_players = function() return {} end
 core.log = function(...) end
 core.chatcommands = {}
 core.register_chatcommand = function(name, def)
     core.chatcommands[name] = def
 end
+core.check_player_privs = function(_name, _privs) return true end
+core.chat_send_player = function(_name, _msg) end
 
 local mock_storage = {}
 core.get_mod_storage = function()
@@ -516,6 +521,7 @@ dofile(modpath .. "/compat/skins.lua")
 dofile(modpath .. "/stats.lua")
 dofile(modpath .. "/reason.lua")
 dofile(modpath .. "/gui.lua")
+dofile(modpath .. "/scoreboard.lua")
 dofile(modpath .. "/compat/hudbars.lua")
 
 -- Trigger mod loading completion so entities are hooked
@@ -559,7 +565,6 @@ local function create_mock_player(name)
         physics_override = { speed = 1, jump = 1, gravity = 1, sneak = true },
         velocity = { x = 0, y = 0, z = 0 },
         look_vertical = 0,
-        hud_flags = {},
         huds = {},
         hud_id_counter = 1,
         get_player_name = function(self) return self.name end,
@@ -679,7 +684,20 @@ local function create_mock_player(name)
         get_children = function(self)
             return self.children or {}
         end,
+        hud_flags = {
+            chat = true,
+            hotbar = true,
+            healthbar = true,
+            crosshair = true,
+            wielditem = true,
+            breathbar = true,
+            minimap = true,
+        },
+        hud_get_flags = function(self)
+            return self.hud_flags
+        end,
         hud_set_flags = function(self, flags)
+            self.hud_flags = self.hud_flags or {}
             for k, v in pairs(flags) do
                 self.hud_flags[k] = v
             end
@@ -4519,7 +4537,1014 @@ local function run_test_suite_46()
 end
 run_test_suite_46()
 
-print("\nALL 46 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 47: Tactical Multiplayer Live Scoreboard (HUD Overlay, Responsive Metrics & Formspec) ---
+local function run_test_suite_47()
+    print("\n--- TEST 47: Tactical Multiplayer Live Scoreboard (HUD Overlay, Responsive Metrics & Formspec) ---")
+
+    -- 1. In-game time formatting (get_gametime_formatted)
+    local orig_tod = core.get_timeofday
+    core.get_timeofday = function() return 0.0 end
+    assert(deathstats.get_gametime_formatted("24h") == "00:00", "0.0 TOD in 24h must be 00:00")
+    assert(deathstats.get_gametime_formatted("12h") == "12:00 AM", "0.0 TOD in 12h must be 12:00 AM")
+
+    core.get_timeofday = function() return 0.5 end
+    assert(deathstats.get_gametime_formatted("24h") == "12:00", "0.5 TOD in 24h must be 12:00")
+    assert(deathstats.get_gametime_formatted("12h") == "12:00 PM", "0.5 TOD in 12h must be 12:00 PM")
+
+    core.get_timeofday = function() return 19.5 / 24 end -- 19:30
+    assert(deathstats.get_gametime_formatted("24h") == "19:30", "19.5/24 TOD in 24h must be 19:30")
+    assert(deathstats.get_gametime_formatted("12h") == "07:30 PM", "19.5/24 TOD in 12h must be 07:30 PM")
+
+    core.get_timeofday = function() return 9.25 / 24 end -- 09:15
+    assert(deathstats.get_gametime_formatted("24h") == "09:15", "9.25/24 TOD in 24h must be 09:15")
+    assert(deathstats.get_gametime_formatted("12h") == "09:15 AM", "9.25/24 TOD in 12h must be 09:15 AM")
+    core.get_timeofday = orig_tod
+
+    -- 2. Armor points inspection across frameworks
+    assert(deathstats.get_player_armor_points(nil) == 0, "Nil player must yield 0 armor points")
+    local p_sb1 = create_mock_player("ScoreTester1")
+    p_sb1:set_armor_groups({ fleshy = 65 })
+    assert(deathstats.get_player_armor_points(p_sb1) == 35, "Fleshy group 65 must yield 35 armor points")
+
+    -- 3d_armor mock
+    rawset(_G, "armor", { def = { ["ScoreTester1"] = { level = 85 } } })
+    assert(deathstats.get_player_armor_points(p_sb1) == 85, "3d_armor level 85 must take priority")
+    rawset(_G, "armor", nil)
+
+    -- mcl_armor mock
+    rawset(_G, "mcl_armor", {})
+    p_sb1:get_meta():set_int("mcl_armor:armor_points", 42)
+    assert(deathstats.get_player_armor_points(p_sb1) == 42, "mcl_armor points must take priority over groups")
+    p_sb1:get_meta():set_int("mcl_armor:armor_points", 0)
+    rawset(_G, "mcl_armor", nil)
+
+    -- hbarmor mock
+    rawset(_G, "hbarmor", { armor = { ["ScoreTester1"] = "70" } })
+    assert(deathstats.get_player_armor_points(p_sb1) == 70, "hbarmor must be inspected")
+    rawset(_G, "hbarmor", nil)
+
+    -- 3. Ping latency inspection
+    local orig_pinfo = core.get_player_information
+    core.get_player_information = function(name)
+        if name == "ScoreTester1" then
+            return { avg_rtt = 0.038 }
+        end
+        return nil
+    end
+    assert(deathstats.get_player_ping("ScoreTester1") == 38, "avg_rtt 0.038 must yield 38ms ping")
+    assert(deathstats.get_player_ping("UnknownPlayer") == 0, "Unknown player ping must return 0ms")
+    core.get_player_information = orig_pinfo
+
+    -- 3b. Survival time and ping color utilities
+    assert(deathstats.format_survival_time(45, false) == "45s", "format_survival_time 45s failed")
+    assert(deathstats.format_survival_time(125, false) == "2m 5s", "format_survival_time 2m 5s failed")
+    assert(deathstats.format_survival_time(125, true) == "2m", "format_survival_time compact 2m failed")
+    assert(deathstats.format_survival_time(3725, false) == "1h 2m", "format_survival_time 1h 2m failed")
+    assert(deathstats.format_survival_time(3725, true) == "1h", "format_survival_time compact 1h failed")
+
+    assert(deathstats.get_ping_color(30) == deathstats.colors.hud_ping_good, "Ping 30ms must be good green")
+    assert(deathstats.get_ping_color(90) == deathstats.colors.hud_ping_warn, "Ping 90ms must be warn yellow")
+    assert(deathstats.get_ping_color(200) == deathstats.colors.hud_ping_bad, "Ping 200ms must be bad red")
+    assert(deathstats.get_ping_textcolor(30) == deathstats.colors.text_ping_good, "Ping text color must match")
+
+    -- 3c. AFK & Dead status helpers
+    deathstats.reset_player_activity("ScoreTester1")
+    assert(deathstats.is_player_afk("ScoreTester1") == false, "Active player must not be AFK")
+    deathstats.last_activity["ScoreTester1"] = core.get_gametime() - 150
+    assert(deathstats.is_player_afk("ScoreTester1") == true, "Inactive player must be AFK")
+    deathstats.reset_player_activity("ScoreTester1")
+
+    assert(deathstats.is_player_dead("ScoreTester1") == false, "Living player must not be dead")
+
+    -- 3c2. Cell color & Footer text DRY helpers
+    local dummy_col = { id = "kills" }
+    local dummy_custom_col = { id = "custom", get_color = function() return 0x123456 end }
+    assert(deathstats.get_scoreboard_cell_color(dummy_custom_col, p_sb1, {}, 1) == 0x123456, "Custom column get_color must take precedence")
+    assert(deathstats.get_scoreboard_cell_color(dummy_col, p_sb1, { is_dead = true }, 1) == deathstats.colors.hud_dead, "Dead row must use hud_dead")
+    assert(deathstats.get_scoreboard_cell_color(dummy_col, p_sb1, { is_afk = true }, 1) == deathstats.colors.hud_afk, "AFK row must use hud_afk")
+    assert(deathstats.get_scoreboard_cell_color(dummy_col, p_sb1, { is_viewer = true }, 1) == deathstats.colors.hud_gold, "Viewer row must use hud_gold")
+    assert(deathstats.get_scoreboard_cell_color(dummy_col, p_sb1, {}, 2) == deathstats.colors.hud_soft_white, "Even row must use hud_soft_white")
+    assert(deathstats.get_scoreboard_cell_color(dummy_col, p_sb1, {}, 1) == deathstats.colors.hud_white, "Odd row must use hud_white")
+
+    assert(deathstats.get_scoreboard_footer_text(10, 8):find("%+2 more players"), "Footer must format hidden players count")
+    assert(deathstats.get_scoreboard_footer_text(8, 8):find("Hold %["), "Footer must format hold key text when all visible")
+
+    -- 3d. Pluggable Column Registration API
+    deathstats.register_scoreboard_column("test_bounty", {
+        order = 95,
+        title = "BOUNTY",
+        title_small = "BTY",
+        pct = 0.05,
+        min_w = 40,
+        icon = "deathstats_icon_star.png",
+        get_value = function() return "100" end,
+    })
+    local reg_cols_check = deathstats.get_scoreboard_columns(1000, false, 1.0)
+    local has_bounty = false
+    for _, c in ipairs(reg_cols_check) do
+        if c.id == "test_bounty" then has_bounty = true end
+    end
+    assert(has_bounty == true, "Custom column must appear in get_scoreboard_columns")
+    deathstats.unregister_scoreboard_column("test_bounty")
+    reg_cols_check = deathstats.get_scoreboard_columns(1000, false, 1.0)
+    has_bounty = false
+    for _, c in ipairs(reg_cols_check) do
+        if c.id == "test_bounty" then has_bounty = true end
+    end
+    assert(has_bounty == false, "Unregistered column must not appear in get_scoreboard_columns")
+
+    -- 4. Score calculation & descending sort
+    local p_sb2 = create_mock_player("ScoreTester2")
+    local p_sb3 = create_mock_player("ScoreTester3")
+
+    -- Set up living, AFK, and dead states
+    p_sb3:set_hp(0)
+    deathstats.dead_players["ScoreTester3"] = true
+    deathstats.last_activity["ScoreTester2"] = 0 -- AFK
+
+    local data1 = deathstats.load_player_stats("ScoreTester1")
+    data1.current_run.players_killed = 10
+    data1.current_run.mobs_killed = 5
+    data1.current_run.damage_dealt = 1500
+    data1.current_run.blocks_mined = 250
+    data1.lifetime.players_killed = 15
+    data1.lifetime.deaths = 3
+    data1.lifetime.damage_dealt = 2400
+
+    local data2 = deathstats.load_player_stats("ScoreTester2")
+    data2.current_run.players_killed = 3
+    data2.current_run.mobs_killed = 2
+    data2.current_run.damage_dealt = 500
+    data2.current_run.blocks_mined = 80
+    data2.lifetime.players_killed = 5
+    data2.lifetime.deaths = 5
+    data2.lifetime.damage_dealt = 800
+
+    local data3 = deathstats.load_player_stats("ScoreTester3")
+    data3.current_run.players_killed = 0
+    data3.current_run.mobs_killed = 0
+    data3.current_run.damage_dealt = 50
+    data3.current_run.blocks_mined = 10
+    data3.lifetime.players_killed = 0
+    data3.lifetime.deaths = 12
+    data3.lifetime.damage_dealt = 50
+
+    local s1, avg1 = deathstats.calculate_player_score(data1, p_sb1)
+    local s2, avg2 = deathstats.calculate_player_score(data2, p_sb2)
+    local s3, avg3 = deathstats.calculate_player_score(data3, p_sb3)
+
+    assert(s1 > s2 and s2 > s3, "High-performing player score must rank above lower performers")
+    assert(avg1 > avg2 and avg2 > avg3, "Average category score must rank proportionally")
+
+    -- Connected players mock for leaderboard data
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function()
+        return { p_sb1, p_sb2, p_sb3 }
+    end
+
+    local board_data = deathstats.get_scoreboard_data(p_sb1)
+    assert(#board_data == 3, "Scoreboard data must return all 3 connected players")
+    assert(board_data[1].name == "ScoreTester1" and board_data[1].rank == 1, "Rank 1 must be ScoreTester1")
+    assert(board_data[1].is_viewer == true, "Viewer flag must be set for p_sb1")
+    assert(board_data[1].pvp_kills == 10 and board_data[1].pve_kills == 5, "PvP and PvE kills must be tracked separately")
+    assert(board_data[1].kills == 15, "Total kills must be sum of PvP and PvE kills")
+    assert(board_data[1].damage_dealt == 1500, "Damage dealt must match current life")
+    assert(board_data[1].blocks_mined == 250, "Blocks mined must match current life")
+    assert(board_data[2].name == "ScoreTester2" and board_data[2].rank == 2, "Rank 2 must be ScoreTester2")
+    assert(board_data[2].is_afk == true, "ScoreTester2 must be flagged AFK")
+    assert(board_data[3].name == "ScoreTester3" and board_data[3].rank == 3, "Rank 3 must be ScoreTester3")
+    assert(board_data[3].is_dead == true, "ScoreTester3 must be flagged dead")
+
+    -- 5. Key detection logic
+    p_sb1.control = { zoom = true }
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "zoom") == true, "Holding zoom must return true")
+    p_sb1.control = { zoom = false }
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "zoom") == false, "Releasing zoom must return false")
+
+    p_sb1.control = { sneak = true, aux1 = true }
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak+aux1") == true, "Holding sneak+aux1 must return true")
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak_aux1") == true, "Holding sneak_aux1 must return true")
+    p_sb1.control = { sneak = true, aux1 = false }
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak+aux1") == false, "Releasing aux1 must return false for sneak+aux1")
+    assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak_aux1") == false, "Releasing aux1 must return false for sneak_aux1")
+
+    -- 6. Responsive metrics & layout calculations
+    local orig_win_info = core.get_player_window_information
+    core.get_player_window_information = function(_pname)
+        return {
+            size = { x = 1920, y = 1080 },
+            real_hud_scaling = 1.0,
+        }
+    end
+    local m_1080p = deathstats.calculate_scoreboard_metrics(p_sb1)
+    assert(m_1080p.is_small == false, "1080p must not be small screen")
+    assert(m_1080p.board_w >= 800, "1080p board width must be >= 800px")
+    assert(m_1080p.max_rows >= 10, "1080p must fit at least 10 player rows")
+
+    -- Small display test
+    core.get_player_window_information = function(_pname)
+        return {
+            size = { x = 600, y = 400 },
+            real_hud_scaling = 1.0,
+        }
+    end
+    local m_small = deathstats.calculate_scoreboard_metrics(p_sb1)
+    assert(m_small.is_small == true, "600x400 display must trigger is_small = true")
+    assert(m_small.board_w <= 560, "Small board width must fit in 600px")
+
+    -- Column header strings & character-perfect vertical alignment
+    local hdr_wide = deathstats.format_column_headers(m_1080p)
+    local hdr_small = deathstats.format_column_headers(m_small)
+    assert(hdr_wide:find("PLAYER") and hdr_wide:find("KILLS") and hdr_wide:find("DMG") and hdr_wide:find("MINED") and hdr_wide:find("TIME"),
+        "Wide header must show full column names")
+    assert(hdr_small:find("NAME") and hdr_small:find("K") and hdr_small:find("DMG") and hdr_small:find("MINE") and hdr_small:find("TIME"),
+        "Small header must show compact abbreviations")
+
+    -- Row formatting test: character length must match header exactly in all modes
+    local row_wide = deathstats.format_player_row(board_data[1], m_1080p)
+    local row_small = deathstats.format_player_row(board_data[1], m_small)
+    assert(row_wide:find("ScoreTester1"), "Formatted wide row must contain player name")
+    assert(#hdr_wide == #row_wide, string.format("Wide header (%d chars) and row (%d chars) must match exactly", #hdr_wide, #row_wide))
+    assert(#hdr_small == #row_small, string.format("Small header (%d chars) and row (%d chars) must match exactly", #hdr_small, #row_small))
+
+    -- 7. HUD Scoreboard Lifecycle (Show -> Update -> Hide)
+    core.get_player_window_information = function(_pname)
+        return { size = { x = 1920, y = 1080 }, real_hud_scaling = 1.0 }
+    end
+    deathstats.show_scoreboard_hud(p_sb1)
+    local state = deathstats.scoreboard_states["ScoreTester1"]
+    assert(state ~= nil, "Scoreboard state must be active after show_scoreboard_hud")
+    assert(state.hud_bg ~= nil and p_sb1.huds[state.hud_bg] ~= nil, "Backdrop HUD element must exist")
+    assert(state.bg_tex:find("^%[combine:"), "Background texture must be a valid [combine modifier")
+    assert(state.bg_tex:find("%[fill\\:"), "Sub-modifier [fill must have colons escaped as \\:")
+    assert(not state.bg_tex:find(":[^=]*%[fill:"), "Background texture must not contain unescaped [fill:")
+    assert(not state.bg_tex:find("=%^%[fill"), "Sub-modifiers inside combine must not have invalid leading ^")
+    assert(state.bg_tex:find("\\%^%[resize\\:"), "Icon modifiers inside combine must escape caret and colon")
+    assert(state.bg_tex:find("deathstats_icon_sword%.png"), "HUD combine texture must use sword icon for Kills")
+    assert(state.bg_tex:find("deathstats_icon_target%.png"), "HUD combine texture must use target icon for DMG")
+    assert(state.bg_tex:find("deathstats_icon_pickaxe%.png"), "HUD combine texture must use pickaxe icon for MINED")
+    assert(state.bg_tex:find("deathstats_icon_clock%.png"), "HUD combine texture must use clock icon for TIME")
+    assert(state.bg_tex:find("deathstats_icon_shield%.png"), "HUD combine texture must use shield icon for ARM")
+    assert(state.bg_tex:find("deathstats_icon_heart%.png"), "HUD combine texture must use heart icon for HP")
+    assert(state.bg_tex:find("deathstats_icon_ping%.png"), "HUD combine texture must use ping icon for PING")
+    -- Player column text badges in HUD overlay (no space padding for active living players)
+    assert(p_sb1.huds[state.cell_ids[1][2]].text == "ScoreTester1",
+        "Active living player cell must not have leading space padding")
+    assert(p_sb1.huds[state.cell_ids[2][2]].text == "[AFK] ScoreTester2",
+        "AFK player cell must have [AFK] text badge")
+    assert(p_sb1.huds[state.cell_ids[3][2]].text == "[DEAD] ScoreTester3",
+        "Dead player cell must have [DEAD] text badge")
+    assert(p_sb1.huds[state.hud_bg].z_index == 1000, "HUD backdrop z_index must be 1000")
+    assert(p_sb1.huds[state.hud_bg].position.x == 0.5 and p_sb1.huds[state.hud_bg].position.y == 0.5,
+        "HUD backdrop position must use normalized center {x=0.5, y=0.5}")
+    assert(#state.line_ids == 3 * #m_1080p.columns, "All cells across visible rows must have HUD elements added")
+    assert(p_sb1.huds[state.line_ids[1]].style == 1, "Player cell must enforce style=1")
+
+    -- Cell status colors
+    assert(p_sb1.huds[state.cell_ids[1][1]].number == deathstats.colors.hud_gold,
+        "Viewer row cells must use highlighted gold color")
+    assert(p_sb1.huds[state.cell_ids[2][1]].number == deathstats.colors.hud_afk,
+        "AFK row cells must use hud_afk amber color")
+    assert(p_sb1.huds[state.cell_ids[3][1]].number == deathstats.colors.hud_dead,
+        "Dead row cells must use hud_dead muted color")
+    assert(p_sb1.huds[state.cell_ids[1][9]].number == deathstats.colors.hud_ping_good,
+        "Good ping (38ms) cell must use green hud_ping_good color")
+
+    -- Scoreboard HUD Table Layout & Column Alignment:
+    assert(p_sb1.huds[state.hud_title].alignment.x == 0 and p_sb1.huds[state.hud_title].offset.x == 0,
+        "hud_title must be horizontally centered (offset.x=0, alignment.x=0)")
+    assert(p_sb1.huds[state.col_header_ids[1]].alignment.x == 1,
+        "Column header must be left-aligned (alignment.x=1)")
+    assert(p_sb1.huds[state.cell_ids[1][1]].alignment.x == 1,
+        "Player row cell must be left-aligned (alignment.x=1)")
+    assert(p_sb1.huds[state.hud_footer].alignment.x == 0 and p_sb1.huds[state.hud_footer].offset.x == 0,
+        "hud_footer must be horizontally centered (offset.x=0, alignment.x=0)")
+
+    -- Verify column data offsets and icon alignment
+    for col_idx, col in ipairs(m_1080p.columns) do
+        local hdr_id = state.col_header_ids[col_idx]
+        local cell_id = state.cell_ids[1][col_idx]
+        assert(p_sb1.huds[hdr_id].offset.x == p_sb1.huds[cell_id].offset.x,
+            string.format("Column %s header and cell must have identical X offset", col.id))
+        assert(col.data_x > col.x, "Column data_x must follow after the icon slot")
+    end
+
+    -- Verify rank column has sufficient text width before vertical separator line (prevents 2-digit overlap)
+    local rank_col = m_1080p.columns[1]
+    local player_col = m_1080p.columns[2]
+    local rank_sep_x = player_col.x - 4
+    local rank_avail_w = rank_sep_x - rank_col.data_x
+    assert(rank_avail_w >= 25, string.format("Rank column must have at least 25px text clearance before separator (got %dpx)", rank_avail_w))
+
+    -- Table Cell Left-Alignment
+    assert(hdr_wide:sub(4, 4) == "#" and row_wide:sub(4, 4) == "1",
+        "Rank column must be left-aligned at index 4")
+    assert(hdr_wide:sub(10, 15) == "PLAYER" and row_wide:sub(10, 21) == "ScoreTester1",
+        "Player name column must be left-aligned at index 10")
+    assert(hdr_wide:sub(35, 39) == "KILLS", "KILLS header must start at index 35")
+    assert(hdr_wide:sub(45, 47) == "DMG", "DMG header must start at index 45")
+    assert(hdr_wide:sub(54, 58) == "MINED", "MINED header must start at index 54")
+    assert(hdr_wide:sub(63, 66) == "TIME", "TIME header must start at index 63")
+    assert(hdr_wide:sub(72, 74) == "ARM", "ARM header must start at index 72")
+    assert(hdr_wide:sub(79, 80) == "HP", "HP header must start at index 79")
+    assert(hdr_wide:sub(85, 88) == "PING", "PING header must start at index 85")
+    assert(row_wide:find("^   1%s+ScoreTester1%s+%d+%s*/%s*%d+%s+%d+%s+%d+%s+[%dsmh ]+%s+%d+%s+%d+%s+%d+ms"),
+        "Wide row cells must have left-aligned values followed by spaces")
+
+    assert(hdr_small:sub(3, 3) == "#" and row_small:sub(3, 3) == "1",
+        "Small rank column must be left-aligned at index 3")
+    assert(hdr_small:sub(7, 10) == "NAME" and row_small:sub(7, 18) == "ScoreTester1",
+        "Small name column must be left-aligned at index 7")
+    assert(hdr_small:sub(21, 21) == "K", "K header must start at index 21")
+    assert(hdr_small:sub(28, 30) == "DMG", "DMG header must start at index 28")
+    assert(hdr_small:sub(34, 37) == "MINE", "MINE header must start at index 34")
+    assert(hdr_small:sub(40, 43) == "TIME", "TIME header must start at index 40")
+    assert(hdr_small:sub(46, 48) == "ARM", "ARM header must start at index 46")
+    assert(hdr_small:sub(51, 52) == "HP", "HP header must start at index 51")
+    assert(hdr_small:sub(56, 59) == "PING", "PING header must start at index 56")
+
+    -- Item 5: Background Texture Caching
+    assert(type(deathstats.scoreboard_bg_cache) == "table", "scoreboard_bg_cache must be a table")
+    local cached_keys_count = 0
+    for _ in pairs(deathstats.scoreboard_bg_cache) do
+        cached_keys_count = cached_keys_count + 1
+    end
+    assert(cached_keys_count > 0, "scoreboard_bg_cache must contain cached background textures")
+
+    -- Verify cache hit returns identical string without re-generation
+    local tex1 = deathstats.get_scoreboard_bg_texture(state.metrics, state.viewer_row_idx, board_data)
+    assert(tex1 == state.bg_tex, "Subsequent texture call must return cached texture string")
+
+    -- Update HUD
+    deathstats.update_scoreboard_hud(p_sb1)
+    assert(p_sb1.huds[state.hud_title] ~= nil, "Title HUD element must remain valid after update")
+
+    -- Dynamic rank change during live update (viewer moves from rank 1 to rank 2)
+    data2.current_run.players_killed = 100
+    data2.current_run.damage_dealt = 10000
+    deathstats.reset_player_activity("ScoreTester2")
+    deathstats.update_scoreboard_hud(p_sb1)
+    assert(state.viewer_row_idx == 2, "Viewer row index must shift to rank 2 after stats change")
+    assert(p_sb1.huds[state.cell_ids[2][1]].number == deathstats.colors.hud_gold,
+        "Row 2 must now have gold highlight color")
+    assert(p_sb1.huds[state.cell_ids[1][1]].number ~= deathstats.colors.hud_gold,
+        "Row 1 must no longer have gold highlight color")
+    assert(p_sb1.huds[state.hud_bg].text == state.bg_tex,
+        "Backdrop HUD element texture must be updated with the rank 2 highlight texture")
+
+    -- Hide HUD
+    deathstats.hide_scoreboard_hud(p_sb1)
+    assert(deathstats.scoreboard_states["ScoreTester1"] == nil, "Scoreboard state must be cleared after hide")
+    assert(next(p_sb1.huds) == nil, "All HUD elements must be removed on scoreboard close")
+
+    -- 8. Full Scrollable Formspec Dialog & Chat Command
+    core.last_formspec = nil
+    deathstats.show_scoreboard_formspec(p_sb1)
+    assert(core.last_formspec ~= nil, "Formspec must be shown on show_scoreboard_formspec")
+    assert(core.last_formspec.formname == "deathstats:scoreboard", "Formname must be deathstats:scoreboard")
+    assert(core.last_formspec.fs:find("formspec_version%[6%]"), "Formspec must use version 6")
+    assert(core.last_formspec.fs:find("scroll_container"), "Formspec must include scroll_container for all players")
+    assert(core.last_formspec.fs:find("tooltip%["), "Formspec must include tooltip elements for column headers")
+    assert(core.last_formspec.fs:find("deathstats_icon_sword%.png"), "Formspec must use sword icon for Kills")
+    assert(core.last_formspec.fs:find("deathstats_icon_skull%.png"), "Formspec must use skull icon for dead player")
+    assert(core.last_formspec.fs:find("deathstats_icon_afk%.png") or core.last_formspec.fs:find("deathstats_icon_skull%.png"),
+        "Formspec must use status icons")
+    assert(core.last_formspec.fs:find("PING"), "Formspec must display PING column header label")
+    assert(core.last_formspec.fs:find("%d+ms"), "Formspec rows must render ping values with ms unit")
+    assert(core.last_formspec.fs:find("button_exit%[12%.8"), "Formspec close button must use button_exit")
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == true, "Formspec open state must be tracked")
+
+    -- Test receive fields handling for close button
+    core.last_closed_formspec = nil
+    core.close_formspec = function(pname, fname)
+        core.last_closed_formspec = { pname = pname, fname = fname }
+    end
+    core.on_receive_fields(p_sb1, "deathstats:scoreboard", { btn_close_scoreboard = "Close" })
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == nil, "Clicking Close button must clear open state")
+    assert(core.last_closed_formspec and core.last_closed_formspec.fname == "deathstats:scoreboard",
+        "Clicking Close button must call core.close_formspec")
+
+    -- Chat Command /deathstats scores toggle test
+    local cmd_deathstats = core.chatcommands["deathstats"]
+    assert(cmd_deathstats ~= nil, "/deathstats chatcommand must be registered")
+    -- When closed, running it opens formspec
+    local ok_open = cmd_deathstats.func("ScoreTester1", "scores")
+    assert(ok_open == true, "/deathstats scores must succeed")
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == true, "Opening via /deathstats must set open state")
+
+    -- When open, running it closes formspec
+    local ok1 = cmd_deathstats.func("ScoreTester1", "scores")
+    assert(ok1 == true, "/deathstats scores must succeed")
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == nil, "Toggling must close open formspec")
+
+    -- When closed, running it re-opens formspec
+    local ok2 = cmd_deathstats.func("ScoreTester1", "scores")
+    assert(ok2 == true, "/deathstats scores must re-open formspec")
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == true, "Re-toggling must open formspec")
+
+    -- Shortcut /scores test
+    local cmd_scores = core.chatcommands["scores"]
+    assert(cmd_scores ~= nil, "/scores chatcommand alias must be registered")
+    local ok3 = cmd_scores.func("ScoreTester1")
+    assert(ok3 == true, "/scores shortcut must succeed")
+    assert(deathstats.open_scoreboard_formspecs["ScoreTester1"] == nil, "/scores shortcut must toggle off formspec")
+
+    -- Dead player cannot open formspec via /scores or /deathstats scores
+    local ok_dead_fs, msg_dead_fs = cmd_scores.func("ScoreTester3")
+    assert(ok_dead_fs == false and msg_dead_fs:find("dead"), "Dead player must not be able to use /scores")
+    local ok_dead_ds, msg_dead_ds = cmd_deathstats.func("ScoreTester3", "scores")
+    assert(ok_dead_ds == false and msg_dead_ds:find("dead"), "Dead player must not be able to use /deathstats scores")
+    core.last_formspec = nil
+    deathstats.show_scoreboard_formspec(p_sb3)
+    assert(core.last_formspec == nil, "show_scoreboard_formspec must reject dead player")
+    deathstats.show_scoreboard_hud(p_sb3)
+    assert(deathstats.scoreboard_states["ScoreTester3"] == nil, "show_scoreboard_hud must reject dead player")
+
+    -- 9. Enable/Disable Scoreboard Feature Setting Tests
+    local ok_dis, msg_dis = cmd_deathstats.func("ScoreTester1", "scoreboard off")
+    assert(ok_dis == true and msg_dis:find("disabled"), "/deathstats scoreboard off must disable feature")
+    assert(deathstats.config.enable_scoreboard == false, "enable_scoreboard must be false")
+
+    -- When disabled, hold-key HUD overlay must not show
+    deathstats.show_scoreboard_hud(p_sb1)
+    assert(deathstats.scoreboard_states["ScoreTester1"] == nil, "Scoreboard HUD must not open when disabled")
+
+    -- When disabled, formspec commands and functions must fail gracefully
+    local ok_dis_fs, msg_dis_fs = cmd_scores.func("ScoreTester1")
+    assert(ok_dis_fs == false and msg_dis_fs:find("disabled"), "/scores must fail when scoreboard is disabled")
+    local ok_dis_ds, msg_dis_ds = cmd_deathstats.func("ScoreTester1", "scores")
+    assert(ok_dis_ds == false and msg_dis_ds:find("disabled"), "/deathstats scores must fail when scoreboard is disabled")
+    local cmd_mock = core.chatcommands["mockscores"]
+    if cmd_mock then
+        local ok_dis_mock, msg_dis_mock = cmd_mock.func("ScoreTester1", "on")
+        assert(ok_dis_mock == false and msg_dis_mock:find("disabled"), "/mockscores must fail when scoreboard is disabled")
+    end
+
+    -- Re-enable the scoreboard feature
+    local ok_en, msg_en = cmd_deathstats.func("ScoreTester1", "scoreboard on")
+    assert(ok_en == true and msg_en:find("enabled"), "/deathstats scoreboard on must re-enable feature")
+    assert(deathstats.config.enable_scoreboard == true, "enable_scoreboard must be true")
+
+    -- 10. Leaderboard Sorting: Living players rank above dead players regardless of kills
+    data3.current_run.players_killed = 99 -- dead player with 99 kills
+    data2.current_run.players_killed = 0  -- alive player with 0 kills
+    local sorted_check = deathstats.get_scoreboard_data(p_sb1)
+    assert(sorted_check[3].name == "ScoreTester3", "Dead player must be ranked below all living players despite 99 kills")
+    assert(sorted_check[3].is_dead == true, "Last ranked player must be the dead player")
+
+    -- 11. HUD Diff-Memoization Verification (Eliminates Redundant Network Packets)
+    deathstats.show_scoreboard_hud(p_sb1)
+    local state_memo = deathstats.scoreboard_states["ScoreTester1"]
+    assert(state_memo ~= nil, "Scoreboard HUD must be open")
+    local hud_change_calls = 0
+    local orig_hud_change = p_sb1.hud_change
+    p_sb1.hud_change = function(self, id, stat, val)
+        hud_change_calls = hud_change_calls + 1
+        return orig_hud_change(self, id, stat, val)
+    end
+    -- Call update with identical state: must result in 0 hud_change calls
+    deathstats.update_scoreboard_hud(p_sb1)
+    assert(hud_change_calls == 0, string.format("Expected 0 hud_change calls when state is unchanged, got %d", hud_change_calls))
+
+    -- Modify a single stat (damage dealt on player 1)
+    data1.current_run.damage_dealt = 9999
+    deathstats.update_scoreboard_hud(p_sb1)
+    -- Only modified cells should call hud_change
+    assert(hud_change_calls > 0 and hud_change_calls <= 4,
+        string.format("Expected minimal selective hud_change calls on stat change, got %d", hud_change_calls))
+    p_sb1.hud_change = orig_hud_change
+    deathstats.hide_scoreboard_hud(p_sb1)
+
+    -- Cleanup mocks
+    deathstats.dead_players["ScoreTester3"] = nil
+    mock_players["ScoreTester1"] = nil
+    mock_players["ScoreTester2"] = nil
+    mock_players["ScoreTester3"] = nil
+    core.get_connected_players = orig_conn
+    core.get_player_window_information = orig_win_info
+
+    print("  [PASS] Tactical Multiplayer Live Scoreboard (HUD overlay, responsive metrics, ranking & formspec)")
+end
+run_test_suite_47()
+
+-- ============================================================================
+-- TEST 48: Mock Scoreboard Data Generation & Live Testing Controls
+-- ============================================================================
+local function run_test_suite_48()
+    print("\n--- TEST 48: Mock Scoreboard Data Generation & Live Testing Controls ---")
+
+    -- 1. Load mock_scoreboard.lua
+    dofile(modpath .. "/mock_scoreboard.lua")
+    assert(deathstats.mock_scoreboard_enabled == true, "Loading mock_scoreboard.lua must enable mock data")
+    assert(type(deathstats.mock_players_data) == "table", "Mock players dataset must be defined")
+    assert(#deathstats.mock_players_data == 30, "Mock dataset must contain exactly 30 players for testing")
+
+    -- Setup single mock viewer player
+    local p_viewer = create_mock_player("TestViewer")
+    p_viewer:set_hp(20)
+    mock_players["TestViewer"] = p_viewer
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function()
+        return { p_viewer }
+    end
+
+    -- 2. Scoreboard data with all mock players enabled
+    local full_board = deathstats.get_scoreboard_data(p_viewer)
+    local expected_total = 1 + #deathstats.mock_players_data
+    assert(#full_board == expected_total,
+        string.format("Expected %d total entries (1 viewer + %d mocks), got %d",
+            expected_total, #deathstats.mock_players_data, #full_board))
+
+    -- Verify real online player is listed first (guaranteed in HUD overlay, ignoring score sorting)
+    assert(full_board[1].name == "TestViewer" and full_board[1].is_real == true and full_board[1].is_viewer == true,
+        "Real online player must be listed first at rank 1")
+
+    -- Verify all entries have correct ranks and flags
+    for idx, item in ipairs(full_board) do
+        assert(item.rank == idx, string.format("Rank (%d) must match index (%d)", item.rank, idx))
+        if item.name == "TestViewer" then
+            assert(item.is_viewer == true and item.is_real == true, "Viewer row must have is_viewer=true, is_real=true")
+        else
+            assert(item.is_viewer == false and item.is_real == false, "Mock player must have is_viewer=false, is_real=false")
+        end
+    end
+
+    -- Verify living-above-dead and descending kills / performance sorting order among mock players
+    for i = 2, #full_board - 1 do
+        local a = full_board[i]
+        local b = full_board[i + 1]
+        local ok = (a.is_dead == false and b.is_dead == true) or (a.is_dead == b.is_dead and (
+            a.kills > b.kills or (a.kills == b.kills and (
+                a.pvp_kills > b.pvp_kills or (a.pvp_kills == b.pvp_kills and (
+                    a.damage_dealt > b.damage_dealt or (a.damage_dealt == b.damage_dealt and (
+                        a.blocks_mined >= b.blocks_mined
+                    ))
+                ))
+            ))
+        ))
+        assert(ok, string.format("Mock players must be sorted living-first then descending stats: %s vs %s", a.name, b.name))
+    end
+
+    -- 3. Test limiting player count via /mockscores <count>
+    local cmd_mock = core.chatcommands["mockscores"]
+    assert(cmd_mock ~= nil, "/mockscores chatcommand must be registered")
+
+    local ok_lim, msg_lim = cmd_mock.func("TestViewer", "5")
+    assert(ok_lim == true and deathstats.mock_scoreboard_player_count == 5, "Setting count to 5 must succeed")
+    assert(msg_lim:find("5 mock players"), "Confirmation message must mention 5 players")
+
+    local limited_board = deathstats.get_scoreboard_data(p_viewer)
+    assert(#limited_board == 6, string.format("Expected 6 entries (1 viewer + 5 mocks), got %d", #limited_board))
+
+    -- 4. Test disabling mock data via /mockscores off
+    local ok_off = cmd_mock.func("TestViewer", "off")
+    assert(ok_off == true and deathstats.mock_scoreboard_enabled == false, "Disabling mock data must succeed")
+    local real_board = deathstats.get_scoreboard_data(p_viewer)
+    assert(#real_board == 1, "Disabling mock data must return only real connected players")
+    assert(real_board[1].name == "TestViewer", "Real player must remain in real board")
+
+    -- 5. Test re-enabling via /deathstats mock on
+    local cmd_ds = core.chatcommands["deathstats"]
+    local ok_on = cmd_ds.func("TestViewer", "mock on")
+    assert(ok_on == true and deathstats.mock_scoreboard_enabled == true, "/deathstats mock on must re-enable mock data")
+    local re_enabled_board = deathstats.get_scoreboard_data(p_viewer)
+    assert(#re_enabled_board == expected_total, "Re-enabling without count must return full roster")
+
+    -- 6. Test toggle via /deathstats mock
+    cmd_ds.func("TestViewer", "mock")
+    assert(deathstats.mock_scoreboard_enabled == false, "Toggling must disable mock data")
+    cmd_ds.func("TestViewer", "mock")
+    assert(deathstats.mock_scoreboard_enabled == true, "Toggling again must re-enable mock data")
+
+    -- Cleanup
+    deathstats.mock_scoreboard_enabled = false
+    deathstats.mock_scoreboard_player_count = nil
+    mock_players["TestViewer"] = nil
+    core.get_connected_players = orig_conn
+
+    print("  [PASS] Mock scoreboard data generation, viewer inclusion & live testing controls")
+end
+run_test_suite_48()
+
+--------------------------------------------------------------------------------
+-- TEST 49: Performance Optimizations & API Robustness
+--------------------------------------------------------------------------------
+local function run_test_suite_49()
+    print("\n--- TEST 49: Performance Optimizations & API Robustness ---")
+
+    local orig_conn = core.get_connected_players
+    local p_perf = create_mock_player("PerfTester")
+    core.get_connected_players = function()
+        return { p_perf }
+    end
+
+    -- 1. Metadata query memoization in deathstats.get_player_data
+    local meta = p_perf:get_meta()
+    local get_string_calls = 0
+    local orig_get_string = meta.get_string
+    meta.get_string = function(self, key)
+        get_string_calls = get_string_calls + 1
+        return orig_get_string(self, key)
+    end
+
+    -- First call initializes player data and checks metadata once
+    local d1 = deathstats.get_player_data(p_perf)
+    assert(d1 ~= nil, "Player data must be returned")
+    assert(d1._meta_last_life_checked == true, "_meta_last_life_checked flag must be set")
+    local initial_calls = get_string_calls
+    assert(initial_calls > 0, "Initial call should inspect metadata")
+
+    -- Subsequent calls for alive player must NOT call meta:get_string again
+    for _ = 1, 10 do
+        deathstats.get_player_data(p_perf)
+    end
+    assert(get_string_calls == initial_calls,
+        string.format("Expected %d metadata calls, got %d (memoization failure)", initial_calls, get_string_calls))
+    meta.get_string = orig_get_string
+
+    -- 2. deathstats.calculate_player_score with precalculated armor and hp
+    local score_no_cache, avg_no_cache = deathstats.calculate_player_score(d1, p_perf)
+    local score_with_cache, avg_with_cache = deathstats.calculate_player_score(d1, p_perf, 0, 20)
+    assert(score_no_cache == score_with_cache and avg_no_cache == avg_with_cache,
+        "calculate_player_score must return identical result with precomputed values")
+
+    -- 3. deathstats.hide_scoreboard_hud accepting string player name
+    deathstats.show_scoreboard_hud(p_perf)
+    assert(deathstats.scoreboard_states["PerfTester"] ~= nil, "HUD state must exist after show")
+    deathstats.hide_scoreboard_hud("PerfTester")
+    assert(deathstats.scoreboard_states["PerfTester"] == nil, "hide_scoreboard_hud must support string name")
+    assert(next(p_perf.huds) == nil, "All HUD elements must be removed when hidden by name")
+
+    -- 4. update_scoreboard_hud metrics layout memoization
+    deathstats.show_scoreboard_hud(p_perf)
+    local state = deathstats.scoreboard_states["PerfTester"]
+    assert(state ~= nil and state.metrics ~= nil, "Metrics must be calculated on show")
+    local orig_metrics = state.metrics
+
+    -- Calling update without resolution change must reuse existing metrics table
+    deathstats.update_scoreboard_hud(p_perf)
+    assert(state.metrics == orig_metrics, "Metrics table must be preserved when window dimensions are constant")
+    deathstats.hide_scoreboard_hud(p_perf)
+
+    -- 5. Public API forward declarations
+    assert(type(deathstats.get_player_hp) == "function", "deathstats.get_player_hp must be defined in API")
+    assert(deathstats.get_player_hp(p_perf) == 20, "get_player_hp must return 20 for full health mock player")
+
+    -- Cleanup
+    mock_players["PerfTester"] = nil
+    core.get_connected_players = orig_conn
+
+    print("  [PASS] Metadata memoization, HUD layout caching, cached score calculation & API robustness")
+end
+run_test_suite_49()
+
+--------------------------------------------------------------------------------
+-- TEST 50: Multiplayer Performance Optimizations & Engine Best Practices
+--------------------------------------------------------------------------------
+local function run_test_suite_50()
+    print("\n--- TEST 50: Multiplayer Performance Optimizations & Engine Best Practices ---")
+
+    local orig_conn = core.get_connected_players
+    local p_opt1 = create_mock_player("OptTester1")
+    local p_opt2 = create_mock_player("OptTester2")
+    local p_opt3 = create_mock_player("OptTester3")
+    p_opt1:set_hp(20)
+    p_opt2:set_hp(18)
+    p_opt3:set_hp(15)
+    mock_players["OptTester1"] = p_opt1
+    mock_players["OptTester2"] = p_opt2
+    mock_players["OptTester3"] = p_opt3
+
+    local d1 = deathstats.get_player_data(p_opt1)
+    local d2 = deathstats.get_player_data(p_opt2)
+    local d3 = deathstats.get_player_data(p_opt3)
+    d1.current_run.players_killed = 5
+    d2.current_run.players_killed = 3
+    d3.current_run.players_killed = 1
+
+    core.get_connected_players = function()
+        return { p_opt1, p_opt2, p_opt3 }
+    end
+
+    -- 1. Multi-Viewer Leaderboard Sharing (precomputed_base)
+    local entries1, base_list = deathstats.get_scoreboard_data(p_opt1)
+    assert(type(entries1) == "table", "entries1 must be a table")
+    assert(type(base_list) == "table", "base_list must be returned for same-frame reuse")
+    assert(#base_list == 3, "base_list must contain all 3 connected players")
+    assert(entries1[1].name == "OptTester1" and entries1[1].is_viewer == true,
+        "OptTester1 must be row 1 (viewer) in entries1")
+
+    -- Call with precomputed_base for second viewer: should use shared base without re-sorting
+    local entries2, base_list2 = deathstats.get_scoreboard_data(p_opt2, base_list)
+    assert(base_list2 == base_list, "Returned base_list must be identical to precomputed_base")
+    assert(entries2[1].name == "OptTester1" and entries2[1].is_viewer == false,
+        "OptTester1 must be rank 1 with is_viewer=false in entries2")
+    assert(entries2[2].name == "OptTester2" and entries2[2].is_viewer == true and entries2[2].rank == 2,
+        "OptTester2 must be rank 2 with is_viewer=true in entries2")
+    assert(#entries2 == 3, "entries2 must contain all 3 players")
+
+    -- Verify passing precomputed entries to show_scoreboard_hud and update_scoreboard_hud
+    deathstats.show_scoreboard_hud(p_opt2, entries2)
+    local state2 = deathstats.scoreboard_states["OptTester2"]
+    assert(state2 ~= nil, "OptTester2 HUD state must exist after show")
+    assert(state2.viewer_row_idx == 2, "Viewer row index must be 2 for OptTester2")
+    deathstats.update_scoreboard_hud(p_opt2, entries2)
+    assert(state2.viewer_row_idx == 2, "Viewer row index must be preserved")
+    deathstats.hide_scoreboard_hud(p_opt2)
+    assert(deathstats.scoreboard_states["OptTester2"] == nil, "HUD state must be cleared after hide")
+
+    -- 2. get_player_armor_points skips mcl_armor metadata lookup when mod is not loaded
+    rawset(_G, "mcl_armor", nil)
+    local p_armor = create_mock_player("ArmorTester")
+    mock_players["ArmorTester"] = p_armor
+    local meta_armor = p_armor:get_meta()
+    meta_armor:set_int("mcl_armor:armor_points", 15)
+
+    local mcl_get_int_calls = 0
+    local orig_meta_get_int = meta_armor.get_int
+    meta_armor.get_int = function(self, key)
+        if key == "mcl_armor:armor_points" then
+            mcl_get_int_calls = mcl_get_int_calls + 1
+        end
+        return orig_meta_get_int(self, key)
+    end
+
+    local armor_unloaded = deathstats.get_player_armor_points(p_armor)
+    assert(armor_unloaded == 0, "Armor points must be 0 when no armor mods are present")
+    assert(mcl_get_int_calls == 0,
+        string.format("Expected 0 mcl_armor metadata calls when mod is absent, got %d", mcl_get_int_calls))
+
+    -- When mcl_armor is present, it should inspect the metadata
+    rawset(_G, "mcl_armor", {})
+    local armor_loaded = deathstats.get_player_armor_points(p_armor)
+    assert(armor_loaded == 15, string.format("Expected 15 armor points with mcl_armor loaded, got %d", armor_loaded))
+    assert(mcl_get_int_calls == 1, "mcl_armor metadata should be read when mod is loaded")
+    rawset(_G, "mcl_armor", nil)
+    meta_armor.get_int = orig_meta_get_int
+    mock_players["ArmorTester"] = nil
+
+    -- 3. In-place mutation of player_last_pos and player_last_look tables
+    deathstats.player_last_pos["OptTester1"] = nil
+    deathstats.player_last_look["OptTester1"] = nil
+    p_opt1.pos = { x = 1, y = 2, z = 3 }
+    p_opt1.look_vertical = 0.1
+    p_opt1.look_horizontal = 0.2
+
+    -- Run globalstep with 2.0s to trigger AFK tracker check
+    core.on_globalstep(2.0)
+    local pos_ref = deathstats.player_last_pos["OptTester1"]
+    local look_ref = deathstats.player_last_look["OptTester1"]
+    assert(type(pos_ref) == "table", "player_last_pos entry must be a table")
+    assert(type(look_ref) == "table", "player_last_look entry must be a table")
+    assert(pos_ref.x == 1 and pos_ref.y == 2 and pos_ref.z == 3, "Initial pos must be recorded")
+
+    -- Move and look change
+    p_opt1.pos = { x = 10, y = 20, z = 30 }
+    p_opt1.look_vertical = 0.8
+    p_opt1.look_horizontal = 1.5
+    core.on_globalstep(2.0)
+
+    -- Verify same table reference is retained (in-place mutation, no GC churn)
+    assert(deathstats.player_last_pos["OptTester1"] == pos_ref,
+        "player_last_pos table reference must be preserved across updates (in-place mutation)")
+    assert(pos_ref.x == 10 and pos_ref.y == 20 and pos_ref.z == 30,
+        "player_last_pos fields must be updated in-place")
+    assert(deathstats.player_last_look["OptTester1"] == look_ref,
+        "player_last_look table reference must be preserved across updates (in-place mutation)")
+    assert(look_ref.pitch == 0.8 and look_ref.yaw == 1.5,
+        "player_last_look fields must be updated in-place")
+
+    -- 4. Activity Resets: Mining, Eating, Player Punch, and Mob Punch
+    deathstats.last_activity["OptTester1"] = 50
+    core.on_dignode({ x = 0, y = 0, z = 0 }, { name = "default:stone" }, p_opt1)
+    assert(deathstats.last_activity["OptTester1"] > 50, "Mining node must reset player activity")
+
+    deathstats.last_activity["OptTester1"] = 50
+    core.on_item_eat(2, nil, nil, p_opt1, nil)
+    assert(deathstats.last_activity["OptTester1"] > 50, "Eating item must reset player activity")
+
+    deathstats.last_activity["OptTester1"] = 50
+    core.on_punchplayer(p_opt2, p_opt1, 1.0, nil, nil, 5)
+    assert(deathstats.last_activity["OptTester1"] > 50, "Punching a player must reset attacker activity")
+
+    deathstats.last_activity["OptTester1"] = 50
+    core.register_entity("deathstats:test_mob", {
+        hp = 20,
+        on_punch = function(_self, _puncher) end,
+    })
+    local mob_def = core.registered_entities["deathstats:test_mob"]
+    mob_def.on_punch({ hp = 20 }, p_opt1, 1.0, nil, nil, 5)
+    assert(deathstats.last_activity["OptTester1"] > 50, "Punching an entity must reset player activity")
+
+    -- 5. Formspec style_type Deduplication
+    core.last_formspec = nil
+    deathstats.show_scoreboard_formspec(p_opt1)
+    assert(core.last_formspec ~= nil, "Formspec must be generated")
+    local fs = core.last_formspec.fs
+    -- Count style_type occurrences in formspec
+    local _, style_count = fs:gsub("style_type%[label;", "")
+    -- Without deduplication, every row element emitted a style_type (up to 30-40 declarations).
+    -- With deduplication, it only emits when the text color changes.
+    assert(style_count < 10,
+        string.format("Expected deduplicated style_type count (< 10), got %d", style_count))
+    deathstats.open_scoreboard_formspecs["OptTester1"] = nil
+
+    -- 6. Globalstep Fast-Exit: Empty Server & Disabled Feature
+    core.get_connected_players = function() return {} end
+    core.on_globalstep(0.1) -- Should return immediately without errors
+
+    core.get_connected_players = function() return { p_opt1 } end
+    deathstats.config.enable_scoreboard = false
+    deathstats.scoreboard_states["OptTester1"] = { hud_title = 999 }
+    core.on_globalstep(0.1)
+    assert(deathstats.scoreboard_states["OptTester1"] == nil,
+        "Disabled scoreboard in globalstep must clean up active scoreboard states immediately")
+    deathstats.config.enable_scoreboard = true
+
+    -- Cleanup
+    mock_players["OptTester1"] = nil
+    mock_players["OptTester2"] = nil
+    mock_players["OptTester3"] = nil
+    core.get_connected_players = orig_conn
+
+    print("  [PASS] Multi-viewer base caching, mcl_armor guard, in-place table mutations, activity hooks & formspec style deduplication")
+end
+run_test_suite_50()
+
+-- =========================================================================
+-- TEST SUITE 51: Scoreboard HUD Chat Suppression & Lifecycle State Safety
+-- =========================================================================
+local function run_test_suite_51()
+    print("\n--- TEST 51: Scoreboard HUD Chat Suppression & Lifecycle State Safety ---")
+    local p_chat = create_mock_player("ChatTester")
+    mock_players["ChatTester"] = p_chat
+
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function() return { p_chat } end
+
+    core.get_player_window_information = function(_pname)
+        return { size = { x = 1920, y = 1080 }, real_hud_scaling = 1.0 }
+    end
+
+    -- 1. Normal Show & Hide: chat suppressed on show, restored on hide
+    assert(p_chat:hud_get_flags().chat == true, "Initial chat flag must be true")
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed (false) while scoreboard HUD is active")
+    local state = deathstats.active_scoreboard_huds["ChatTester"]
+    assert(state ~= nil and state.prev_chat_flag == true, "prev_chat_flag must be saved as true in state")
+
+    deathstats.hide_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must be restored to true when scoreboard HUD is hidden")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "State must be cleared on hide")
+
+    -- 2. Respect existing chat=false: if player had chat disabled, closing scoreboard keeps it disabled
+    p_chat:hud_set_flags({ chat = false })
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must remain false")
+    assert(deathstats.active_scoreboard_huds["ChatTester"].prev_chat_flag == false,
+        "prev_chat_flag must record false if player already had chat disabled")
+    deathstats.hide_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must not be forced to true if player had it off")
+    p_chat:hud_set_flags({ chat = true })
+
+    -- 3. Redraw / Resolution change keeps chat suppressed without flag flicker
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be false after first show")
+    -- Simulate second show (window resize / re-show)
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must remain false after re-show")
+    assert(deathstats.active_scoreboard_huds["ChatTester"].prev_chat_flag == true,
+        "Re-show must preserve original prev_chat_flag=true rather than overwriting with suppressed false")
+    deathstats.hide_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must restore to true after re-show lifecycle")
+
+    -- 4. Player Death: dying while holding scoreboard restores chat
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    core.on_dieplayer(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must be restored when player dies")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on death")
+    core.on_respawnplayer(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat remains active after respawn")
+
+    -- 5. Player Respawn: respawning clears any lingering scoreboard HUD and restores chat
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    core.on_respawnplayer(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must be restored on on_respawnplayer")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on respawn")
+
+    -- 6. Trigger Death Screen: direct call to trigger_death_screen clears scoreboard HUD & restores chat
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    deathstats.trigger_death_screen(p_chat, { type = "fall" })
+    assert(p_chat:hud_get_flags().chat == true, "Chat must be restored when trigger_death_screen executes")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared by trigger_death_screen")
+    core.on_respawnplayer(p_chat)
+
+    -- 7. Player Disconnect (leaveplayer): clears state and restores chat
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    core.on_leaveplayer(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must be restored on leaveplayer")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on leaveplayer")
+
+    -- 8. Player Join: guarantees chat flag is true and no stale scoreboard remains
+    p_chat:hud_set_flags({ chat = false })
+    core.on_joinplayer(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "on_joinplayer must ensure chat is enabled")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "No scoreboard state may exist on join")
+
+    -- 9. Server Shutdown: restores chat for all active viewers
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    core.on_shutdown()
+    assert(p_chat:hud_get_flags().chat == true, "on_shutdown must restore chat for all active scoreboard viewers")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on shutdown")
+
+    -- 10. Formspec Opening: opening /scores modal hides HUD and restores chat
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
+    deathstats.show_scoreboard_formspec(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "show_scoreboard_formspec must restore chat")
+    assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on formspec open")
+    deathstats.open_scoreboard_formspecs["ChatTester"] = nil
+
+    -- 11. Configuration Toggle: setting deathstats_scoreboard_suppress_chat = false bypasses suppression
+    deathstats.config.scoreboard_suppress_chat = false
+    deathstats.show_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat must NOT be suppressed when scoreboard_suppress_chat is false")
+    deathstats.hide_scoreboard_hud(p_chat)
+    assert(p_chat:hud_get_flags().chat == true, "Chat remains true")
+    deathstats.config.scoreboard_suppress_chat = true
+
+    -- Cleanup
+    mock_players["ChatTester"] = nil
+    core.get_connected_players = orig_conn
+    print("  [PASS] Scoreboard HUD Chat Suppression & Multi-Lifecycle State Safety")
+end
+run_test_suite_51()
+
+--- TEST 52: settingtypes.txt Syntax & Engine Compatibility Validation ---
+local function run_test_suite_52()
+    local CHAR_CLASSES = {
+        SPACE = "[%s]",
+        VARIABLE = "[%w_%-%.]",
+        INTEGER = "[+-]?[%d]",
+        FLOAT = "[+-]?[%d%.]",
+        FLAGS = "[%w_%-%.,]",
+    }
+
+    local st_modpath = core.get_modpath("deathstats") or "."
+    local file = io.open(st_modpath .. "/settingtypes.txt", "r")
+    assert(file, "settingtypes.txt must exist and be readable")
+
+    local line_no = 0
+    local found_settings = {}
+    for line in file:lines() do
+        line_no = line_no + 1
+        if not line:match("^%s*#") and not line:match("^%s*$") then
+            local first_part, name, readable_name, setting_type = line:match(
+                "^(([" .. CHAR_CLASSES.VARIABLE .. "+)" .. CHAR_CLASSES.SPACE .. "*%(([^%)]*)%)" .. CHAR_CLASSES.SPACE .. "*(" .. CHAR_CLASSES.VARIABLE .. "+)" .. CHAR_CLASSES.SPACE .. "*)"
+            )
+            assert(first_part, string.format("Line %d in settingtypes.txt has invalid header: %s", line_no, line))
+            assert(readable_name and readable_name ~= "", string.format("Line %d in settingtypes.txt must have readable name", line_no))
+
+            local remaining_line = line:sub(#first_part + 1)
+            if setting_type == "enum" then
+                local default, values = remaining_line:match("^(" .. CHAR_CLASSES.VARIABLE .. "*)" .. CHAR_CLASSES.SPACE .. "*(" .. CHAR_CLASSES.FLAGS .. "+)$")
+                assert(default and values and values ~= "", string.format("Line %d has invalid enum definition: %s", line_no, line))
+                found_settings[name] = { type = "enum", default = default, values = values }
+            elseif setting_type == "bool" then
+                assert(remaining_line == "false" or remaining_line == "true", string.format("Line %d has invalid bool: %s", line_no, line))
+                found_settings[name] = { type = "bool", default = remaining_line }
+            elseif setting_type == "int" then
+                local default = remaining_line:match("^(" .. CHAR_CLASSES.INTEGER .. "+)")
+                assert(default, string.format("Line %d has invalid int: %s", line_no, line))
+                found_settings[name] = { type = "int", default = default }
+            elseif setting_type == "float" then
+                local default = remaining_line:match("^(" .. CHAR_CLASSES.FLOAT .. "+)")
+                assert(default, string.format("Line %d has invalid float: %s", line_no, line))
+                found_settings[name] = { type = "float", default = default }
+            else
+                error(string.format("Line %d has unsupported type %s", line_no, setting_type))
+            end
+        end
+    end
+    file:close()
+
+    -- Verify deathstats_scoreboard_key is valid and contains zoom and sneak_aux1
+    assert(found_settings["deathstats_scoreboard_key"], "deathstats_scoreboard_key must be defined in settingtypes.txt")
+    assert(found_settings["deathstats_scoreboard_key"].default == "zoom", "Default must be zoom")
+    assert(found_settings["deathstats_scoreboard_key"].values:find("sneak_aux1"), "Values must include sneak_aux1")
+
+    print("  [PASS] settingtypes.txt Syntax & Engine Compatibility Validation")
+end
+run_test_suite_52()
+
+print("\nALL 52 TEST SUITES PASSED SUCCESSFULLY!")
+
+
 
 
 
