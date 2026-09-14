@@ -9,7 +9,7 @@
 --]]
 
 -- Register combat listener to record recent punches for weapon/killer deduction
-core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _tool_capabilities, _dir, damage)
+core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _tool_capabilities, dir, damage)
     if not player or not player:is_player() then return end
     local name = player:get_player_name()
     if not name or name == "" or deathstats.dead_players[name] then return end
@@ -42,6 +42,31 @@ core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _to
         attacker_name, is_player, attacker_desc = deathstats.resolve_entity_info(attacker_ref)
     end
 
+    local ppos = player:get_pos()
+    local hpos = (hitter and hitter.get_pos and hitter:get_pos())
+    local punch_dir = (dir and (dir.x ~= 0 or dir.z ~= 0) and dir)
+        or (hpos and ppos and vector.direction(hpos, ppos))
+        or nil
+
+    local attacker_hp = nil
+    local attacker_max_hp = nil
+    if attacker_ref then
+        local luaent = attacker_ref.get_luaentity and attacker_ref:get_luaentity()
+        if luaent and (luaent.health or luaent.hp) then
+            attacker_hp = math.max(0, math.floor((luaent.health or luaent.hp) + 0.5))
+            local max_hp = luaent.hp_max or luaent.max_hp
+            if not max_hp and attacker_ref.get_properties then
+                local props = attacker_ref:get_properties()
+                max_hp = props and props.hp_max
+            end
+            attacker_max_hp = math.max(1, math.floor((max_hp or attacker_hp) + 0.5))
+        elseif attacker_ref.get_hp then
+            attacker_hp = math.max(0, attacker_ref:get_hp())
+            local props = attacker_ref.get_properties and attacker_ref:get_properties()
+            attacker_max_hp = (props and props.hp_max) or 20
+        end
+    end
+
     deathstats.recent_punches[name] = {
         attacker_name = attacker_name,
         is_player = is_player,
@@ -51,5 +76,9 @@ core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _to
         tool_name = tool_name,
         tool_desc = tool_desc or "Bare Hands",
         damage = damage,
+        dir = punch_dir and vector.copy(punch_dir),
+        hitter_pos = hpos and vector.copy(hpos),
+        attacker_hp = attacker_hp,
+        attacker_max_hp = attacker_max_hp,
     }
 end)
