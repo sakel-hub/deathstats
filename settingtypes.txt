@@ -29,6 +29,33 @@ deathstats_formspec_side (Statistics Formspec Side) enum right right,left,center
 # Enable broken/fractured limb rotations on death (arms, legs, head)
 deathstats_enable_limb_fractures (Enable Corpse Limb Fractures) bool true
 
+# Enable dynamic ragdoll physics and knockback for the corpse on death
+deathstats_enable_corpse_ragdoll (Enable Corpse Ragdoll Physics) bool true
+
+# Ragdoll knockback force multiplier based on damage of last blow
+deathstats_ragdoll_force_multiplier (Ragdoll Force Multiplier) float 1.0 0.1 5.0
+
+# Maximum corpse velocity clamp in nodes per second to prevent launching into unloaded chunks
+deathstats_ragdoll_max_velocity (Ragdoll Max Velocity) float 18.0 2.0 40.0
+
+# Enable 3D tumbling rotation while corpse is airborne
+deathstats_ragdoll_tumbling (Enable Corpse Tumbling) bool true
+
+# Enable automatic slope incline detection to pitch corpse torso along terrain and stairs
+deathstats_enable_slope_pitch (Enable Corpse Slope Pitch Detection) bool true
+
+# Ragdoll bouncing elasticity on hard surfaces (0.0 for zero bounce, 0.25 standard, 0.5 high bounce)
+deathstats_ragdoll_restitution (Ragdoll Bounce Restitution) float 0.25 0.0 0.6
+
+# Ragdoll limb aerodynamic flail update rate in Hz (multiplayer packet optimization)
+deathstats_ragdoll_flail_rate (Ragdoll Flail Packet Rate) float 10.0 4.0 20.0
+
+# Enable realistic resting pose diversity (prone, supine, lateral side-recovery)
+deathstats_ragdoll_resting_poses (Enable Diverse Resting Poses) bool true
+
+# Enable localized bodyfall thud sound on surface impact
+deathstats_enable_corpse_impact_sounds (Enable Corpse Impact Sounds) bool true
+
 
 # Enable particle effects on corpse (bubbles in water, fire in lava, smoke in fire, impact debris on ground)
 deathstats_enable_corpse_particles (Enable Corpse Particles) bool true
@@ -54,5 +81,26 @@ deathstats_mock_scoreboard (Enable Mock Scoreboard Data) bool false
 
 # Inactivity time in seconds before a player is marked as AFK on the scoreboard
 deathstats_afk_timeout (Scoreboard AFK Timeout Seconds) int 120 15 3600
+
+# Print private death coordinates and biome to player chat upon respawn
+deathstats_chat_death_coords (Chat Death Coordinates on Respawn) bool true
+
+# Enable corpse interaction for living players to inspect epitaph plaques
+deathstats_enable_corpse_inspect (Enable Corpse Epitaph Inspection) bool true
+
+# Enable MVP and title badges on the multiplayer scoreboard
+deathstats_enable_mvp_badges (Enable Scoreboard MVP Badges) bool true
+
+# Enable the all-time Hall of Fame tab on the scoreboard formspec
+deathstats_enable_hall_of_fame (Enable All-Time Hall of Fame) bool true
+
+# Duration in seconds that a settled corpse persists in the world after respawn (0 to remove immediately)
+deathstats_corpse_decay_time (Corpse Decay Time Seconds) int 180 0 1800
+
+# Enable the nemesis revenge and vendetta bounty tracking system
+deathstats_enable_revenge (Enable Nemesis Revenge System) bool true
+
+# Broadcast revenge kill announcements to server chat when a player avenges their death
+deathstats_announce_revenge (Broadcast Revenge to Server Chat) bool true
 
 

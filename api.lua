@@ -10,8 +10,11 @@
 
 local S = core.get_translator(core.get_current_modname())
 local F = core.formspec_escape
-local copy = table.copy
 local atan2 = math.atan2 or math.atan
+local copy = table.copy
+local VEC_ZERO = vector.new(0, 0, 0)
+local GRAV_ACCEL = { x = 0, y = -9.81, z = 0 }
+local FALL_VEL = { x = 0, y = -1.2, z = 0 }
 
 deathstats = {
     modpath = core.get_modpath("deathstats") or ".",
@@ -32,12 +35,28 @@ deathstats = {
         orbit_height = tonumber(core.settings:get("deathstats_orbit_height")) or 1.5,
         orbit_speed = tonumber(core.settings:get("deathstats_orbit_speed")) or 0.4,
         enable_corpse_particles = core.settings:get_bool("deathstats_enable_corpse_particles", true),
+        enable_corpse_ragdoll = core.settings:get_bool("deathstats_enable_corpse_ragdoll", true),
+        ragdoll_force_multiplier = tonumber(core.settings:get("deathstats_ragdoll_force_multiplier")) or 1.0,
+        ragdoll_max_velocity = tonumber(core.settings:get("deathstats_ragdoll_max_velocity")) or 18.0,
+        ragdoll_tumbling = core.settings:get_bool("deathstats_ragdoll_tumbling", true),
+        ragdoll_restitution = tonumber(core.settings:get("deathstats_ragdoll_restitution")) or 0.25,
+        ragdoll_flail_rate = tonumber(core.settings:get("deathstats_ragdoll_flail_rate")) or 10.0,
+        ragdoll_resting_poses = core.settings:get_bool("deathstats_ragdoll_resting_poses", true),
+        enable_corpse_impact_sounds = core.settings:get_bool("deathstats_enable_corpse_impact_sounds", true),
+        enable_slope_pitch = core.settings:get_bool("deathstats_enable_slope_pitch", true),
         enable_scoreboard = core.settings:get_bool("deathstats_enable_scoreboard", true),
         scoreboard_key = core.settings:get("deathstats_scoreboard_key") or "sneak_aux1",
         time_format = core.settings:get("deathstats_time_format") or "24h",
         scoreboard_update_interval = tonumber(core.settings:get("deathstats_scoreboard_update_interval")) or 1.0,
         scoreboard_suppress_chat = core.settings:get_bool("deathstats_scoreboard_suppress_chat", true),
         afk_timeout = tonumber(core.settings:get("deathstats_afk_timeout")) or 120,
+        chat_death_coords = core.settings:get_bool("deathstats_chat_death_coords", true),
+        enable_corpse_inspect = core.settings:get_bool("deathstats_enable_corpse_inspect", true),
+        enable_mvp_badges = core.settings:get_bool("deathstats_enable_mvp_badges", true),
+        enable_hall_of_fame = core.settings:get_bool("deathstats_enable_hall_of_fame", true),
+        corpse_decay_time = tonumber(core.settings:get("deathstats_corpse_decay_time")) or 180,
+        enable_revenge = core.settings:get_bool("deathstats_enable_revenge", true),
+        announce_revenge = core.settings:get_bool("deathstats_announce_revenge", true),
     },
     -- Common & Reusable Color Palette for UI Formspecs and HUD Elements
     colors = {
@@ -48,8 +67,10 @@ deathstats = {
         card_panel = "#1b1b24",
         card_inset = "#1f0507dd",
         row_alt = "#242430",
+        row_viewer = "#88181844",
         tab_bar_bg = "#181822",
         tab_bar_sep = "#3a3a4c",
+        tooltip_bg = "#141418f0",
 
         -- Accents & Framing
         crimson_border = "#991111",
@@ -115,7 +136,10 @@ deathstats = {
     active_scoreboard_huds = {},
     scoreboard_states = {},
     open_scoreboard_formspecs = {},
+    open_scoreboard_tabs = {},
     scoreboard_bg_cache = {},
+    formatted_name_cache = {},
+    node_tile_texture_cache = {},
     registered_columns = {},
     last_activity = {},
     player_last_pos = {},
@@ -128,10 +152,13 @@ deathstats = {
     recent_falls = {},
     recent_starvations = {},
     recent_dehydrations = {},
+    last_blow = {},
+    last_death_reason = {},
     respawn_immunity = {},
     left_players = {},
     compat_hunger = {},
     compat_skins = {},
+    player_corpses = {},
 }
 
 -- ==========================================
@@ -198,6 +225,10 @@ function deathstats.create_empty_stats()
         mobs_killed = 0,
         mobs_slain = {},       -- [mob_name] = count
         players_killed = 0,
+        players_slain = {},    -- [victim_name] = count
+        killstreak = 0,
+        revenges = 0,
+        vendetta_target = nil,
         items_crafted = 0,
         items_consumed = 0,
         distance_traveled = 0,
@@ -206,6 +237,16 @@ function deathstats.create_empty_stats()
         last_cause = "None",
         last_weapon = "None",
         last_killer = "None",
+        deaths_by_category = {}, -- [category] = count
+        killers_count = {},      -- [killer_name] = count
+        personal_bests = {
+            survival_time = 0,
+            kills = 0,
+            killstreak = 0,
+            blocks_mined = 0,
+            total_ores = 0,
+            damage_dealt = 0,
+        },
     }
 end
 
@@ -246,6 +287,23 @@ function deathstats.format_number(n)
     return left .. (num:reverse():gsub('(%d%d%d)', '%1,'):reverse()) .. right
 end
 
+--- Format numbers into compact strings (>= 1,000 -> 1k, >= 2,000 -> 2k, >= 10,000 -> 10k, >= 1,000,000 -> 1M)
+---@param n number The numeric value to format
+---@return string The compact formatted string (e.g. "1k", "10k", "2M")
+function deathstats.format_compact_number(n)
+    if not n then return "0" end
+    n = tonumber(n) or 0
+    if n >= 1000000 then
+        local m = math.floor(n / 1000000)
+        return m .. "M"
+    elseif n >= 1000 then
+        local k = math.floor(n / 1000)
+        return k .. "k"
+    else
+        return tostring(math.floor(n))
+    end
+end
+
 --- Convert an internal node name or item name into a clean, human-readable title
 --- Retrieves clean description from registered item definition, or falls back to capitalized name
 ---@param item_name string The raw registered technical item or node name (e.g. "default:stone_with_iron")
@@ -254,6 +312,13 @@ function deathstats.format_name(item_name)
     if not item_name or item_name == "" then
         return S("Unknown")
     end
+    local cache = deathstats.formatted_name_cache
+    local cached = cache and cache[item_name]
+    if cached then
+        return cached
+    end
+
+    local result = nil
     -- Check if registered item has a description
     local def = core.registered_items[item_name]
     local desc = def and (def.short_description or def.description)
@@ -263,16 +328,24 @@ function deathstats.format_name(item_name)
         desc = core.strip_colors(desc)
         desc = desc:gsub("\27%b()", ""):gsub("\27.", ""):match("^%s*(.-)%s*$")
         if desc and desc ~= "" then
-            return desc
+            result = desc
         end
     end
 
-    -- Fallback: extract identifier part after colon and format with spaces and title case
-    local sub = string.match(item_name, ":(.+)$") or item_name
-    sub = sub:gsub("_", " ")
-    return (sub:gsub("(%a)([%w_']*)", function(first, rest)
-        return first:upper() .. rest:lower()
-    end))
+    if not result then
+        -- Fallback: extract identifier part after colon and format with spaces and title case
+        local sub = string.match(item_name, ":(.+)$") or item_name
+        sub = sub:gsub("(%l)(%u)", "%1 %2")
+        sub = sub:gsub("_", " ")
+        result = (sub:gsub("(%a)([%w_']*)", function(first, rest)
+            return first:upper() .. rest:lower()
+        end))
+    end
+
+    if cache then
+        cache[item_name] = result
+    end
+    return result
 end
 
 --- Safely get the item name from an ItemStack, itemstring, or table without assuming Lua type.
@@ -422,12 +495,25 @@ function deathstats.play_death_sound(player)
     if not deathstats.config.enable_sounds or not player then
         return
     end
-    local player_name = player:get_player_name()
-    core.sound_play("deathstats_death", {
-        to_player = player_name,
-        gain = 1.0,
-        pitch = 1.0,
-    })
+    local name = player.get_player_name and player:get_player_name()
+    local cam_data = name and deathstats.player_camera_data[name]
+    local pos = (cam_data and (cam_data.orbit_center or cam_data.initial_death_pos))
+        or (player.get_pos and player:get_pos())
+    if pos then
+        core.sound_play("deathstats_death", {
+            pos = pos,
+            max_hear_distance = 16,
+            gain = 1.0,
+            pitch = 1.0,
+        })
+    else
+        local player_name = name or (player.get_player_name and player:get_player_name())
+        core.sound_play("deathstats_death", {
+            to_player = player_name,
+            gain = 1.0,
+            pitch = 1.0,
+        })
+    end
 end
 
 --- Format a projectile entity name into a clean weapon display title
@@ -455,7 +541,7 @@ function deathstats.resolve_puncher_player(puncher)
         return nil, false, nil, nil
     end
 
-    -- 1. Direct player punch
+    -- Direct player punch
     if puncher:is_player() then
         local item = puncher:get_wielded_item()
         local iname = deathstats.get_stack_name(item)
@@ -463,7 +549,7 @@ function deathstats.resolve_puncher_player(puncher)
         return puncher, true, nil, iname
     end
 
-    -- 2. Lua Entity (arrow, sword projectile, or mob)
+    -- Lua Entity (arrow, sword projectile, or mob)
     local luaent = puncher:get_luaentity()
     if luaent then
         local ent_name = luaent.name or ""
@@ -501,6 +587,162 @@ function deathstats.resolve_puncher_player(puncher)
     end
 
     return puncher, false, nil, nil
+end
+
+-- ==========================================
+-- Mob & Ore Entity Validation & Data Migration
+-- ==========================================
+
+--- Validate whether an entity is a genuine living mob (monster, animal, npc)
+--- Rejects projectiles, falling nodes, items, boats/carts, and internal utility entities
+---@param ent_name string Technical registered entity name
+---@param ent_def table|nil Entity definition table
+---@param ent_instance table|nil Living LuaEntity instance
+---@return boolean is_mob True if the entity is a valid mob
+function deathstats.is_mob_entity(ent_name, ent_def, ent_instance)
+    if not ent_name or ent_name == "" then return false end
+    ent_def = ent_def or core.registered_entities[ent_name]
+    local low = ent_name:lower()
+
+    -- Exclude engine built-in, internal and inanimate entities
+    if low:find("^__builtin:") or low:find("^deathstats:") then
+        return false
+    end
+
+    -- Exclude vehicles, itemframes, nametags, and signs
+    if low:find("boat") or low:find("cart") or low:find("itemframe")
+        or low:find("item_entity") or low:find("nametag") or low:find("sign")
+        or low:find("display") or low:find("decoration") then
+        return false
+    end
+
+    -- Exclude projectiles, ammunition, and weapons
+    if low:find("arrow") or low:find("bullet") or low:find("bolt")
+        or low:find("projectile") or low:find("missile") or low:find("laser")
+        or low:find("bomb") or low:find("grenade") or low:find("tnt")
+        or low:find("fireball") or low:find("snowball") or low:find("shot") then
+        return false
+    end
+
+    -- Exclude dropped items
+    if (ent_instance and ent_instance.itemstring) or (ent_def and ent_def.itemstring) then
+        return false
+    end
+
+    -- Positive mob classifications (mobs_redo, creatura, animalia, petz, mobkit, native)
+    if ent_def then
+        if ent_def.type == "monster" or ent_def.type == "animal" or ent_def.type == "npc" or ent_def.type == "mob" then
+            return true
+        end
+        if ent_def._csm_mob or ent_def.is_mob or ent_def._is_mob then
+            return true
+        end
+    end
+    if ent_instance then
+        if ent_instance.type == "monster" or ent_instance.type == "animal" or ent_instance.type == "npc" or ent_instance.type == "mob" then
+            return true
+        end
+        if ent_instance._csm_mob or ent_instance.is_mob or ent_instance._is_mob then
+            return true
+        end
+    end
+
+    -- Name heuristics (mobs_*, animal, monster, zombie, etc.)
+    if low:find("mob") or low:find("monster") or low:find("animal") or low:find("creatura")
+        or low:find("creature") or low:find("npc") or low:find("zombie") or low:find("skeleton")
+        or low:find("spider") or low:find("creeper") or low:find("slime") or low:find("ghost")
+        or low:find("golem") or low:find("dragon") or low:find("wolf") or low:find("bear") then
+        return true
+    end
+
+    -- Living entity properties check (hp_max, health, etc.)
+    local hp = (ent_instance and (ent_instance.health or ent_instance.hp))
+        or (ent_def and (ent_def.health or ent_def.hp))
+    local max_hp = (ent_instance and (ent_instance.hp_max or ent_instance.max_hp))
+        or (ent_def and (ent_def.hp_max or ent_def.max_hp))
+    if not max_hp and ent_def and ent_def.initial_properties then
+        max_hp = ent_def.initial_properties.hp_max
+    end
+    if (hp and hp > 0) or (max_hp and max_hp > 0) then
+        return true
+    end
+
+    return false
+end
+
+--- Migrate legacy mined ore block names to actual dropped item names (e.g. stone_with_coal -> coal_lump)
+---@param ores_map table Map of [item_or_node_name] = count
+---@return table ores_map The migrated map
+function deathstats.migrate_ores_mined(ores_map)
+    if not ores_map or type(ores_map) ~= "table" then return ores_map end
+    local to_move = {}
+    for node_name, count in pairs(ores_map) do
+        local low = node_name:lower()
+        if low:find("_with_") or low:find("_ore") or low:find("ore_") or low:find("mineral_") or low:find("_mineral") then
+            local mapped_item = nil
+            local drops = core.get_node_drops(node_name, "")
+            if drops and type(drops) == "table" and #drops > 0 then
+                local d = drops[1]
+                if type(d) == "string" then
+                    mapped_item = d:split(" ")[1]
+                elseif (type(d) == "userdata" or type(d) == "table") and d.get_name then
+                    mapped_item = d:get_name()
+                end
+            end
+            if not mapped_item or mapped_item == node_name then
+                if low:find("coal") then
+                    mapped_item = "default:coal_lump"
+                elseif low:find("iron") then
+                    mapped_item = "default:iron_lump"
+                elseif low:find("copper") then
+                    mapped_item = "default:copper_lump"
+                elseif low:find("tin") then
+                    mapped_item = "default:tin_lump"
+                elseif low:find("gold") then
+                    mapped_item = "default:gold_lump"
+                elseif low:find("diamond") then
+                    mapped_item = "default:diamond"
+                elseif low:find("mese") then
+                    mapped_item = "default:mese_crystal"
+                end
+            end
+            if mapped_item and mapped_item ~= node_name then
+                to_move[node_name] = { target = mapped_item, count = count }
+            end
+        end
+    end
+    for old_name, info in pairs(to_move) do
+        ores_map[old_name] = nil
+        ores_map[info.target] = (ores_map[info.target] or 0) + info.count
+    end
+    return ores_map
+end
+
+--- Clean up non-mob entries (arrows, items, falling nodes, vehicles) from player stats
+---@param data table Player statistics data table
+function deathstats.cleanup_invalid_mobs_slain(data)
+    if not data then return nil end
+    local targets = { data.current_run, data.lifetime, data.last_life }
+    for i = 1, 3 do
+        local tbl = targets[i]
+        if tbl and tbl.mobs_slain then
+            local to_remove = {}
+            for ent_name, count in pairs(tbl.mobs_slain) do
+                if not deathstats.is_mob_entity(ent_name) then
+                    table.insert(to_remove, { name = ent_name, count = tonumber(count) or 0 })
+                end
+            end
+            local removed = 0
+            for _, item in ipairs(to_remove) do
+                tbl.mobs_slain[item.name] = nil
+                removed = removed + item.count
+            end
+            if removed > 0 and tbl.mobs_killed then
+                tbl.mobs_killed = math.max(0, tbl.mobs_killed - removed)
+            end
+        end
+    end
+    return data
 end
 
 -- ==========================================
@@ -551,6 +793,17 @@ function deathstats.load_player_stats(player_name)
         -- Ensure all fields exist
         lifetime.ores_mined = lifetime.ores_mined or {}
         lifetime.mobs_slain = lifetime.mobs_slain or {}
+        lifetime.players_slain = lifetime.players_slain or {}
+        lifetime.deaths_by_category = lifetime.deaths_by_category or {}
+        lifetime.killers_count = lifetime.killers_count or {}
+        lifetime.personal_bests = lifetime.personal_bests or {
+            survival_time = 0,
+            kills = 0,
+            killstreak = 0,
+            blocks_mined = 0,
+            total_ores = 0,
+            damage_dealt = 0,
+        }
     end
 
     if type(last_life) ~= "table" then
@@ -558,6 +811,16 @@ function deathstats.load_player_stats(player_name)
     else
         last_life.ores_mined = last_life.ores_mined or {}
         last_life.mobs_slain = last_life.mobs_slain or {}
+        last_life.players_slain = last_life.players_slain or {}
+        last_life.deaths_by_category = last_life.deaths_by_category or {}
+        last_life.killers_count = last_life.killers_count or {}
+    end
+
+    if lifetime.ores_mined then
+        deathstats.migrate_ores_mined(lifetime.ores_mined)
+    end
+    if last_life.ores_mined then
+        deathstats.migrate_ores_mined(last_life.ores_mined)
     end
 
     local data = {
@@ -568,6 +831,9 @@ function deathstats.load_player_stats(player_name)
         lifetime = lifetime,
         last_life = last_life,
     }
+
+    deathstats.cleanup_invalid_mobs_slain(data)
+
     deathstats.players[player_name] = data
     return data
 end
@@ -581,6 +847,15 @@ function deathstats.save_player_stats(player_name)
     if data.last_life then
         deathstats.storage:set_string("last_life:" .. player_name, core.serialize(data.last_life))
     end
+
+    -- Maintain index of all saved players for Hall of Fame roster
+    local idx_str = deathstats.storage:get_string("all_players_index")
+    local idx = (idx_str ~= "" and core.deserialize(idx_str)) or {}
+    if not idx[player_name] then
+        idx[player_name] = true
+        deathstats.storage:set_string("all_players_index", core.serialize(idx))
+    end
+
     local player = core.get_player_by_name(player_name)
     local meta = player and player:get_meta()
     if meta then
@@ -596,14 +871,15 @@ end
 ---@return table|nil data The active player statistics data table, or nil if player is invalid
 function deathstats.get_player_data(player)
     if not player then return nil end
-    local name = player:get_player_name()
+    local name = type(player) == "string" and player or (player.get_player_name and player:get_player_name())
+    if not name or name == "" then return nil end
     local data = deathstats.players[name]
     if not data then
         data = deathstats.load_player_stats(name)
     end
     if data and not data._meta_last_life_checked and (not data.last_life or not data.last_life.last_cause or data.last_life.last_cause == "None" or (data.last_life.time_alive or 0) == 0) then
         data._meta_last_life_checked = true
-        local meta = player:get_meta()
+        local meta = type(player) ~= "string" and player.get_meta and player:get_meta()
         if meta then
             local meta_last_raw = meta:get_string("deathstats:last_life")
             if meta_last_raw and meta_last_raw ~= "" then
@@ -618,11 +894,17 @@ function deathstats.get_player_data(player)
 end
 
 --- Finalize statistics for the deceased player run, update lifetime aggregates, and archive to last_life
----@param player ObjectRef The player who died
+---@param player ObjectRef|string The player who died
 ---@param death_info table The death analysis table containing reason_text, killer_name, weapon, and funny_note
 function deathstats.record_player_death(player, death_info)
+    local name = type(player) == "string" and player or (player and player.get_player_name and player:get_player_name())
+    if not name or name == "" then return end
     local data = deathstats.get_player_data(player)
     if not data then return end
+
+    if deathstats.last_death_reason then
+        deathstats.last_death_reason[name] = death_info
+    end
 
     local duration = math.max(1, core.get_gametime() - data.life_start_time)
     data.current_run.time_alive = duration
@@ -641,6 +923,65 @@ function deathstats.record_player_death(player, death_info)
     data.lifetime.last_killer = data.current_run.last_killer
     data.lifetime.last_funny = data.current_run.last_funny
 
+    local cat = data.current_run.last_category
+    local killer = data.current_run.last_killer
+    data.lifetime.deaths_by_category = data.lifetime.deaths_by_category or {}
+    data.lifetime.deaths_by_category[cat] = (data.lifetime.deaths_by_category[cat] or 0) + 1
+    if killer and killer ~= "None" and killer ~= "Environment" and killer ~= "" then
+        data.lifetime.killers_count = data.lifetime.killers_count or {}
+        data.lifetime.killers_count[killer] = (data.lifetime.killers_count[killer] or 0) + 1
+    end
+
+    -- Update personal bests / records
+    local pb = data.lifetime.personal_bests
+    if not pb then
+        pb = {
+            survival_time = 0,
+            kills = 0,
+            killstreak = 0,
+            blocks_mined = 0,
+            total_ores = 0,
+            damage_dealt = 0,
+        }
+        data.lifetime.personal_bests = pb
+    end
+
+    local run_kills = (data.current_run.mobs_killed or 0) + (data.current_run.players_killed or 0)
+    local run_streak = data.current_run.killstreak or 0
+    local is_new_record = false
+    local new_records = {}
+
+    if duration > (pb.survival_time or 0) then
+        pb.survival_time = duration
+        new_records.survival_time = true
+        is_new_record = true
+    end
+    if run_kills > (pb.kills or 0) then
+        pb.kills = run_kills
+        new_records.kills = true
+        is_new_record = true
+    end
+    if run_streak > (pb.killstreak or 0) then
+        pb.killstreak = run_streak
+        new_records.killstreak = true
+        is_new_record = true
+    end
+    if (data.current_run.blocks_mined or 0) > (pb.blocks_mined or 0) then
+        pb.blocks_mined = data.current_run.blocks_mined
+        new_records.blocks_mined = true
+        is_new_record = true
+    end
+    if (data.current_run.total_ores or 0) > (pb.total_ores or 0) then
+        pb.total_ores = data.current_run.total_ores
+        new_records.total_ores = true
+        is_new_record = true
+    end
+    if (data.current_run.damage_dealt or 0) > (pb.damage_dealt or 0) then
+        pb.damage_dealt = data.current_run.damage_dealt
+        new_records.damage_dealt = true
+        is_new_record = true
+    end
+
     -- Copy current run to last_life snapshot
     local snapshot = {}
     for k, v in pairs(data.current_run) do
@@ -652,6 +993,17 @@ function deathstats.record_player_death(player, death_info)
             snapshot[k] = v
         end
     end
+    snapshot.is_new_record = is_new_record
+    snapshot.new_records = new_records
+    snapshot.personal_bests = copy(pb)
+    snapshot.killer_hp = death_info.killer_hp
+    snapshot.killer_max_hp = death_info.killer_max_hp or death_info.killer_hp_max
+    snapshot.killer_hp_max = snapshot.killer_max_hp
+    snapshot.fall_height = death_info.fall_height
+    snapshot.fall_speed = death_info.fall_speed
+    snapshot.death_pos = death_info.pos
+    snapshot.depth_desc = death_info.depth_desc
+    snapshot.biome_name = death_info.biome_name
     data.last_life = snapshot
 
     -- Reset current run for the next life
@@ -659,25 +1011,75 @@ function deathstats.record_player_death(player, death_info)
     data.life_start_time = core.get_gametime()
 
     -- Persist immediately to Mod Storage and Player Metadata
-    deathstats.save_player_stats(player:get_player_name())
-    local meta = player:get_meta()
+    deathstats.save_player_stats(name)
+    local meta = type(player) ~= "string" and player.get_meta and player:get_meta()
+    if not meta and core.get_player_by_name then
+        local p_obj = core.get_player_by_name(name)
+        if p_obj and p_obj.get_meta then
+            meta = p_obj:get_meta()
+        end
+    end
     if meta then
+        local function sanitize_for_serialize(tbl)
+            if type(tbl) ~= "table" then return tbl end
+            local clean = {}
+            for k, v in pairs(tbl) do
+                local tv = type(v)
+                if tv == "string" or tv == "number" or tv == "boolean" then
+                    clean[k] = v
+                elseif tv == "table" then
+                    clean[k] = sanitize_for_serialize(v)
+                end
+            end
+            return clean
+        end
         meta:set_string("deathstats:death_active", "1")
         meta:set_string("deathstats:last_life", core.serialize(data.last_life))
-        meta:set_string("deathstats:death_info", core.serialize(death_info))
+        meta:set_string("deathstats:death_info", core.serialize(sanitize_for_serialize(death_info)))
         meta:set_string("deathstats:lifetime", core.serialize(data.lifetime))
     end
 
     -- If slain by another player (direct or via projectile), credit the killer
-    if death_info.is_player and death_info.killer_name then
+    if (death_info.is_player or death_info.type == "pvp" or death_info.category == "pvp") and death_info.killer_name then
         local killer_player = core.get_player_by_name(death_info.killer_name)
-        local victim_name = player:get_player_name()
-        if killer_player and killer_player:is_player() and death_info.killer_name ~= victim_name then
-            local kdata = deathstats.get_player_data(killer_player)
+        local victim_name = type(player) == "string" and player or (player and player.get_player_name and player:get_player_name()) or name
+        if death_info.killer_name ~= victim_name then
+            local kdata = (killer_player and killer_player:is_player() and deathstats.get_player_data(killer_player))
+                or deathstats.get_player_data(death_info.killer_name)
+                or deathstats.load_player_stats(death_info.killer_name)
             if kdata then
-                kdata.current_run.players_killed = kdata.current_run.players_killed + 1
-                kdata.lifetime.players_killed = kdata.lifetime.players_killed + 1
+                kdata.current_run.players_killed = (kdata.current_run.players_killed or 0) + 1
+                kdata.current_run.killstreak = (kdata.current_run.killstreak or 0) + 1
+                kdata.current_run.players_slain = kdata.current_run.players_slain or {}
+                kdata.current_run.players_slain[victim_name] = (kdata.current_run.players_slain[victim_name] or 0) + 1
+
+                kdata.lifetime.players_killed = (kdata.lifetime.players_killed or 0) + 1
+                kdata.lifetime.players_slain = kdata.lifetime.players_slain or {}
+                kdata.lifetime.players_slain[victim_name] = (kdata.lifetime.players_slain[victim_name] or 0) + 1
+
+                -- Check if killer had an active vendetta against the victim
+                if deathstats.config.enable_revenge ~= false and kdata.current_run.vendetta_target == victim_name then
+                    kdata.current_run.revenges = (kdata.current_run.revenges or 0) + 1
+                    kdata.lifetime.revenges = (kdata.lifetime.revenges or 0) + 1
+                    kdata.current_run.vendetta_target = nil
+
+                    if deathstats.config.announce_revenge ~= false then
+                        core.chat_send_all(core.colorize(deathstats.colors.text_gold, "[DeathStats] ") ..
+                            core.colorize(deathstats.colors.text_crimson, "REVENGE! ") ..
+                            core.colorize(deathstats.colors.text_gold, death_info.killer_name) ..
+                            core.colorize(deathstats.colors.text_white, " has avenged their death and slain ") ..
+                            core.colorize(deathstats.colors.text_crimson, victim_name) ..
+                            core.colorize(deathstats.colors.text_white, "!"))
+                    end
+                end
+
                 deathstats.save_player_stats(death_info.killer_name)
+            end
+
+            -- Set vendetta target on the victim for their upcoming life
+            if deathstats.config.enable_revenge ~= false and data and data.current_run then
+                data.current_run.vendetta_target = death_info.killer_name
+                deathstats.save_player_stats(victim_name)
             end
         end
     end
@@ -1135,7 +1537,7 @@ function deathstats.inspect_surroundings_fallback(player)
     local node_feet = core.get_node(pos)
     local node_head = core.get_node(head_pos)
 
-    -- 1. Check recent PvP or Mob punch / projectile strike (within 3.5 seconds)
+    -- Check recent PvP or Mob punch / projectile strike (within 3.5 seconds)
     local last_punch = deathstats.recent_punches[name]
     if last_punch and (core.get_gametime() - last_punch.time <= 3.5) then
         local attacker_name = last_punch.attacker_name
@@ -1164,7 +1566,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 2. Check out-of-world fall (below mapgen bounds)
+    -- Check out-of-world fall (below mapgen bounds)
     if pos.y < -30000 then
         return {
             category = "unknown",
@@ -1173,7 +1575,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 3. Check lava immersion
+    -- Check lava immersion
     if node_feet.name:find("lava") or node_head.name:find("lava") then
         return {
             category = "lava",
@@ -1182,7 +1584,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 4. Check fire / burning
+    -- Check fire / burning
     if node_feet.name:find("fire") or node_head.name:find("fire") then
         return {
             category = "fire",
@@ -1191,7 +1593,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 5. Check drowning (head submerged in water or liquid with no breath)
+    -- Check drowning (head submerged in water or liquid with no breath)
     local breath = player:get_breath()
     local in_water = node_head.name:find("water") or core.get_item_group(node_head.name, "water") ~= 0
     if in_water or (breath and breath <= 0) then
@@ -1202,7 +1604,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 6. Check suffocation (head buried inside solid opaque node)
+    -- Check suffocation (head buried inside solid opaque node)
     local head_def = core.registered_nodes[node_head.name]
     if head_def and head_def.walkable and head_def.drawtype == "normal" and not node_head.name:find("air") then
         return {
@@ -1212,7 +1614,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 7. Check high downward velocity recorded just before death
+    -- Check high downward velocity recorded just before death
     local fall_speed = deathstats.recent_falls[name] or 0
     if fall_speed < -12.0 then
         return {
@@ -1222,7 +1624,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 8. Check dehydration / thirst (thirsty mod)
+    -- Check dehydration / thirst (thirsty mod)
     local was_dehydrated = deathstats.is_player_dehydrated(player)
         or (deathstats.recent_dehydrations[name] and (core.get_gametime() - deathstats.recent_dehydrations[name] <= 3.5))
     if was_dehydrated then
@@ -1233,7 +1635,7 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 9. Check starvation (hbhunger, stamina, hunger_ng, hudbars, or inventory hunger)
+    -- Check starvation (hbhunger, stamina, hunger_ng, hudbars, or inventory hunger)
     local was_starving = deathstats.is_player_starving(player)
         or (deathstats.recent_starvations[name] and (core.get_gametime() - deathstats.recent_starvations[name] <= 3.5))
     if was_starving then
@@ -1250,12 +1652,170 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
-    -- 10. Fallback unknown
+    -- Fallback unknown
     return {
         category = "unknown",
         reason_text = "Died from mysterious causes",
         funny_note = deathstats.get_funny_note("unknown"),
     }
+end
+
+--- Describe elevation/depth zone for the death location
+---@param y number|nil The vertical elevation
+---@return string depth_desc Human-readable depth or altitude description
+function deathstats.get_depth_description(y)
+    if not y then return S("Unknown Altitude") end
+    if y >= 1000 then
+        return S("Upper Atmosphere")
+    elseif y >= 500 then
+        return S("Sky Realm")
+    elseif y >= 10 then
+        return S("Highlands / Surface")
+    elseif y >= -10 then
+        return S("Sea Level")
+    elseif y >= -200 then
+        return S("Shallow Caverns")
+    elseif y >= -1000 then
+        return S("Deep Underground")
+    elseif y >= -5000 then
+        return S("Abyssal Depths")
+    else
+        return S("The Void")
+    end
+end
+
+--- Get biome name at a given 3D position
+---@param pos Vector|nil The position to query
+---@return string biome_name Clean formatted biome name
+function deathstats.get_biome_at_pos(pos)
+    if not pos then return S("Unknown") end
+    if core.get_biome_data then
+        local bdata = core.get_biome_data(pos)
+        if bdata and bdata.biome and core.get_biome_name then
+            local bname = core.get_biome_name(bdata.biome)
+            if bname and bname ~= "" then
+                return deathstats.format_name(bname)
+            end
+        end
+    end
+    -- Fallback to elevation context
+    if pos.y < -10 then
+        return S("Underground")
+    elseif pos.y > 100 then
+        return S("Sky")
+    else
+        return S("Wilderness")
+    end
+end
+
+--- Enrich death analysis table with coordinates, depth, biome, killer HP and fall metrics
+---@param res table Death analysis table
+---@param player ObjectRef The player who died
+---@param puncher ObjectRef|nil Optional killer entity or puncher
+---@return table enriched The enriched death analysis table
+function deathstats.enrich_death_info(res, player, puncher)
+    -- Handle argument swap if called as enrich_death_info(player, res, puncher)
+    if (res and res.is_player and (not player or not player.is_player))
+       or (res and res.get_player_name and (not player or not player.get_player_name)) then
+        local tmp = res
+        res = player
+        player = tmp
+    end
+    if not res then res = {} end
+    if puncher then
+        res.puncher = res.puncher or puncher
+    end
+    local pname = player and player.get_player_name and player:get_player_name()
+
+    -- Location, Depth & Biome
+    if not res.pos and player and player.get_pos then
+        local pos = player:get_pos()
+        if pos then
+            res.pos = vector.round(pos)
+            res.depth_desc = deathstats.get_depth_description(pos.y)
+            res.biome_name = deathstats.get_biome_at_pos(pos)
+        end
+    elseif res.pos and not res.depth_desc then
+        res.depth_desc = deathstats.get_depth_description(res.pos.y)
+        res.biome_name = res.biome_name or deathstats.get_biome_at_pos(res.pos)
+    end
+    if res.pos then
+        res.death_pos = res.pos
+        res.coords_str = string.format("(X: %d, Y: %d, Z: %d)", res.pos.x, res.pos.y, res.pos.z)
+    end
+
+    -- Killer Remaining Health (PvP and PvE Mob)
+    local is_pvp = (res.category == "pvp" or res.category == "player" or res.type == "pvp" or res.type == "player")
+    local is_mob = (res.category == "mob" or res.is_mob or res.type == "mob")
+    local kname = res.killer_name or res.killer
+    if is_pvp then
+        local kplayer = (res.puncher and res.puncher.is_player and res.puncher:is_player() and res.puncher)
+            or (kname and core.get_player_by_name(kname))
+        if kplayer and kplayer:is_player() then
+            res.killer_hp = math.max(0, kplayer:get_hp())
+            local props = kplayer.get_properties and kplayer:get_properties()
+            res.killer_max_hp = (props and props.hp_max) or 20
+            res.killer_hp_max = res.killer_max_hp
+        else
+            local last_punch = pname and deathstats.recent_punches[pname]
+            if last_punch and last_punch.attacker_hp then
+                res.killer_hp = last_punch.attacker_hp
+                res.killer_max_hp = last_punch.attacker_max_hp or 20
+                res.killer_hp_max = res.killer_max_hp
+            end
+        end
+    elseif is_mob or res.puncher or res.attacker then
+        local kattacker = res.puncher or res.attacker
+        if kattacker and (not kattacker.is_player or not kattacker:is_player()) then
+            local luaent = kattacker.get_luaentity and kattacker:get_luaentity()
+            local hp = (luaent and (luaent.health or luaent.hp))
+                or (kattacker.get_hp and kattacker:get_hp())
+            local max_hp = (luaent and (luaent.hp_max or luaent.max_hp))
+            if not max_hp and kattacker.get_properties then
+                local props = kattacker:get_properties()
+                max_hp = props and props.hp_max
+            end
+            if hp and hp > 0 then
+                res.killer_hp = math.max(0, math.floor(hp + 0.5))
+                res.killer_max_hp = math.max(1, math.floor((max_hp or hp) + 0.5))
+                res.killer_hp_max = res.killer_max_hp
+            end
+        end
+        if not res.killer_hp then
+            local last_punch = pname and deathstats.recent_punches[pname]
+            if last_punch and last_punch.attacker_hp then
+                res.killer_hp = last_punch.attacker_hp
+                res.killer_max_hp = last_punch.attacker_max_hp or 20
+                res.killer_hp_max = res.killer_max_hp
+            end
+        end
+    end
+
+    -- Fall Height & Impact Speed
+    if res.category == "fall" then
+        local peak_y = deathstats.fall_peaks and pname and deathstats.fall_peaks[pname]
+        local dpos = res.pos or (player.get_pos and player:get_pos())
+        if peak_y and dpos then
+            res.fall_height = math.max(1, math.floor(peak_y - dpos.y + 0.5))
+        end
+        local recent_v = deathstats.recent_falls and pname and deathstats.recent_falls[pname]
+        local lb = deathstats.last_blow and pname and deathstats.last_blow[pname]
+        local vy = (lb and lb.velocity and lb.velocity.y) or recent_v
+        if vy and math.abs(vy) > 0.5 then
+            res.fall_speed = math.abs(math.floor(vy * 10 + 0.5) / 10)
+            if not res.fall_height and res.fall_speed > 0 then
+                res.fall_height = math.max(1, math.floor((res.fall_speed * res.fall_speed) / 19.62 + 0.5))
+            end
+        end
+        if not res.fall_height and res.damage and res.damage > 0 then
+            res.fall_height = math.max(1, math.floor(res.damage + 3))
+            res.fall_speed = math.floor(math.sqrt(2 * 9.81 * res.fall_height) * 10 + 0.5) / 10
+        elseif res.fall_height and (not res.fall_speed or res.fall_speed <= 0) then
+            res.fall_speed = math.floor(math.sqrt(2 * 9.81 * res.fall_height) * 10 + 0.5) / 10
+        end
+    end
+
+    return res
 end
 
 --- Main Death Cause Analyzer: parses engine death reason metadata or invokes environmental inspection
@@ -1270,7 +1830,15 @@ function deathstats.analyze_death(player, reason)
             funny_note = deathstats.get_funny_note("unknown"),
         }
     end
+    local res = deathstats.analyze_death_raw(player, reason)
+    return deathstats.enrich_death_info(res, player)
+end
 
+--- Internal raw death cause analyzer
+---@param player ObjectRef The deceased player object
+---@param reason table|nil The engine reason table from on_dieplayer or show_death_screen
+---@return table analysis The un-enriched death metadata table
+function deathstats.analyze_death_raw(player, reason)
     local pname = player:get_player_name()
 
     -- If reason is already an analyzed death_info table with reason_text
@@ -1431,29 +1999,1344 @@ end
 -- Corpse Entity, Visuals & Camera Orbit
 -- ==========================================
 
+--- Calculate initial velocity and angular velocity for the ragdoll corpse based on the last blow
+local function safe_normalize(v)
+    if not v then
+        return vector.zero()
+    end
+    if vector.normalize then
+        local res = vector.normalize(v)
+        if res then return res end
+    end
+    local vx, vy, vz = v.x or 0, v.y or 0, v.z or 0
+    local len = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if len == 0 then
+        return vector.zero()
+    end
+    return vector.new(vx / len, vy / len, vz / len)
+end
+
+---@param player ObjectRef|nil The deceased player
+---@param death_info table|nil The death analysis table
+---@param last_blow table|nil The recorded lethal blow data
+---@return Vector velocity Initial 3D velocity vector for the corpse
+---@return Vector rot_speed Initial angular tumbling velocity (pitch, yaw, roll)
+function deathstats.calculate_corpse_impulse(player, death_info, last_blow)
+    if deathstats.config.enable_corpse_ragdoll == false then
+        return vector.zero(), vector.zero()
+    end
+
+    local pname = player and player.get_player_name and player:get_player_name()
+    local last_punch = pname and deathstats.recent_punches[pname]
+    local lb = last_blow or (pname and deathstats.last_blow[pname])
+
+    -- Determine damage of the last blow
+    local damage = (lb and lb.damage)
+        or (last_punch and last_punch.damage)
+        or (death_info and death_info.damage)
+        or 5
+    damage = math.max(1.0, tonumber(damage) or 1.0)
+
+    -- Determine knockback direction vector
+    local ppos = (player and player.get_pos and player:get_pos()) or (lb and lb.pos)
+    local dir_h = nil
+
+    local is_fall = death_info and (death_info.category == "fall" or death_info.type == "fall")
+    local is_explosion = death_info and (death_info.category == "explode" or death_info.category == "explosion"
+        or death_info.type == "explode" or death_info.type == "explosion"
+        or (death_info.reason_text and death_info.reason_text:lower():find("explos"))
+        or (lb and ((lb.blast_pos ~= nil) or (lb.reason and (lb.reason.type == "explosion" or lb.reason.type == "explode" or (lb.reason.node and lb.reason.node:find("tnt")))))))
+
+    -- True 3D Explosion Blast Vector (Epicenter -> Player)
+    if is_explosion then
+        local blast_pos = (death_info and (death_info.blast_pos or death_info.explosion_pos or death_info.pos_origin))
+            or (lb and (lb.blast_pos or (lb.reason and (lb.reason.pos or lb.reason.origin))))
+        if not blast_pos and ppos and deathstats.recent_explosions then
+            local now = core.get_gametime()
+            local best_d = 20.0
+            for _, exp in ipairs(deathstats.recent_explosions) do
+                if (now - exp.time) <= 4.0 then
+                    local d = vector.distance(exp.pos, ppos)
+                    if d < best_d then
+                        best_d = d
+                        blast_pos = exp.pos
+                    end
+                end
+            end
+        end
+        if blast_pos and ppos then
+            local d = vector.direction(blast_pos, ppos)
+            if d.x ~= 0 or d.z ~= 0 then
+                dir_h = safe_normalize({ x = d.x, y = 0, z = d.z })
+            end
+        end
+    end
+
+    -- Live player velocity at death time (captures engine knockback vectors)
+    if not dir_h and player and player.get_velocity then
+        local pvel = player:get_velocity()
+        if pvel and (pvel.x ~= 0 or pvel.z ~= 0) then
+            local v_mag = math.sqrt(pvel.x * pvel.x + pvel.z * pvel.z)
+            if v_mag > 0.3 then
+                dir_h = safe_normalize({ x = pvel.x, y = 0, z = pvel.z })
+            end
+        end
+    end
+
+    -- Recent punch direction
+    if not dir_h and last_punch and last_punch.dir and (last_punch.dir.x ~= 0 or last_punch.dir.z ~= 0) then
+        dir_h = safe_normalize({ x = last_punch.dir.x, y = 0, z = last_punch.dir.z })
+    elseif not dir_h and last_punch and last_punch.hitter_pos and ppos then
+        local d = vector.direction(last_punch.hitter_pos, ppos)
+        if d.x ~= 0 or d.z ~= 0 then
+            dir_h = safe_normalize({ x = d.x, y = 0, z = d.z })
+        end
+    end
+
+    -- Lethal blow reason object (mob, projectile, player)
+    if not dir_h and lb and lb.reason and lb.reason.object and ppos and lb.reason.object.get_pos then
+        local opos = lb.reason.object:get_pos()
+        if opos then
+            local d = vector.direction(opos, ppos)
+            if d.x ~= 0 or d.z ~= 0 then
+                dir_h = safe_normalize({ x = d.x, y = 0, z = d.z })
+            end
+        end
+    end
+
+    -- Residual velocity
+    if not dir_h and lb and lb.velocity then
+        local vx, vz = lb.velocity.x or 0, lb.velocity.z or 0
+        if math.abs(vx) > 0.5 or math.abs(vz) > 0.5 then
+            dir_h = safe_normalize({ x = vx, y = 0, z = vz })
+        end
+    end
+
+    -- Opposite of player look direction
+    local ldir = player and player.get_look_dir and player:get_look_dir()
+    if not ldir and player and player.get_look_horizontal then
+        local yaw = player:get_look_horizontal() or 0
+        local pitch = (player.get_look_vertical and player:get_look_vertical()) or 0
+        local cos_p = math.cos(pitch)
+        ldir = vector.new(-math.sin(yaw) * cos_p, math.sin(pitch), math.cos(yaw) * cos_p)
+    end
+    if not dir_h and ldir then
+        if ldir.x ~= 0 or ldir.z ~= 0 then
+            dir_h = safe_normalize({ x = -ldir.x, y = 0, z = -ldir.z })
+        end
+    end
+
+    -- Fallback: Yaw direction
+    if not dir_h then
+        local yaw = (player and player.get_look_horizontal and player:get_look_horizontal()) or 0
+        dir_h = vector.new(-math.sin(yaw), 0, -math.cos(yaw))
+    end
+
+    -- Determine forward/backward alignment of knockback relative to player facing
+    local dot_fwd = (ldir and dir_h) and (ldir.x * dir_h.x + ldir.z * dir_h.z) or 0
+    local pitch_sign = (dot_fwd > 0.2) and 1.0 or ((dot_fwd < -0.2) and -1.0 or 1.0)
+
+    local rot_mt = {
+        __lt = function(a, b)
+            local av = (type(a) == "table" and (a.x or a[1])) or a
+            local bv = (type(b) == "table" and (b.x or b[1])) or b
+            return av < bv
+        end,
+        __gt = function(a, b)
+            local av = (type(a) == "table" and (a.x or a[1])) or a
+            local bv = (type(b) == "table" and (b.x or b[1])) or b
+            return av > bv
+        end,
+    }
+
+    -- Calculate Force & Velocity based on Damage of last blow
+    local mult = deathstats.config.ragdoll_force_multiplier or 1.0
+    local max_vel = deathstats.config.ragdoll_max_velocity or 18.0
+
+    local is_passive = not last_punch and not (lb and lb.reason and lb.reason.object) and death_info and
+        (death_info.category == "drown" or death_info.category == "starve" or death_info.category == "hunger"
+         or death_info.category == "suffocation" or death_info.category == "suffocate" or death_info.category == "poison")
+
+    if is_passive then
+        -- Passive deaths (drowning, suffocation, hunger, poison):
+        -- Corpse gently collapses in place with zero knockback impulse
+        return vector.zero(), setmetatable(vector.zero(), rot_mt), 0, 0, 0
+    end
+
+    if is_explosion then
+        -- Explosion: high radial blast velocity and chaotic 3D spin
+        local exp_speed = math.min(max_vel, (3.5 + damage * 0.65) * mult)
+        exp_speed = math.max(exp_speed, 2.0)
+        local exp_lift = math.min(8.0, (2.5 + damage * 0.3) * mult)
+        exp_lift = math.max(exp_lift, 2.0)
+        local exp_vel = vector.new(dir_h.x * exp_speed, exp_lift, dir_h.z * exp_speed)
+        local rot_speed = vector.zero()
+        if deathstats.config.ragdoll_tumbling ~= false then
+            local exp_pitch_sign = (dot_fwd > 0.1) and -1.0 or ((dot_fwd < -0.1) and 1.0 or -1.0)
+            local t_pitch = exp_speed * 1.1 * exp_pitch_sign
+            local t_roll = (math.random() - 0.5) * exp_speed * 1.3
+            local t_yaw = (math.random() - 0.5) * exp_speed * 0.8
+            rot_speed = vector.new(t_pitch, t_yaw, t_roll)
+        end
+        return exp_vel, setmetatable(rot_speed, rot_mt), rot_speed.x, rot_speed.y, rot_speed.z
+    end
+
+    local base_speed = is_fall and 0.8 or 1.5
+    local dmg_scale = is_fall and 0.15 or 0.45
+
+    local speed_h = (base_speed + damage * dmg_scale) * mult
+    speed_h = math.min(speed_h, max_vel)
+    speed_h = math.max(speed_h, 1.0)
+
+    local lift_base = is_fall and 1.5 or 1.2
+    local lift_scale = is_fall and 0.08 or 0.22
+    local lift_max = is_fall and 4.0 or 8.0
+    local vel_y = (lift_base + damage * lift_scale) * mult
+    vel_y = math.min(vel_y, lift_max)
+    vel_y = math.max(vel_y, 1.0)
+
+    local initial_velocity = vector.new(dir_h.x * speed_h, vel_y, dir_h.z * speed_h)
+
+    -- Initial angular tumbling velocity
+    local rot_speed = vector.zero()
+    if deathstats.config.ragdoll_tumbling ~= false then
+        local tumble_pitch = speed_h * 0.7 * pitch_sign
+        local tumble_roll = (math.random() - 0.5) * (2.5 + speed_h * 1.2)
+        rot_speed = vector.new(tumble_pitch, 0, tumble_roll)
+    end
+
+    return initial_velocity, setmetatable(rot_speed, rot_mt), rot_speed.x, rot_speed.y, rot_speed.z
+end
+
+--- Apply final limp resting fractures or organic pose angles to corpse limbs on landing
+---@param corpse ObjectRef The corpse entity object
+---@param impact_damage number|nil Damage of the lethal impact
+---@param pose_type string|nil Optional resting pose ("supine", "prone", "lateral")
+---@param hanging_legs boolean|nil True if legs hang over a ledge/drop
+function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hanging_legs)
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
+    local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
+        and (deathstats.config.enable_fall_fractures ~= false)
+    if not fractures_enabled then return end
+
+    local dmg = tonumber(impact_damage) or 5
+    local scale = math.min(1.4, 1.0 + math.max(0, dmg - 10) * 0.02)
+    local ptype = pose_type or "supine"
+
+    local custom = {}
+    if ptype == "prone" then
+        -- Prone: Face down on stomach. Arms reaching up/out, head turned sideways
+        custom["Head"] = math.rad(math.random() < 0.5 and -45 or 45)
+        custom["Arm_Left"] = math.rad(-65 * scale)
+        custom["Arm_Right"] = math.rad(65 * scale)
+        custom["Leg_Left"] = math.rad(-20 * scale)
+        custom["Leg_Right"] = math.rad(20 * scale)
+    elseif ptype == "lateral" then
+        -- Lateral: Lying on side. Head in line with spine, arms relaxed across torso, legs with wide visual separation
+        custom["Head"] = math.rad(15)
+        custom["Arm_Left"] = math.rad(-25 * scale)
+        custom["Arm_Right"] = math.rad(40 * scale)
+        custom["Leg_Left"] = math.rad(-40 * scale)
+        custom["Leg_Right"] = math.rad(35 * scale)
+    else
+        -- Supine (standard): Splayed outward or fractured based on damage
+        if dmg <= 10 and not hanging_legs then
+            deathstats.fracture_corpse_limbs(corpse)
+            return
+        else
+            custom["Arm_Left"] = math.rad(-75 * scale)
+            custom["Arm_Right"] = math.rad(75 * scale)
+            custom["Leg_Left"] = math.rad(-35 * scale)
+            custom["Leg_Right"] = math.rad(35 * scale)
+            custom["Head"] = math.rad((math.random() < 0.5 and -40 or 40) * scale)
+        end
+    end
+
+    -- If legs hang over a ledge/cliff, flex them downward toward the drop
+    if hanging_legs then
+        local hang_pitch = (ptype == "prone") and math.rad(45)
+            or (ptype == "supine") and math.rad(-45)
+            or math.rad(-30)
+        local cur_left_z = custom["Leg_Left"] or math.rad(-35 * scale)
+        local cur_right_z = custom["Leg_Right"] or math.rad(35 * scale)
+        custom["Leg_Left"] = vector.new(hang_pitch, 0, cur_left_z)
+        custom["Leg_Right"] = vector.new(hang_pitch, 0, cur_right_z)
+    end
+
+    deathstats.fracture_corpse_limbs(corpse, custom)
+end
+
+--- Procedurally adjust corpse limb angles during high-speed flight with 3D aerodynamics & flutter
+---@param corpse ObjectRef The corpse entity object
+---@param velocity Vector Current velocity vector
+---@param _base_yaw number Facing yaw of the corpse
+function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw)
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
+    local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
+        and (deathstats.config.enable_fall_fractures ~= false)
+    if not fractures_enabled then return end
+
+    local vx = (velocity and velocity.x) or 0
+    local vy = (velocity and velocity.y) or 0
+    local vz = (velocity and velocity.z) or 0
+    local speed_h = math.sqrt(vx * vx + vz * vz)
+    local speed_3d = math.sqrt(vx * vx + vy * vy + vz * vz)
+
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    local t = (luaent and luaent._timer) or 0
+
+    -- Flaccid harmonic flutter from wind resistance
+    local flutter = math.sin(t * 12.0) * math.min(0.2, speed_3d * 0.025)
+
+    -- Dynamic 3D relative limb angles:
+    -- Pitch (X-axis): air drag pushes limbs opposite vertical flight
+    -- Yaw (Y-axis): limp sideways splay / oscillation
+    -- Roll (Z-axis): planar splay outward along floor plane
+    local arm_pitch = math.min(math.rad(45), math.max(math.rad(-30), -vy * 0.04)) + flutter
+    local arm_roll = math.min(math.rad(55), math.rad(15 + speed_h * 3.5))
+    local leg_pitch = math.min(math.rad(30), math.max(math.rad(-20), -vy * 0.025)) - flutter * 0.5
+    local leg_roll = arm_roll * 0.5
+
+    -- Arm_Left: roll negative (splay left), pitch drag
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, flutter * 0.5, -arm_roll))
+    -- Arm_Right: roll positive (splay right), pitch drag
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, -flutter * 0.5, arm_roll))
+    -- Leg_Left: roll negative (splay left)
+    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_roll))
+    -- Leg_Right: roll positive (splay right)
+    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_roll))
+    -- Head: loose floppy neck
+    local head_pitch = math.rad(-15) - math.min(math.rad(20), math.max(0, -vy * 0.03)) + flutter * 0.5
+    local head_yaw = math.sin(t * 8.0) * math.min(math.rad(15), speed_h * 0.02)
+    deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
+end
+
+
+--- Probe surface ground elevation at a specific horizontal coordinate
+--- Uses raycast if available, falling back to discrete vertical node scan
+---@param probe_x number X position to probe
+---@param probe_z number Z position to probe
+---@param start_y number Reference Y position
+---@return number|nil elevation Ground contact Y elevation or nil if air/void
+function deathstats.probe_ground_elevation(probe_x, probe_z, start_y)
+    start_y = start_y or 0
+    if core.raycast then
+        local r_start = vector.new(probe_x, start_y + 0.8, probe_z)
+        local r_end = vector.new(probe_x, start_y - 4.5, probe_z)
+        local ray = core.raycast(r_start, r_end, false, false)
+        for pt in ray do
+            if pt.type == "node" and pt.under then
+                local node = core.get_node_or_nil(pt.under)
+                local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
+                if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
+                    return (pt.intersection_point and pt.intersection_point.y) or (pt.under.y + 0.5)
+                end
+            end
+        end
+    end
+
+    -- Discrete node scan fallback (checks down to 4 nodes below start_y)
+    local check_x = math.floor(probe_x + 0.5)
+    local check_z = math.floor(probe_z + 0.5)
+    for dy = 1, -4, -1 do
+        local ny = math.floor(start_y + dy + 0.5)
+        local npos = vector.new(check_x, ny, check_z)
+        local node = core.get_node_or_nil(npos)
+        local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
+        if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
+            return ny + 0.5
+        end
+    end
+    return nil
+end
+
+--- Detect terrain slope incline along the corpse spine axis using two downward raycasts (head and pelvis)
+--- Returns the pitch angle in radians (matching right-handed Z-X-Y set_rotation) and adjusted contact elevation
+---@param pos Vector Center position of the corpse
+---@param yaw number Orientation yaw in radians
+---@return number pitch Pitch angle in radians (clamped to [-55°, +55°])
+---@return number target_y Adjusted ground midpoint elevation for the corpse
+function deathstats.detect_corpse_slope_pitch(pos, yaw)
+    if not pos then return 0, 0 end
+    yaw = yaw or 0
+
+    -- Floating in liquid: corpses remain level
+    if deathstats.is_in_liquid(pos) then
+        return 0, pos.y
+    end
+
+    -- In character.b3d lay animation (frames 162-166), body lies backward along spine axis:
+    -- Forward is -sin(yaw), cos(yaw). Head extends backward (+sin(yaw), -cos(yaw)), pelvis extends forward.
+    local fwd_x = -math.sin(yaw)
+    local fwd_z = math.cos(yaw)
+
+    local spine_half_span = 0.55
+    local head_x = pos.x - fwd_x * spine_half_span
+    local head_z = pos.z - fwd_z * spine_half_span
+    local pelvis_x = pos.x + fwd_x * spine_half_span
+    local pelvis_z = pos.z + fwd_z * spine_half_span
+
+    local y_head = deathstats.probe_ground_elevation(head_x, head_z, pos.y)
+    local y_pelvis = deathstats.probe_ground_elevation(pelvis_x, pelvis_z, pos.y)
+
+    if y_head and y_pelvis then
+        local delta_y = y_head - y_pelvis
+        local dist_h = spine_half_span * 2.0 -- 1.0 node baseline
+
+        -- In Luanti Z-X-Y set_rotation:
+        -- Positive pitch around local X tilts the vector at -Z (head) downward.
+        -- When delta_y > 0 (head is uphill / higher), negative pitch elevates the head.
+        local raw_pitch = -atan2(delta_y, dist_h)
+
+        -- Clamp to natural anatomical slope limits (+/- 55 degrees) to avoid vertical glitches on cliffs
+        local max_pitch = math.rad(55)
+        local pitch = math.max(-max_pitch, math.min(max_pitch, raw_pitch))
+
+        -- Ground contact midpoint: with collisionbox min_y = -0.15, offset by +0.15 so back rests on surface
+        local contact_mid_y = (y_head + y_pelvis) * 0.5
+        local target_y = contact_mid_y + 0.15
+        return pitch, target_y
+    end
+
+    return 0, pos.y
+end
+
+--- Probe 3D terrain elevation surrounding the corpse to determine the true downhill slope gradient
+--- Works across stairs, inclines, and irregular cliffs regardless of corpse orientation.
+---@param pos Vector Center position of the corpse
+---@param base_yaw number|nil Facing yaw in radians
+---@param pitch_slope number|nil Pre-calculated slope pitch along the spine axis
+---@return number down_x Downhill direction unit vector X (0 if flat)
+---@return number down_z Downhill direction unit vector Z (0 if flat)
+---@return number slope_angle Slope steepness angle in radians
+function deathstats.get_terrain_downhill_dir(pos, base_yaw, pitch_slope)
+    if not pos then return 0, 0, 0 end
+    if deathstats.is_in_liquid(pos) then return 0, 0, 0 end
+
+    base_yaw = base_yaw or 0
+    pitch_slope = pitch_slope or 0
+
+    -- Probe 4 surrounding cardinal points at offset D = 0.7
+    local d = 0.7
+    local y_east = deathstats.probe_ground_elevation(pos.x + d, pos.z, pos.y)
+    local y_west = deathstats.probe_ground_elevation(pos.x - d, pos.z, pos.y)
+    local y_north = deathstats.probe_ground_elevation(pos.x, pos.z + d, pos.y)
+    local y_south = deathstats.probe_ground_elevation(pos.x, pos.z - d, pos.y)
+    local y_center = deathstats.probe_ground_elevation(pos.x, pos.z, pos.y)
+
+    local grad_x = 0
+    if y_east and y_west then
+        grad_x = (y_east - y_west) / (2 * d)
+    elseif y_east and y_center then
+        grad_x = (y_east - y_center) / d
+    elseif y_west and y_center then
+        grad_x = (y_center - y_west) / d
+    end
+
+    local grad_z = 0
+    if y_north and y_south then
+        grad_z = (y_north - y_south) / (2 * d)
+    elseif y_north and y_center then
+        grad_z = (y_north - y_center) / d
+    elseif y_south and y_center then
+        grad_z = (y_center - y_south) / d
+    end
+
+    -- Downhill gradient is opposite to ascent: -grad
+    local down_x = -grad_x
+    local down_z = -grad_z
+    local slope_mag = math.sqrt(down_x * down_x + down_z * down_z)
+
+    local slope_angle
+    if slope_mag > 0.15 then
+        down_x = down_x / slope_mag
+        down_z = down_z / slope_mag
+        slope_angle = math.atan(slope_mag)
+    else
+        down_x = 0
+        down_z = 0
+        slope_angle = 0
+    end
+
+    -- If spine pitch indicates a pronounced incline along the corpse spine,
+    -- factor in or fallback to the spine slope direction.
+    -- Pelvis is forward (+fwd), head is backward (-fwd).
+    -- When pitch_slope < 0 (head higher than pelvis), downhill is towards pelvis (+fwd).
+    -- When pitch_slope > 0 (pelvis higher than head), downhill is towards head (-fwd).
+    local abs_spine = math.abs(pitch_slope)
+    if abs_spine > 0.2 then
+        local fwd_x = -math.sin(base_yaw)
+        local fwd_z = math.cos(base_yaw)
+        local spine_sign = (pitch_slope < 0) and 1 or -1
+        local spine_down_x = fwd_x * spine_sign
+        local spine_down_z = fwd_z * spine_sign
+
+        if slope_mag <= 0.15 then
+            down_x = spine_down_x
+            down_z = spine_down_z
+            slope_angle = abs_spine
+        else
+            slope_angle = math.max(slope_angle, abs_spine)
+        end
+    end
+
+    return down_x, down_z, slope_angle
+end
+
+--- Detect if the corpse legs are hanging over an edge, cliff, or stair drop
+---@param pos Vector Center position of the corpse
+---@param yaw number Facing yaw of the corpse
+---@return boolean hanging True if pelvis is supported but legs extend over empty space
+function deathstats.detect_hanging_legs(pos, yaw)
+    if not pos then return false end
+    yaw = yaw or 0
+    if deathstats.is_in_liquid(pos) then return false end
+
+    local fwd_x = -math.sin(yaw)
+    local fwd_z = math.cos(yaw)
+
+    local pelvis_x = pos.x + fwd_x * 0.50
+    local pelvis_z = pos.z + fwd_z * 0.50
+    local feet_x = pos.x + fwd_x * 1.50
+    local feet_z = pos.z + fwd_z * 1.50
+
+    local function probe_elevation(px, pz)
+        local cx = math.floor(px + 0.5)
+        local cz = math.floor(pz + 0.5)
+        for dy = 0, -2, -1 do
+            local ny = math.floor(pos.y + dy - 0.2)
+            local node = core.get_node_or_nil(vector.new(cx, ny, cz))
+            local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
+            if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
+                return ny
+            end
+        end
+        return nil
+    end
+
+    local y_pelvis = probe_elevation(pelvis_x, pelvis_z)
+    if not y_pelvis then return false end
+
+    local y_feet = probe_elevation(feet_x, feet_z)
+    return (not y_feet) or (y_pelvis - y_feet >= 1)
+end
+
+--- Settle the corpse entity to a complete rest at its final position
+---@param luaent table|ObjectRef The corpse Lua entity table or ObjectRef
+function deathstats.settle_corpse_at_rest(luaent)
+    if not luaent then return end
+    local obj = luaent.object
+    if not obj and luaent.get_luaentity then
+        local ent = luaent:get_luaentity()
+        if ent then
+            luaent = ent
+            obj = ent.object or luaent
+        else
+            obj = luaent
+        end
+    elseif not obj and luaent.get_properties then
+        obj = luaent
+    end
+    if luaent._settled then return end
+    luaent._settled = true
+    if not obj or (obj.is_valid and not obj:is_valid()) then return end
+
+    if obj.set_velocity then obj:set_velocity(vector.zero()) end
+    if obj.set_acceleration then obj:set_acceleration(vector.zero()) end
+
+    local base_yaw = luaent._base_yaw or (obj.get_yaw and obj:get_yaw()) or 0
+    local pitch = 0
+    local roll = 0
+    local pose_type = "supine"
+    local pos = obj.get_pos and obj:get_pos()
+
+    -- Determine resting orientation (supine, prone, lateral) from current tumbling roll
+    if deathstats.config.ragdoll_resting_poses ~= false and luaent._rot and luaent._rot.z then
+        local r = (luaent._rot.z % (2 * math.pi))
+        if r > math.pi then r = r - 2 * math.pi end
+        local abs_r = math.abs(r)
+
+        if abs_r > (3 * math.pi / 4) then
+            pose_type = "prone"
+            roll = math.pi
+        elseif abs_r >= (math.pi / 4) and abs_r <= (3 * math.pi / 4) then
+            pose_type = "lateral"
+            roll = (r > 0) and (math.pi / 2) or (-math.pi / 2)
+        else
+            pose_type = "supine"
+            roll = 0
+        end
+    end
+    luaent._pose_type = pose_type
+
+    if pos and not deathstats.is_in_liquid(pos) then
+        local target_y = nil
+        if deathstats.config.enable_slope_pitch ~= false then
+            local detected_pitch, slope_target_y = deathstats.detect_corpse_slope_pitch(pos, base_yaw)
+            pitch = detected_pitch or 0
+            if slope_target_y and math.abs(slope_target_y - pos.y) > 0.001
+                and slope_target_y <= (pos.y + 0.5) and (pos.y - slope_target_y) <= 15.0 then
+                target_y = slope_target_y
+            end
+        end
+
+        -- If slope probe didn't resolve a ground surface or corpse is higher up in the air, find full ground surface below
+        if not target_y then
+            local surface_y = deathstats.find_ground_surface(pos, nil, luaent._death_info or { category = "fall" })
+            if surface_y and surface_y < (pos.y - 0.001) and (pos.y - surface_y) <= 40.0 then
+                target_y = surface_y + 0.15
+            end
+        end
+
+        if target_y and obj.set_pos then
+            obj:set_pos(vector.new(pos.x, target_y, pos.z))
+            pos = (obj.get_pos and obj:get_pos()) or vector.new(pos.x, target_y, pos.z)
+            -- Re-evaluate slope pitch at exact ground position if slope pitch is enabled
+            if deathstats.config.enable_slope_pitch ~= false then
+                pitch = deathstats.detect_corpse_slope_pitch(pos, base_yaw) or pitch
+            end
+        end
+    end
+
+    if obj.set_rotation then
+        obj:set_rotation({ x = pitch, y = base_yaw, z = roll })
+    elseif obj.set_yaw then
+        obj:set_yaw(base_yaw)
+    end
+
+    local hanging_legs = false
+    if pos and deathstats.detect_hanging_legs then
+        hanging_legs = deathstats.detect_hanging_legs(pos, base_yaw)
+    end
+
+    luaent._applied_bones = nil
+    deathstats.settle_ragdoll_limbs(obj, luaent._impact_damage, pose_type, hanging_legs)
+
+    luaent._settled_pos = pos and vector.new(pos.x, pos.y, pos.z)
+
+    if obj.set_properties then
+        obj:set_properties({
+            physical = false,
+            pointable = (deathstats.config.enable_corpse_inspect ~= false),
+            selectionbox = { -0.5, -0.2, -0.5, 0.5, 0.35, 0.5 },
+        })
+    end
+
+    -- Re-evaluate environment effects once corpse has settled (e.g. rolled into water/lava)
+    if deathstats.config.enable_corpse_particles ~= false and pos then
+        local pname = luaent._player_name
+        local cdata = pname and deathstats.player_camera_data and deathstats.player_camera_data[pname]
+        local dinfo = luaent._death_info or (cdata and cdata.death_info) or {}
+        local settled_effect = deathstats.get_corpse_effect_type and deathstats.get_corpse_effect_type(pos, dinfo)
+        local current_effect = luaent._effect_type or (cdata and cdata.current_effect_type)
+        local has_active_spawners = (luaent._particle_spawners and #luaent._particle_spawners > 0)
+            or (cdata and cdata.particle_spawners and #cdata.particle_spawners > 0)
+
+        if settled_effect and (settled_effect ~= current_effect or (not has_active_spawners and settled_effect ~= "impact")) then
+            if luaent._particle_spawners then
+                for _, pid in ipairs(luaent._particle_spawners) do
+                    core.delete_particlespawner(pid)
+                end
+                luaent._particle_spawners = nil
+            end
+            if cdata and cdata.particle_spawners then
+                for _, pid in ipairs(cdata.particle_spawners) do
+                    core.delete_particlespawner(pid)
+                end
+                cdata.particle_spawners = nil
+            end
+            if settled_effect ~= "impact" and deathstats.spawn_corpse_particles then
+                local spawners, eff = deathstats.spawn_corpse_particles(pos, dinfo, obj)
+                luaent._particle_spawners = spawners
+                luaent._effect_type = eff
+                if cdata then
+                    cdata.particle_spawners = spawners
+                    cdata.current_effect_type = eff
+                end
+            else
+                luaent._effect_type = settled_effect
+                if cdata then cdata.current_effect_type = settled_effect end
+            end
+        end
+    end
+end
+
+local GROUND_PROBE_DYS = { -0.45, -0.85, -0.15 }
+local ground_probe_scratch = { x = 0, y = 0, z = 0 }
+
+--- Check if a corpse has solid ground or liquid support beneath it
+--- Used to detect if blocks below a settled corpse have been dug out
+---@param pos Vector 3D corpse position
+---@return boolean has_support True if supported by walkable ground or liquid
+function deathstats.has_ground_support(pos)
+    if not pos then return true end
+
+    -- Probe levels below the corpse: directly below (-0.45), further down (-0.85), and at pos (-0.15)
+    ground_probe_scratch.x = pos.x
+    ground_probe_scratch.z = pos.z
+    for i = 1, #GROUND_PROBE_DYS do
+        ground_probe_scratch.y = pos.y + GROUND_PROBE_DYS[i]
+        local node = core.get_node_or_nil(ground_probe_scratch)
+        if node and node.name ~= "ignore" then
+            if node.name ~= "air" then
+                local ndef = core.registered_nodes[node.name]
+                if ndef then
+                    -- Liquid provides buoyancy support
+                    if ndef.liquidtype and ndef.liquidtype ~= "none" then
+                        return true
+                    end
+                    -- Solid walkable node provides ground support
+                    if ndef.walkable ~= false then
+                        return true
+                    end
+                else
+                    -- Node registered or unknown fallback
+                    return true
+                end
+            end
+        else
+            -- Mapblock not loaded, assume supported to avoid unnecessary physics
+            return true
+        end
+    end
+
+    return false
+end
+
+local cached_fallback_ground = nil
+
+--- Dynamically discover a representative ground node from core.registered_nodes using node groups
+--- Completely mod-agnostic; avoids hardcoding any specific mod namespace like "default:"
+---@return string|nil node_name Technical name of a registered walkable ground node
+function deathstats.get_fallback_ground_node()
+    if cached_fallback_ground and core.registered_nodes[cached_fallback_ground] then
+        return cached_fallback_ground
+    end
+    -- Standard terrain groups across Luanti games (soil, stone, sand, crumbly, cracky)
+    local candidate_groups = { "soil", "stone", "sand", "crumbly", "cracky" }
+    for _, grp in ipairs(candidate_groups) do
+        for name, def in pairs(core.registered_nodes) do
+            if def and def.walkable and def.groups and (def.groups[grp] or 0) > 0
+                and (def.drawtype == "normal" or not def.drawtype) and name ~= "air" and name ~= "ignore" then
+                cached_fallback_ground = name
+                return name
+            end
+        end
+    end
+    -- Any registered solid walkable node with normal drawtype
+    for name, def in pairs(core.registered_nodes) do
+        if def and def.walkable and (def.drawtype == "normal" or not def.drawtype) and name ~= "air" and name ~= "ignore" then
+            cached_fallback_ground = name
+            return name
+        end
+    end
+    return nil
+end
+
+--- Determine whether a node surface is soft / cushioning using node groups and attributes
+--- Checks fall_damage_add_percent < 0, crumbly, snappy, wool, leaves, sand, soil, snowy, hay
+---@param ndef table|nil Node definition table
+---@param node_name string|nil Technical node name
+---@return boolean is_soft
+function deathstats.is_soft_node(ndef, node_name)
+    if not ndef then return false end
+    if ndef.liquidtype and ndef.liquidtype ~= "none" then
+        return true
+    end
+    local groups = ndef.groups
+    if type(groups) == "table" then
+        -- Engine group for fall damage reduction (beds, hay, cushions, slime)
+        if groups.fall_damage_add_percent and groups.fall_damage_add_percent < 0 then
+            return true
+        end
+        -- Standard Luanti soft material groups
+        if (groups.crumbly and groups.crumbly > 0)
+            or (groups.snappy and groups.snappy > 0)
+            or (groups.leaves and groups.leaves > 0)
+            or (groups.wool and groups.wool > 0)
+            or (groups.cloth and groups.cloth > 0)
+            or (groups.sand and groups.sand > 0)
+            or (groups.soil and groups.soil > 0)
+            or (groups.snowy and groups.snowy > 0)
+            or (groups.hay and groups.hay > 0)
+            or (groups.soft and groups.soft > 0) then
+            return true
+        end
+    end
+    -- Fallback name check if mod did not assign standard groups
+    if node_name and type(node_name) == "string" then
+        local lower = node_name:lower()
+        if lower:find("sand") or lower:find("snow") or lower:find("leaves")
+            or lower:find("wool") or lower:find("hay") or lower:find("dirt")
+            or lower:find("mud") or lower:find("sponge") then
+            return true
+        end
+    end
+    return false
+end
+
+--- Extract an impact sound specification from a node definition table
+--- Queries minetest_game and Luanti engine standard sound keys (dug, footstep, place, dig)
+---@param ndef table|nil Node definition table
+---@return string|nil sound_name, number base_gain, number base_pitch
+function deathstats.get_node_impact_sound(ndef)
+    if not ndef or type(ndef.sounds) ~= "table" then
+        return nil, 1.0, 1.0
+    end
+    -- Standard node sound keys in minetest_game and Luanti engine:
+    -- 'dug': Node struck / dug impact sound (e.g. default_hard_footstep, default_dirt_footstep with gain 1.0)
+    -- 'footstep': Stepping sound on the node
+    -- 'place': Node placement sound, also played by engine when falling blocks land
+    -- 'dig': Node digging sound
+    local sound_keys = { "dug", "footstep", "place", "dig", "step", "fall" }
+    for _, key in ipairs(sound_keys) do
+        local snd = ndef.sounds[key]
+        if type(snd) == "string" and snd ~= "" then
+            return snd, 1.0, 1.0
+        elseif type(snd) == "table" and type(snd.name) == "string" and snd.name ~= "" then
+            return snd.name, tonumber(snd.gain) or 1.0, tonumber(snd.pitch) or 1.0
+        end
+    end
+    return nil, 1.0, 1.0
+end
+
 core.register_entity("deathstats:corpse", {
     initial_properties = {
         visual = "mesh",
         mesh = "character.b3d",
         textures = { "character.png" },
         visual_size = { x = 1, y = 1, z = 1 },
-        collisionbox = { -0.5, 0.0, -0.5, 0.5, 0.3, 0.5 },
+        collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
+        stepheight = 0.6,
         selectionbox = { 0, 0, 0, 0, 0, 0 },
         pointable = false,
-        physical = false,
+        physical = true,
         collide_with_objects = false,
         static_save = false,
     },
     on_activate = function(self)
         if self.object then
-            self.object:set_armor_groups({ immortal = 1 })
+            if self.object.set_armor_groups then
+                self.object:set_armor_groups({ immortal = 1 })
+            end
+            local ragdoll_enabled = (deathstats.config.enable_corpse_ragdoll ~= false)
             if self.object.set_properties then
                 self.object:set_properties({
+                    collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
+                    stepheight = 0.6,
                     selectionbox = { 0, 0, 0, 0, 0, 0 },
                     pointable = false,
+                    physical = ragdoll_enabled,
                 })
             end
         end
+        self._settled = false
+        self._timer = 0
+    end,
+    on_rightclick = function(self, clicker)
+        if not clicker or not clicker:is_player() then return end
+        if deathstats.config.enable_corpse_inspect == false then return end
+        local cname = clicker:get_player_name()
+        if deathstats.dead_players and deathstats.dead_players[cname] then return end
+        deathstats.show_corpse_epitaph_formspec(clicker, self)
+    end,
+    on_punch = function(self, _hitter, _time_from_last_punch, _tool_capabilities, dir, _damage)
+        if not self.object or (self.object.is_valid and not self.object:is_valid()) then
+            return true
+        end
+        local is_settled = self._settled or (self.physics and self.physics.settled)
+        if is_settled then
+            -- Defensively ensure non-physical so the engine mover cannot translate this entity
+            if self.object.set_properties then
+                self.object:set_properties({ physical = false })
+            end
+            if self.object.set_velocity then
+                self.object:set_velocity(VEC_ZERO)
+            end
+            if self.object.set_acceleration then
+                self.object:set_acceleration(VEC_ZERO)
+            end
+
+            -- Simulate slight punch impact reaction without flying away
+            local pos = (self.object.get_pos and self.object:get_pos()) or self._settled_pos
+            if pos then
+                -- Subtle micro-displacement in horizontal punch direction (stays grounded)
+                local dir_x = dir and dir.x or 0
+                local dir_z = dir and dir.z or 0
+                local dlen = math.sqrt(dir_x * dir_x + dir_z * dir_z)
+                if dlen > 0.001 and self.object.set_pos then
+                    local base_pos = self._settled_pos or pos
+                    local micro_x = (dir_x / dlen) * 0.04
+                    local micro_z = (dir_z / dlen) * 0.04
+                    self.object:set_pos(vector.new(base_pos.x + micro_x, base_pos.y, base_pos.z + micro_z))
+                end
+
+                -- Play node impact sound & debris burst
+                local under_pos = vector.new(pos.x, pos.y - 0.5, pos.z)
+                local node = core.get_node_or_nil(under_pos) or core.get_node_or_nil(pos)
+                local node_name = (node and node.name and node.name ~= "air" and node.name ~= "ignore") and node.name
+                    or (deathstats.get_fallback_ground_node and deathstats.get_fallback_ground_node())
+                if node_name then
+                    local ndef = core.registered_nodes[node_name]
+                    local sound_name, base_gain, base_pitch = deathstats.get_node_impact_sound(ndef)
+                    if sound_name then
+                        core.sound_play(sound_name, {
+                            pos = pos,
+                            gain = math.min(1.0, math.max(0.2, (base_gain or 1.0) * 0.5)),
+                            pitch = base_pitch or 1.0,
+                            max_hear_distance = 16,
+                        }, true)
+                    end
+                    if deathstats.spawn_impact_burst then
+                        deathstats.spawn_impact_burst(pos, node_name, 0.4)
+                    end
+                end
+            end
+
+            -- Schedule deferred check to nullify any engine-level C++ knockback and restore anchor
+            core.after(0, function()
+                if not self.object or (self.object.is_valid and not self.object:is_valid()) then return end
+                if self.object.set_velocity then self.object:set_velocity(VEC_ZERO) end
+                if self.object.set_acceleration then self.object:set_acceleration(VEC_ZERO) end
+                if self.object.set_properties then self.object:set_properties({ physical = false }) end
+                if self._settled_pos and self.object.set_pos then
+                    self.object:set_pos(self._settled_pos)
+                end
+            end)
+        end
+        return true
+    end,
+    on_step = function(self, dtime, moveresult)
+        if self._decay_time and core.get_gametime() >= self._decay_time then
+            deathstats.dissolve_corpse(self.object)
+            return
+        end
+        if self._settled then
+            -- Guard against any rogue velocity or drift on settled corpse
+            if self.object and (not self.object.is_valid or self.object:is_valid()) then
+                if self.object.get_velocity then
+                    local v = self.object:get_velocity()
+                    if v and (v.x ~= 0 or v.y ~= 0 or v.z ~= 0) then
+                        self.object:set_velocity(VEC_ZERO)
+                    end
+                end
+                if self._settled_pos and self.object.get_pos and self.object.set_pos then
+                    local cp = self.object:get_pos()
+                    if cp and vector.distance(cp, self._settled_pos) > 0.05 then
+                        self.object:set_pos(self._settled_pos)
+                    end
+                end
+            end
+
+            -- Throttled ground support check (every 0.35s) to avoid node queries every step
+            self._ground_check_timer = (self._ground_check_timer or 0) + (dtime or 0)
+            if self._ground_check_timer >= 0.35 then
+                self._ground_check_timer = 0
+                local cur_p = (self.object and self.object.get_pos and self.object:get_pos()) or self._settled_pos
+                if cur_p and not deathstats.has_ground_support(cur_p) then
+                    -- Wake up into ragdoll free-fall if ground beneath was dug out
+                    self._settled = false
+                    self._settled_pos = nil
+                    self._timer = 0
+                    self._air_timer = 0
+                    self._slide_timer = 0
+                    self._bounce_count = 0
+                    if self.object.set_properties then
+                        self.object:set_properties({
+                            physical = true,
+                            pointable = false,
+                        })
+                    end
+                    if self.object.set_acceleration then
+                        self.object:set_acceleration(GRAV_ACCEL)
+                    end
+                    if self.object.set_velocity then
+                        self.object:set_velocity(FALL_VEL)
+                    end
+                    return
+                end
+            end
+            return
+        end
+        if not dtime or dtime <= 0 then return end
+        if not self.object or (self.object.is_valid and not self.object:is_valid()) then return end
+
+        self._timer = (self._timer or 0) + dtime
+
+        local pos = self.object.get_pos and self.object:get_pos()
+        if not pos or (pos.y and (pos.y < -31000 or pos.y > 31000)) then
+            deathstats.settle_corpse_at_rest(self)
+            return
+        end
+
+        -- Chunk safety: use get_node_or_nil to prevent force-loading new mapblocks
+        local node = core.get_node_or_nil(pos)
+        if not node or node.name == "ignore" then
+            deathstats.settle_corpse_at_rest(self)
+            return
+        end
+
+        local cur_v = (self.object.get_velocity and self.object:get_velocity()) or vector.zero()
+        local vx, vy, vz = cur_v.x or 0, cur_v.y or 0, cur_v.z or 0
+        -- Sanity check: prevent NaN physics corruption
+        if vx ~= vx or vy ~= vy or vz ~= vz then
+            deathstats.settle_corpse_at_rest(self)
+            return
+        end
+
+        local ndef = core.registered_nodes[node.name]
+        local is_liquid = (ndef and ndef.liquidtype and ndef.liquidtype ~= "none")
+            or deathstats.is_in_liquid(pos)
+        local is_lava = is_liquid and ((node.name:find("lava") ~= nil) or (ndef and ndef.groups and ndef.groups.lava))
+
+        if is_liquid then
+            if is_lava then
+                -- Dense viscous lava drag
+                local drag = math.exp(-6.0 * dtime)
+                if self.object.set_acceleration then
+                    self.object:set_acceleration({ x = 0, y = -1.5, z = 0 })
+                end
+                if self.object.set_velocity then
+                    self.object:set_velocity(vector.new(cur_v.x * drag, cur_v.y * drag, cur_v.z * drag))
+                end
+            else
+                -- Water / liquid buoyancy
+                local drag = math.exp(-3.5 * dtime)
+                local node_above = core.get_node_or_nil(vector.new(pos.x, pos.y + 0.6, pos.z))
+                local ndef_above = node_above and node_above.name ~= "ignore" and core.registered_nodes[node_above.name]
+                local above_is_air = not ndef_above or ndef_above.liquidtype == "none"
+
+                local target_acc_y = above_is_air and -1.0 or 2.5
+                if self.object.set_acceleration then
+                    self.object:set_acceleration({ x = 0, y = target_acc_y, z = 0 })
+                end
+                local target_vy = cur_v.y * drag
+                if above_is_air and cur_v.y > 0.4 then
+                    target_vy = 0.1
+                end
+                if self.object.set_velocity then
+                    self.object:set_velocity(vector.new(cur_v.x * drag, target_vy, cur_v.z * drag))
+                end
+            end
+
+            local speed_liq = math.sqrt(cur_v.x * cur_v.x + cur_v.z * cur_v.z)
+            if speed_liq < 0.2 and math.abs(cur_v.y) < 0.3 and self._timer > 0.6 then
+                deathstats.settle_corpse_at_rest(self)
+                return
+            end
+        else
+            -- Airborne or ground contact
+            local touching_ground = false
+            local had_vertical_collision = false
+            local had_wall_collision = false
+            local collision_old_vy = nil
+            local ground_node_name = nil
+
+            local wall_collision_axis = nil
+            if moveresult and type(moveresult) == "table" then
+                touching_ground = moveresult.touching_ground or false
+                if moveresult.collisions and type(moveresult.collisions) == "table" then
+                    for _, col in ipairs(moveresult.collisions) do
+                        if col.axis == "y" and col.old_velocity and col.old_velocity.y < -1.8 then
+                            had_vertical_collision = true
+                            collision_old_vy = col.old_velocity.y
+                            if col.node_pos then
+                                local n = core.get_node_or_nil(col.node_pos)
+                                if n and n.name ~= "air" and n.name ~= "ignore" then
+                                    ground_node_name = n.name
+                                end
+                            end
+                        elseif (col.axis == "x" or col.axis == "z") and col.old_velocity then
+                            local h_old = math.sqrt((col.old_velocity.x or 0)^2 + (col.old_velocity.z or 0)^2)
+                            if h_old > 0.8 then
+                                had_wall_collision = true
+                                wall_collision_axis = col.axis
+                            end
+                        end
+                    end
+                end
+            end
+
+            -- Discrete node scan check for solid ground beneath corpse
+            local node_below1 = core.get_node_or_nil(vector.new(pos.x, pos.y - 0.25, pos.z))
+            local def1 = node_below1 and node_below1.name ~= "ignore" and core.registered_nodes[node_below1.name]
+            local has_ground = (def1 and def1.walkable and node_below1.name ~= "air")
+            local ground_node_y = has_ground and math.floor(pos.y - 0.25 + 0.5) or nil
+            if not has_ground then
+                local node_below2 = core.get_node_or_nil(vector.new(pos.x, pos.y - 0.65, pos.z))
+                local def2 = node_below2 and node_below2.name ~= "ignore" and core.registered_nodes[node_below2.name]
+                has_ground = (def2 and def2.walkable and node_below2.name ~= "air")
+                if has_ground and node_below2 then
+                    ground_node_name = ground_node_name or node_below2.name
+                    ground_node_y = math.floor(pos.y - 0.65 + 0.5)
+                else
+                    local node_below3 = core.get_node_or_nil(vector.new(pos.x, pos.y - 1.15, pos.z))
+                    local def3 = node_below3 and node_below3.name ~= "ignore" and core.registered_nodes[node_below3.name]
+                    if def3 and def3.walkable and node_below3.name ~= "air" then
+                        ground_node_name = ground_node_name or node_below3.name
+                        ground_node_y = math.floor(pos.y - 1.15 + 0.5)
+                    end
+                end
+            elseif node_below1 then
+                ground_node_name = ground_node_name or node_below1.name
+            end
+            local ground_top = ground_node_y and (ground_node_y + 0.5)
+            local ground_clearance = ground_top and (pos.y - ground_top)
+
+            if not moveresult then
+                touching_ground = has_ground and cur_v.y <= 0.35 and (math.abs(cur_v.y) < 0.35 or self._timer > 0.15)
+                if has_ground and self._last_vy and self._last_vy < -2.2 and cur_v.y <= 0.35 then
+                    had_vertical_collision = true
+                    collision_old_vy = self._last_vy
+                end
+            else
+                -- If moveresult is present, also confirm ground if solid node is directly beneath and vertical speed is small
+                if has_ground and math.abs(cur_v.y) < 0.35 then
+                    touching_ground = true
+                end
+            end
+
+            -- If ground collision occurred but node wasn't in collision list, check downward
+            if not ground_node_name and (had_vertical_collision or touching_ground) then
+                for _, dy in ipairs({ 0.25, 0.65, 1.15, 1.65, 2.15 }) do
+                    local n = core.get_node_or_nil(vector.new(pos.x, pos.y - dy, pos.z))
+                    if n and n.name ~= "air" and n.name ~= "ignore" then
+                        local d = core.registered_nodes[n.name]
+                        if d and d.walkable then
+                            ground_node_name = n.name
+                            break
+                        end
+                    end
+                end
+                ground_node_name = ground_node_name or deathstats.get_fallback_ground_node()
+            end
+
+            -- Inelastic ground bounce handling (max 2 bounces before ground slide)
+            local max_bounces = 2
+            self._bounce_count = self._bounce_count or 0
+            if had_vertical_collision and self._bounce_count < max_bounces then
+                local old_impact_vy = math.abs(collision_old_vy or cur_v.y)
+                local restitution = tonumber(deathstats.config.ragdoll_restitution) or 0.25
+                local ndef_ground = ground_node_name and core.registered_nodes[ground_node_name]
+                local is_soft = deathstats.is_soft_node(ndef_ground, ground_node_name)
+                if is_soft then
+                    restitution = restitution * 0.4
+                end
+
+                local rebound_vy = old_impact_vy * restitution
+                if rebound_vy >= 0.8 then
+                    self._bounce_count = self._bounce_count + 1
+                    local rebound_vx = cur_v.x * 0.65
+                    local rebound_vz = cur_v.z * 0.65
+                    if self.object.set_velocity then
+                        self.object:set_velocity(vector.new(rebound_vx, rebound_vy, rebound_vz))
+                    end
+                    if self.object.set_acceleration then
+                        self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
+                    end
+
+                    -- Impact transfers linear momentum into rotational tumbling torque
+                    if self._rot_speed and deathstats.config.ragdoll_tumbling ~= false then
+                        local torque = math.sqrt(rebound_vx * rebound_vx + rebound_vz * rebound_vz) * 0.9
+                        self._rot_speed.x = self._rot_speed.x + torque
+                        self._rot_speed.z = self._rot_speed.z + (math.random() - 0.5) * torque
+                    end
+
+                    if deathstats.config.enable_corpse_impact_sounds ~= false and deathstats.config.enable_sounds ~= false then
+                        local sound_name, base_gain, base_pitch = deathstats.get_node_impact_sound(ndef_ground)
+                        if sound_name then
+                            local impact_mult = math.min(1.0, math.max(0.25, old_impact_vy / 8.0))
+                            core.sound_play(sound_name, {
+                                pos = pos,
+                                gain = math.min(1.0, base_gain * impact_mult * 1.5),
+                                pitch = base_pitch,
+                                max_hear_distance = 20,
+                            }, true)
+                        end
+                    end
+                    if deathstats.config.enable_corpse_particles ~= false and not self._impact_particles_done then
+                        deathstats.spawn_impact_burst(pos, ground_node_name, old_impact_vy)
+                        if self._bounce_count >= max_bounces then
+                            self._impact_particles_done = true
+                        end
+                    end
+
+                    self._last_vy = rebound_vy
+                    return
+                end
+            end
+
+            if had_wall_collision then
+                local defl_vx = cur_v.x * -0.2
+                local defl_vz = cur_v.z * -0.2
+                if self.object.set_velocity then
+                    self.object:set_velocity(vector.new(defl_vx, cur_v.y, defl_vz))
+                end
+                -- Inelastic angular braking: vertical surface absorbs spinning momentum
+                if self._rot_speed then
+                    self._rot_speed.x = (self._rot_speed.x or 0) * 0.15
+                    self._rot_speed.z = (self._rot_speed.z or 0) * 0.15
+                end
+                -- Gently deflect yaw parallel to wall so head/feet do not penetrate wall blocks
+                if wall_collision_axis and self._base_yaw then
+                    if wall_collision_axis == "x" then
+                        local cy = math.cos(self._base_yaw)
+                        self._base_yaw = (cy >= 0) and 0 or math.pi
+                    elseif wall_collision_axis == "z" then
+                        local sy = math.sin(self._base_yaw)
+                        self._base_yaw = (sy >= 0) and (math.pi * 0.5) or (math.pi * 1.5)
+                    end
+                    self._rot = self._rot or { x = 0, y = self._base_yaw, z = 0 }
+                    self._rot.y = self._base_yaw
+                    if self.object.set_rotation then
+                        self.object:set_rotation(self._rot)
+                    end
+                end
+            end
+
+            if touching_ground then
+                self._air_timer = 0
+                self._slide_timer = (self._slide_timer or 0) + dtime
+
+                local pitch_slope = 0
+                if deathstats.config.enable_slope_pitch ~= false then
+                    pitch_slope = deathstats.detect_corpse_slope_pitch(pos, self._base_yaw or 0) or 0
+                end
+
+                local down_x, down_z, slope_angle = deathstats.get_terrain_downhill_dir(pos, self._base_yaw or 0, pitch_slope)
+                local eff_slope = math.max(slope_angle, math.abs(pitch_slope))
+
+                -- Active uphill suppression: on any slope or stairs, brake velocity moving against downhill direction
+                if eff_slope > 0.25 and (down_x ~= 0 or down_z ~= 0) then
+                    local v_down = cur_v.x * down_x + cur_v.z * down_z
+                    if v_down < 0 then
+                        local brake = math.exp(-8.0 * dtime)
+                        cur_v.x = cur_v.x * brake
+                        cur_v.z = cur_v.z * brake
+                    end
+                end
+
+                local accel_mag = 9.81 * math.sin(eff_slope) - 4.5 * math.cos(eff_slope)
+                -- Steep slope (> 28 degrees = ~0.48 rad): gravity overcomes friction and corpse rolls downhill
+                if eff_slope > 0.48 and self._slide_timer < 4.0 and (down_x ~= 0 or down_z ~= 0) and accel_mag > 0 then
+                    local new_vx = cur_v.x + down_x * accel_mag * dtime
+                    local new_vz = cur_v.z + down_z * accel_mag * dtime
+                    local new_vy = math.min(-1.5, cur_v.y)
+                    if self.object.set_velocity then
+                        self.object:set_velocity(vector.new(new_vx, new_vy, new_vz))
+                    end
+                    if self.object.set_acceleration then
+                        self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
+                    end
+                    if self._rot and deathstats.config.ragdoll_tumbling ~= false then
+                        -- Keep pitch aligned with slope incline so torso lays flush with slope face
+                        self._rot.x = pitch_slope
+                        -- Roll like a barrel/log along longitudinal spine axis (Roll Z) to avoid dipping head/feet into ground
+                        self._rot.z = (self._rot.z or 0) + accel_mag * 1.0 * dtime
+                        if self.object.set_rotation then
+                            self.object:set_rotation(self._rot)
+                        end
+                    end
+                else
+                    -- Kinetic surface friction on ground
+                    local friction = math.exp(-4.5 * dtime)
+                    local new_vx = cur_v.x * friction
+                    local new_vz = cur_v.z * friction
+                    if self.object.set_velocity then
+                        self.object:set_velocity(vector.new(new_vx, cur_v.y, new_vz))
+                    end
+                    -- Keep downward gravity active so corpse rests firmly on ground and drops over edges
+                    if self.object.set_acceleration then
+                        self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
+                    end
+
+                    -- Align pitch flush towards ground slope to avoid digging into terrain
+                    if self._rot then
+                        self._rot.x = pitch_slope or 0
+                        -- Ground friction dampens roll angular velocity, preserving resting roll angle
+                        if self._rot_speed and self._rot_speed.z and math.abs(self._rot_speed.z) > 0.01 then
+                            self._rot.z = (self._rot.z or 0) + self._rot_speed.z * dtime
+                            self._rot_speed.z = self._rot_speed.z * math.exp(-4.5 * dtime)
+                        end
+                        if self.object.set_rotation then
+                            self.object:set_rotation(self._rot)
+                        end
+                    end
+
+                    local ground_speed = math.sqrt(new_vx * new_vx + new_vz * new_vz)
+                    if ground_speed < 0.15 or self._slide_timer > 4.5 then
+                        deathstats.settle_corpse_at_rest(self)
+                        return
+                    end
+                end
+            else
+                -- In air: gravity acceleration and aerodynamic drag
+                self._slide_timer = 0
+                self._air_timer = (self._air_timer or 0) + dtime
+
+                if self.object.set_acceleration then
+                    self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
+                end
+                local air_drag = math.exp(-0.25 * dtime)
+                if self.object.set_velocity then
+                    self.object:set_velocity(vector.new(cur_v.x * air_drag, cur_v.y, cur_v.z * air_drag))
+                end
+
+                -- Tumbling rotation with aerodynamic angular damping
+                if self._tumbling and (deathstats.config.ragdoll_tumbling ~= false) then
+                    self._rot = self._rot or { x = 0, y = self._base_yaw or 0, z = 0 }
+                    self._rot_speed = self._rot_speed or { x = 0, y = 0, z = 0 }
+                    local ang_drag = math.exp(-0.6 * dtime)
+                    self._rot_speed.x = self._rot_speed.x * ang_drag
+                    self._rot_speed.z = self._rot_speed.z * ang_drag
+                    self._rot.x = self._rot.x + self._rot_speed.x * dtime
+                    self._rot.z = self._rot.z + self._rot_speed.z * dtime
+
+                    -- Ground proximity envelope: clamp pitch to prevent head/feet dipping below floor
+                    if ground_clearance and ground_clearance < 0.85 then
+                        local ratio = math.max(0, math.min(1.0, ground_clearance / 0.85))
+                        local max_pitch = math.asin(ratio)
+                        if math.abs(self._rot.x) > max_pitch then
+                            self._rot.x = math.max(-max_pitch, math.min(max_pitch, self._rot.x))
+                            if self._rot_speed then self._rot_speed.x = 0 end
+                        end
+                    end
+
+                    if self.object.set_rotation then
+                        self.object:set_rotation(self._rot)
+                    end
+                end
+
+                -- Dynamic limb flail during high velocity flight (throttled to ragdoll_flail_rate Hz)
+                local fly_speed = math.sqrt(cur_v.x * cur_v.x + cur_v.z * cur_v.z)
+                local flail_hz = deathstats.config.ragdoll_flail_rate or 10.0
+                local flail_interval = 1.0 / flail_hz
+                if fly_speed < 2.0 then
+                    flail_interval = flail_interval * 2.0
+                end
+                if fly_speed > 1.2 then
+                    self._flail_timer = (self._flail_timer or 0) + dtime
+                    if self._flail_timer >= flail_interval then
+                        self._flail_timer = 0
+                        deathstats.update_ragdoll_flight_limbs(self.object, cur_v, self._base_yaw or 0)
+                    end
+                end
+
+                -- Airborne failsafe: if falling for over 10 seconds (e.g. huge drop or snagged geometry)
+                if self._air_timer > 10.0 then
+                    local ground_y = deathstats.find_ground_surface(pos, nil, self._death_info or { category = "fall" })
+                    if ground_y and (pos.y - ground_y) <= 40.0 then
+                        if self.object.set_pos then
+                            self.object:set_pos(vector.new(pos.x, ground_y + 0.15, pos.z))
+                        end
+                        deathstats.settle_corpse_at_rest(self)
+                        return
+                    end
+                end
+            end
+        end
+
+        self._last_vy = cur_v.y
     end,
 })
 
@@ -1613,6 +3496,25 @@ end
 function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
     if not corpse or not bone_name or not rot_vec then return false end
 
+    -- Multiplayer network bandwidth optimization: skip bone packet if angular change is below threshold
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    if luaent then
+        luaent._applied_bones = luaent._applied_bones or {}
+        local last = luaent._applied_bones[bone_name]
+        local rx = rot_vec.x or 0
+        local ry = rot_vec.y or 0
+        local rz = rot_vec.z or 0
+        if last then
+            local dx = math.abs(rx - last.x)
+            local dy = math.abs(ry - last.y)
+            local dz = math.abs(rz - last.z)
+            if dx < 0.05 and dy < 0.05 and dz < 0.05 then
+                return true
+            end
+        end
+        luaent._applied_bones[bone_name] = { x = rx, y = ry, z = rz }
+    end
+
     -- Luanti >= 5.9.0 ObjectRef:set_bone_override
     -- Vec rotation is in radians; absolute = false applies relative to the frozen lay animation pose
     if corpse.set_bone_override then
@@ -1628,7 +3530,6 @@ function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
 
     -- Luanti <= 5.8 fallback: set_bone_position(bone, pos, rot_deg)
     if corpse.set_bone_position then
-        local luaent = corpse.get_luaentity and corpse:get_luaentity()
         local base_store = (type(luaent) == "table" and luaent) or (type(corpse) == "table" and corpse) or nil
         local base
         if base_store then
@@ -1695,7 +3596,11 @@ function deathstats.fracture_corpse_limbs(corpse, custom_angles)
     local angles = {}
     if custom_angles and type(custom_angles) == "table" then
         for k, v in pairs(custom_angles) do
-            angles[k] = tonumber(v) or 0
+            if type(v) == "table" then
+                angles[k] = v
+            else
+                angles[k] = tonumber(v) or 0
+            end
         end
     else
         -- Anatomical broken bone angle ranges (local Z rotation):
@@ -1703,10 +3608,26 @@ function deathstats.fracture_corpse_limbs(corpse, custom_angles)
         local left_arm_deg = (math.random() < 0.5) and random_float(-80, -35) or random_float(20, 55)
         -- Right Arm: 50% chance splayed outwards (+35 to +80 deg), 30% folded inward across torso (-55 to -20 deg)
         local right_arm_deg = (math.random() < 0.5) and random_float(35, 80) or random_float(-55, -20)
-        -- Left Leg: 50% chance splayed outwards (+15 to +70 deg), 30% twisted inward (-30 to -10 deg)
-        local left_leg_deg = (math.random() < 0.5) and random_float(15, 70) or random_float(-30, -10)
-        -- Right Leg: 50% chance splayed outwards (-70 to -15 deg), 30% twisted inward (+10 to +30 deg)
-        local right_leg_deg = (math.random() < 0.5) and random_float(-70, -15) or random_float(10, 30)
+        -- Legs: Anatomically, corpses naturally splay outward (Left Leg -70 to -15 deg, Right Leg +15 to +70 deg).
+        -- Crossed legs (adducted across body midline: Left Leg > 0 or Right Leg < 0) occur at a reduced, natural probability (~4%).
+        -- If one leg crosses inward, the other leg remains splayed outward to prevent unnatural double-crossed knots.
+        local cross_prob = 0.04
+        local left_leg_deg, right_leg_deg
+        if math.random() < cross_prob then
+            if math.random() < 0.5 then
+                -- Left leg crosses inward across midline (+10 to +30 deg); Right leg stays outward (+15 to +70 deg)
+                left_leg_deg = random_float(10, 30)
+                right_leg_deg = random_float(15, 70)
+            else
+                -- Right leg crosses inward across midline (-30 to -10 deg); Left leg stays outward (-70 to -15 deg)
+                left_leg_deg = random_float(-70, -15)
+                right_leg_deg = random_float(-30, -10)
+            end
+        else
+            -- Both legs naturally splay outward (abducted away from each other)
+            left_leg_deg = random_float(-70, -15)
+            right_leg_deg = random_float(15, 70)
+        end
         -- Head: limp neck turned sideways on the floor (-45 to +45 deg)
         local head_deg = random_float(-45, 45)
 
@@ -1718,9 +3639,15 @@ function deathstats.fracture_corpse_limbs(corpse, custom_angles)
     end
 
     local applied = {}
-    for bone_name, z_rad in pairs(angles) do
-        if deathstats.rotate_corpse_bone_planar(corpse, bone_name, z_rad) then
-            applied[bone_name] = z_rad
+    for bone_name, val in pairs(angles) do
+        local applied_ok
+        if type(val) == "table" then
+            applied_ok = deathstats.rotate_corpse_bone(corpse, bone_name, val)
+        else
+            applied_ok = deathstats.rotate_corpse_bone_planar(corpse, bone_name, val)
+        end
+        if applied_ok then
+            applied[bone_name] = val
         end
     end
 
@@ -1753,16 +3680,138 @@ function deathstats.remove_corpse(corpse)
     if xbows_mod and type(xbows_mod.cleanup_corpse_arrows) == "function" then
         xbows_mod.cleanup_corpse_arrows(corpse)
     end
+    -- Also remove any attached child entities (arrows, custom objects) to prevent orphans
+    if corpse.get_children then
+        for _, child in ipairs(corpse:get_children()) do
+            if child and (not child.is_valid or child:is_valid()) and child.remove then
+                child:remove()
+            end
+        end
+    end
     local went = deathstats.get_corpse_wielditem(corpse)
     if went and (not went.is_valid or went:is_valid()) and went.remove then
         went:remove()
     end
     local luaent = corpse.get_luaentity and corpse:get_luaentity()
     if luaent then
+        if luaent._particle_spawners then
+            for _, pid in ipairs(luaent._particle_spawners) do
+                core.delete_particlespawner(pid)
+            end
+            luaent._particle_spawners = nil
+        end
         luaent._wielditem_entity = nil
+    end
+    if deathstats.player_corpses then
+        for pname, c_obj in pairs(deathstats.player_corpses) do
+            if c_obj == corpse then
+                deathstats.player_corpses[pname] = nil
+            end
+        end
     end
     if (not corpse.is_valid or corpse:is_valid()) and corpse.remove then
         corpse:remove()
+    end
+end
+
+--- Spawn gentle ash / smoke dissipation particles when a corpse decays
+---@param pos Vector Center position of the decaying corpse
+---@return integer|nil spawner_id Particle spawner identifier or nil if disabled
+function deathstats.spawn_decay_particles(pos)
+    if not pos or deathstats.config.enable_corpse_particles == false then return nil end
+    local min_p = vector.new(pos.x - 0.4, pos.y - 0.1, pos.z - 0.4)
+    local max_p = vector.new(pos.x + 0.4, pos.y + 0.3, pos.z + 0.4)
+    local min_v = vector.new(-0.3, 0.4, -0.3)
+    local max_v = vector.new(0.3, 1.1, 0.3)
+    local min_a = vector.new(0, 0.05, 0)
+    local max_a = vector.new(0, 0.15, 0)
+
+    local anim_def = {
+        type = "vertical_frames",
+        aspect_w = 5,
+        aspect_h = 5,
+        length = 0.8,
+    }
+
+    return core.add_particlespawner({
+        amount = 18,
+        time = 0.2,
+        collisiondetection = false,
+        collision_removal = false,
+        -- Legacy client fields (< v5.6)
+        minpos = min_p,
+        maxpos = max_p,
+        minvel = min_v,
+        maxvel = max_v,
+        minacc = min_a,
+        maxacc = max_a,
+        minexptime = 0.8,
+        maxexptime = 1.5,
+        minsize = 1.0,
+        maxsize = 2.2,
+        texture = "deathstats_particle_smoke.png",
+        animation = anim_def,
+        -- Modern Luanti fields (v5.6+)
+        pos = {
+            min = min_p,
+            max = max_p,
+        },
+        vel = {
+            min = min_v,
+            max = max_v,
+        },
+        acc = {
+            min = min_a,
+            max = max_a,
+        },
+        exptime = { min = 0.8, max = 1.5 },
+        size = { min = 1.0, max = 2.2 },
+        texpool = {
+            {
+                name = "deathstats_particle_smoke.png",
+                alpha_tween = { 0.8, 0.0 },
+                scale_tween = { { x = 0.8, y = 0.8 }, { x = 1.6, y = 1.6 } },
+                blend = "alpha",
+                animation = anim_def,
+            },
+        },
+    })
+end
+
+--- Dissolve and cleanly remove a persistent corpse with dissipation particles
+---@param corpse ObjectRef|nil The corpse object reference
+function deathstats.dissolve_corpse(corpse)
+    if not corpse then return end
+    local pos = corpse.get_pos and corpse:get_pos()
+    if pos then
+        deathstats.spawn_decay_particles(pos)
+    end
+    deathstats.remove_corpse(corpse)
+end
+
+--- Unhide and restore native visual scale for any arrows attached to a corpse
+--- Defensively resets is_visible = true and restores visual_size if previously zeroed
+---@param corpse ObjectRef|nil The corpse entity object
+function deathstats.unhide_corpse_arrows(corpse)
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
+    if not corpse.get_children then return end
+    for _, child in ipairs(corpse:get_children()) do
+        if child and (not child.is_valid or child:is_valid()) then
+            local cent = child.get_luaentity and child:get_luaentity()
+            if cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:"))) then
+                if child.set_properties then
+                    local restore_props = { is_visible = true }
+                    if child.get_properties then
+                        local cp = child:get_properties()
+                        if cp and cp.visual_size and cp.visual_size.x == 0 and cp.visual_size.y == 0 then
+                            local init_vs = cent.initial_properties and cent.initial_properties.visual_size
+                            restore_props.visual_size = init_vs or { x = 1, y = 1, z = 1 }
+                        end
+                    end
+                    child:set_properties(restore_props)
+                end
+            end
+        end
     end
 end
 
@@ -1770,17 +3819,23 @@ end
 ---@param corpse_pos table The {x, y, z} coordinates where corpse should be placed
 ---@param visuals table The player visual appearance table (mesh, textures, visual_size, yaw)
 ---@param player ObjectRef|nil Optional player reference for transferring attached arrows
+---@param death_info table|nil Optional death analysis table
+---@param last_blow table|nil Optional lethal blow data
 ---@return ObjectRef|nil corpse The spawned corpse entity or nil if failed (e.g. mapblock not loaded)
-function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
+function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, last_blow)
     if not corpse_pos or not visuals then return nil end
     local corpse = core.add_entity(corpse_pos, "deathstats:corpse")
     if corpse then
+        local ragdoll_enabled = (deathstats.config.enable_corpse_ragdoll ~= false)
         corpse:set_properties({
             mesh = visuals.mesh,
             textures = visuals.textures,
             visual_size = visuals.visual_size,
             selectionbox = { 0, 0, 0, 0, 0, 0 },
             pointable = false,
+            physical = ragdoll_enabled,
+            collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
+            stepheight = 0.6,
         })
         if corpse.set_rotation then
             corpse:set_rotation({ x = 0, y = visuals.yaw or 0, z = 0 })
@@ -1789,9 +3844,107 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
         end
         deathstats.pose_corpse(corpse, visuals.mesh)
 
+        local luaent = corpse.get_luaentity and corpse:get_luaentity()
+        if luaent then
+            luaent._base_yaw = visuals.yaw or 0
+            local pname = player and player.get_player_name and player:get_player_name()
+            luaent._player_name = pname
+            if pname and deathstats.player_corpses and deathstats.player_corpses[pname] then
+                if deathstats.player_corpses[pname] ~= corpse then
+                    deathstats.dissolve_corpse(deathstats.player_corpses[pname])
+                end
+                deathstats.player_corpses[pname] = nil
+            end
+            luaent._death_info = death_info
+            local pdata = player and deathstats.get_player_data(player)
+            luaent._last_life = pdata and pdata.last_life
+        end
+        local is_moving = false
+
+        if ragdoll_enabled then
+            local vel, rot_speed = deathstats.calculate_corpse_impulse(player, death_info, last_blow)
+            if vel and (vel.x ~= 0 or vel.y ~= 0 or vel.z ~= 0) then
+                is_moving = true
+                if corpse.set_velocity then corpse:set_velocity(vel) end
+                if corpse.set_acceleration then corpse:set_acceleration({ x = 0, y = -9.81, z = 0 }) end
+                local initial_roll = 0
+                if deathstats.config.ragdoll_resting_poses ~= false then
+                    local yaw = visuals.yaw or 0
+                    local fwd_x = -math.sin(yaw)
+                    local fwd_z = math.cos(yaw)
+                    local vel_len = math.sqrt(vel.x * vel.x + vel.z * vel.z)
+                    if vel_len > 0.1 then
+                        local dot_fwd = (vel.x * fwd_x + vel.z * fwd_z) / vel_len
+                        if dot_fwd > 0.35 then
+                            -- Knocked forward (struck from behind): topple forward onto chest/face
+                            initial_roll = math.pi
+                        elseif dot_fwd < -0.35 then
+                            -- Knocked backward (struck from front): fall backward onto back
+                            initial_roll = 0
+                        else
+                            -- Knocked sideways: topple onto side
+                            initial_roll = (math.random() < 0.5) and (math.pi / 2) or (-math.pi / 2)
+                        end
+                    end
+                end
+
+                if luaent then
+                    luaent._velocity = vel
+                    luaent._rot_speed = rot_speed
+                    luaent._rot = { x = 0, y = visuals.yaw or 0, z = initial_roll }
+                    luaent._base_yaw = visuals.yaw or 0
+                    luaent._tumbling = (deathstats.config.ragdoll_tumbling ~= false) and (rot_speed.x ~= 0 or rot_speed.z ~= 0)
+                    luaent._impact_damage = (last_blow and last_blow.damage) or 5
+                    luaent._death_info = death_info
+                    luaent._settled = false
+                    luaent._timer = 0
+                    luaent._air_timer = 0
+                    luaent._slide_timer = 0
+                end
+                deathstats.update_ragdoll_flight_limbs(corpse, vel, visuals.yaw or 0)
+            end
+        end
+
         local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
             and (deathstats.config.enable_fall_fractures ~= false)
-        if fractures_enabled then
+
+        if not is_moving then
+            local roll = 0
+            local pose_type = "supine"
+            if deathstats.config.ragdoll_resting_poses ~= false then
+                local pick = math.random()
+                if pick < 0.35 then
+                    pose_type = "prone"
+                    roll = math.pi
+                elseif pick < 0.70 then
+                    pose_type = "lateral"
+                    roll = (math.random() < 0.5) and (math.pi / 2) or (-math.pi / 2)
+                else
+                    pose_type = "supine"
+                    roll = 0
+                end
+            end
+
+            local pitch = 0
+            if deathstats.config.enable_slope_pitch ~= false then
+                local detected_pitch, target_y = deathstats.detect_corpse_slope_pitch(corpse_pos, visuals.yaw or 0)
+                pitch = detected_pitch or 0
+                if target_y and math.abs(target_y - corpse_pos.y) <= 1.2 then
+                    if corpse.set_pos then
+                        corpse:set_pos(vector.new(corpse_pos.x, target_y, corpse_pos.z))
+                    end
+                end
+            end
+            if corpse.set_rotation then
+                corpse:set_rotation({ x = pitch, y = visuals.yaw or 0, z = roll })
+            end
+            if luaent then
+                luaent._settled = true
+                luaent._rot = { x = pitch, y = visuals.yaw or 0, z = roll }
+                luaent._pose_type = pose_type
+            end
+            deathstats.settle_ragdoll_limbs(corpse, (last_blow and last_blow.damage) or 5, pose_type)
+        elseif fractures_enabled then
             deathstats.fracture_corpse_limbs(corpse)
         end
 
@@ -1809,7 +3962,6 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
                     -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
                     wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
                 end
-                local luaent = corpse.get_luaentity and corpse:get_luaentity()
                 if luaent then
                     luaent._wielditem_entity = wield_ent
                 end
@@ -1820,28 +3972,54 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
         local xbows_loaded = rawget(_G, "XBows")
         if player and xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
             xbows_loaded.transfer_arrows_to_corpse(player, corpse)
+            deathstats.unhide_corpse_arrows(corpse)
         end
     end
     return corpse
 end
 
 --- Get the primary tile texture name for a given node for particle fallback
----@param node_name string Name of the node (e.g. "default:dirt")
+---@param node_name string|nil Name of the node
 ---@return string texture Name of the texture or fallback
 function deathstats.get_node_tile_texture(node_name)
     if not node_name or node_name == "" or node_name == "air" or node_name == "ignore" then
-        return "default_dirt.png"
+        node_name = deathstats.get_fallback_ground_node()
+        if not node_name then return "" end
     end
+    local cache = deathstats.node_tile_texture_cache
+    local cached = cache and cache[node_name]
+    if cached then
+        return cached
+    end
+
+    local result = ""
     local ndef = core.registered_nodes[node_name]
     if ndef and ndef.tiles then
         local t = ndef.tiles[1]
         if type(t) == "string" then
-            return t
+            result = t
         elseif type(t) == "table" and t.name then
-            return t.name
+            result = t.name
         end
     end
-    return "default_dirt.png"
+    if result == "" then
+        local fallback_name = deathstats.get_fallback_ground_node()
+        if fallback_name and fallback_name ~= node_name then
+            local fb_def = core.registered_nodes[fallback_name]
+            if fb_def and fb_def.tiles then
+                local t = fb_def.tiles[1]
+                if type(t) == "string" then
+                    result = t
+                elseif type(t) == "table" and t.name then
+                    result = t.name
+                end
+            end
+        end
+    end
+    if cache then
+        cache[node_name] = result
+    end
+    return result
 end
 
 --- Determine the appropriate particle effect for a corpse based on death cause and environment
@@ -1849,6 +4027,54 @@ end
 ---@param death_info table|nil Optional death analysis table
 ---@return string effect_type "water"|"lava"|"fire"|"impact"
 function deathstats.get_corpse_effect_type(corpse_pos, death_info)
+    -- Probe the physical environment around corpse_pos first (detects settled water/lava/fire)
+    if corpse_pos then
+        local probe_offsets = {
+            vector.new(corpse_pos.x, corpse_pos.y, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y - 0.3, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y - 0.6, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y - 1.0, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y + 0.2, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y + 0.5, corpse_pos.z),
+        }
+        for _, ppos in ipairs(probe_offsets) do
+            local node = core.get_node_or_nil(ppos)
+            if node and node.name and node.name ~= "air" and node.name ~= "ignore" then
+                local nname = node.name:lower()
+                if nname:find("lava") then
+                    return "lava"
+                elseif nname:find("fire") or nname:find("flame") then
+                    return "fire"
+                elseif nname:find("water") then
+                    return "water"
+                end
+                local ndef = core.registered_nodes[node.name]
+                if ndef then
+                    local is_liq = (ndef.drawtype == "liquid" or ndef.drawtype == "flowingliquid"
+                        or ndef.liquidtype == "source" or ndef.liquidtype == "flowing")
+                    if is_liq then
+                        if (ndef.groups and ndef.groups.lava) or nname:find("lava") then
+                            return "lava"
+                        else
+                            return "water"
+                        end
+                    end
+                end
+                local idef = core.registered_items[node.name]
+                if idef and idef.groups then
+                    if idef.groups.lava then
+                        return "lava"
+                    elseif idef.groups.water or idef.groups.liquid then
+                        return "water"
+                    elseif idef.groups.fire then
+                        return "fire"
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fall back to death_info cause / category if the corpse is on dry ground or in air
     local cat = death_info and death_info.category
     if cat == "lava" then
         return "lava"
@@ -1869,48 +4095,31 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
         end
     end
 
-    if corpse_pos then
-        local get_node_fn = core.get_node_or_nil or core.get_node
-        local node = get_node_fn and get_node_fn(corpse_pos)
-        if node then
-            local nname = node.name:lower()
-            if nname:find("lava") then
-                return "lava"
-            elseif nname:find("fire") then
-                return "fire"
-            elseif nname:find("water") then
-                return "water"
-            end
-            local ndef = core.registered_nodes[node.name]
-            if ndef and (ndef.drawtype == "liquid" or ndef.drawtype == "flowingliquid"
-                    or ndef.liquidtype == "source" or ndef.liquidtype == "flowing") then
-                return "water"
-            end
-        end
-    end
-
     return "impact"
 end
 
 --- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti clients
 ---@param effect_type string "water"|"lava"|"fire"|"impact"
 ---@param corpse_pos table The {x, y, z} position of the corpse
+---@param attached_obj ObjectRef|nil Optional corpse ObjectRef to attach particles to
 ---@return table|nil def ParticleSpawner definition table
-function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
+function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, attached_obj)
     if not corpse_pos then return nil end
     local cx, cy, cz = corpse_pos.x, corpse_pos.y, corpse_pos.z
+    local has_attached = attached_obj and (not attached_obj.is_valid or attached_obj:is_valid())
 
     if effect_type == "water" then
         -- Bubbles floating upwards through water continuously from random positions on the submerged corpse
         return {
             amount = 8,
             time = 0, -- Continuous spawner
-            collisiondetection = true,
+            collisiondetection = false,
             collision_removal = false,
             glow = 3,
+            attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
+            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = 0.25, z = 0.35 } or { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
             minvel = { x = -0.15, y = 0.35, z = -0.15 },
             maxvel = { x = 0.15, y = 0.85, z = 0.15 },
             minacc = { x = -0.05, y = 0.20, z = -0.05 },
@@ -1928,8 +4137,8 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
+                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, 0.25, 0.35) or vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
             },
             vel = {
                 min = vector.new(-0.15, 0.35, -0.15),
@@ -1965,9 +4174,10 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             collisiondetection = true,
             collision_removal = false,
             glow = 14,
+            attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = 0.30, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
             minvel = { x = -0.25, y = 0.50, z = -0.25 },
             maxvel = { x = 0.25, y = 1.40, z = 0.25 },
             minacc = { x = -0.10, y = 0.30, z = -0.10 },
@@ -1985,8 +4195,8 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, 0.30, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
             },
             vel = {
                 min = vector.new(-0.25, 0.50, -0.25),
@@ -2021,9 +4231,10 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             collisiondetection = true,
             collision_removal = false,
             glow = 1,
+            attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = 0.30, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
             minvel = { x = -0.15, y = 0.30, z = -0.15 },
             maxvel = { x = 0.15, y = 0.80, z = 0.15 },
             minacc = { x = -0.05, y = 0.15, z = -0.05 },
@@ -2041,8 +4252,8 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, 0.30, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
             },
             vel = {
                 min = vector.new(-0.15, 0.30, -0.15),
@@ -2072,23 +4283,25 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
 
     else
         -- All others: Node particles around the corpse flying upwards from impact at time of death (non-continuous)
-        local ground_node_name = "default:dirt"
+        local ground_node_name = nil
         local ground_param2 = 0
-        local get_node_fn = core.get_node_or_nil or core.get_node
-        if get_node_fn then
-            local check_positions = {
-                { x = cx, y = math.floor(cy), z = cz },
-                { x = cx, y = math.floor(cy - 0.5), z = cz },
-                { x = cx, y = math.floor(cy - 1.0), z = cz },
-            }
-            for _, cpos in ipairs(check_positions) do
-                local n = get_node_fn(cpos)
-                if n and n.name ~= "air" and n.name ~= "ignore" then
-                    ground_node_name = n.name
-                    ground_param2 = n.param2 or 0
-                    break
-                end
+        local check_positions = {
+            { x = cx, y = math.floor(cy), z = cz },
+            { x = cx, y = math.floor(cy - 0.5), z = cz },
+            { x = cx, y = math.floor(cy - 1.0), z = cz },
+        }
+        for _, cpos in ipairs(check_positions) do
+            local n = core.get_node_or_nil(cpos)
+            if n and n.name ~= "air" and n.name ~= "ignore" then
+                ground_node_name = n.name
+                ground_param2 = n.param2 or 0
+                break
             end
+        end
+
+        ground_node_name = ground_node_name or deathstats.get_fallback_ground_node()
+        if not ground_node_name then
+            return nil
         end
 
         local fallback_tex = deathstats.get_node_tile_texture(ground_node_name)
@@ -2100,9 +4313,10 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             collision_removal = false,
             node = { name = ground_node_name, param2 = ground_param2 },
             texture = fallback_tex,
+            attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
-            maxpos = { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
+            minpos = has_attached and { x = -0.45, y = -0.05, z = -0.45 } or { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
+            maxpos = has_attached and { x = 0.45, y = 0.15, z = 0.45 } or { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
             minvel = { x = -1.6, y = 1.8, z = -1.6 },
             maxvel = { x = 1.6, y = 3.6, z = 1.6 },
             minacc = { x = 0, y = -9.81, z = 0 },
@@ -2113,8 +4327,8 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             maxsize = 0,
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
-                max = vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
+                min = has_attached and vector.new(-0.45, -0.05, -0.45) or vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
+                max = has_attached and vector.new(0.45, 0.15, 0.45) or vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
             },
             vel = {
                 min = vector.new(-1.6, 1.8, -1.6),
@@ -2126,28 +4340,84 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
             },
             exptime = { min = 0.6, max = 1.2 },
             size = { min = 0, max = 0 },
+            texpool = {
+                {
+                    name = fallback_tex,
+                },
+            },
         }
     end
+end
+
+--- Spawn an instantaneous localized burst of node debris particles at the impact site
+---@param pos Vector The collision contact point
+---@param ground_node_name string|nil The node name struck
+---@param intensity number|nil Impact velocity or damage
+function deathstats.spawn_impact_burst(pos, ground_node_name, intensity)
+    if deathstats.config.enable_corpse_particles == false or not pos then return end
+    local scale = math.min(2.0, math.max(0.6, (tonumber(intensity) or 5.0) / 6.0))
+    local node_name = ground_node_name or deathstats.get_fallback_ground_node()
+    if not node_name then return end
+    local tex = deathstats.get_node_tile_texture(node_name)
+    local cx, cy, cz = pos.x, pos.y, pos.z
+    local min_p = vector.new(cx - 0.35, cy - 0.05, cz - 0.35)
+    local max_p = vector.new(cx + 0.35, cy + 0.15, cz + 0.35)
+    local min_v = vector.new(-1.6 * scale, 1.2 * scale, -1.6 * scale)
+    local max_v = vector.new(1.6 * scale, 3.0 * scale, 1.6 * scale)
+    local min_a = vector.new(0, -9.81, 0)
+    local max_a = vector.new(0, -9.81, 0)
+    local p_def = {
+        amount = math.floor(16 * scale),
+        time = 0.08,
+        collisiondetection = true,
+        -- Legacy client fields (< v5.6)
+        minpos = min_p,
+        maxpos = max_p,
+        minvel = min_v,
+        maxvel = max_v,
+        minacc = min_a,
+        maxacc = max_a,
+        minexptime = 0.4,
+        maxexptime = 0.8,
+        minsize = 0.8,
+        maxsize = 1.6,
+        texture = tex,
+        node = { name = node_name },
+        -- Modern Luanti fields (v5.6+)
+        pos = { min = min_p, max = max_p },
+        vel = { min = min_v, max = max_v },
+        acc = { min = min_a, max = max_a },
+        exptime = { min = 0.4, max = 0.8 },
+        size = { min = 0.8, max = 1.6 },
+        texpool = {
+            {
+                name = tex,
+            },
+        },
+    }
+    core.add_particlespawner(p_def)
 end
 
 --- Spawn corpse particle spawner(s) according to death cause/environment
 ---@param corpse_pos table The {x, y, z} position of the corpse
 ---@param death_info table|nil Optional death analysis table
+---@param attached_obj ObjectRef|nil Optional corpse ObjectRef to attach particles to
 ---@return number[] spawner_ids Array of active particle spawner IDs
-function deathstats.spawn_corpse_particles(corpse_pos, death_info)
-    if not corpse_pos then return {} end
-    if deathstats.config.enable_corpse_particles == false then return {} end
+---@return string|nil effect_type The type of effect spawned (e.g. "water", "lava", "fire", "impact")
+function deathstats.spawn_corpse_particles(corpse_pos, death_info, attached_obj)
+    if not corpse_pos then return {}, nil end
+    if deathstats.config.enable_corpse_particles == false then return {}, nil end
 
     local effect_type = deathstats.get_corpse_effect_type(corpse_pos, death_info)
-    local def = deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos)
-    if not def then return {} end
+    local def = deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, attached_obj)
+    if not def then return {}, effect_type end
 
     local spawner_id = core.add_particlespawner(def)
     local spawner_ids = {}
     if spawner_id and spawner_id > 0 then
         table.insert(spawner_ids, spawner_id)
     end
-    return spawner_ids
+    return spawner_ids, effect_type
 end
 
 
@@ -2212,7 +4482,7 @@ end
 --- Check if 3d_armor is configured to drop or destroy armor on player death
 ---@param player ObjectRef|nil Optional player reference
 ---@return boolean drops True if armor is ejected/dropped from inventory on death
-function deathstats.is_armor_dropped(player)
+function deathstats.is_armor_dropped(_player)
     local armor_mod = rawget(_G, "armor")
     if not armor_mod then
         return false
@@ -2235,7 +4505,7 @@ end
 ---@param player ObjectRef|nil Optional player reference
 ---@return boolean dropped True if items are dropped on death, false if kept
 function deathstats.is_inventory_dropped(player)
-    -- 1. Creative mode: players do not lose inventory
+    -- Creative mode: players do not lose inventory
     if player and player:is_player() then
         local name = player:get_player_name()
         if name and core.is_creative_enabled(name) then
@@ -2243,7 +4513,7 @@ function deathstats.is_inventory_dropped(player)
         end
     end
 
-    -- 2. Engine & Game Settings: keep_inventory flags
+    -- Engine & Game Settings: keep_inventory flags
     local setting_keys = {
         "keep_inventory",
         "keepinventory",
@@ -2256,7 +4526,7 @@ function deathstats.is_inventory_dropped(player)
         end
     end
 
-    -- 3. Bones mod configuration (Luanti Game / default games)
+    -- Bones mod configuration (Luanti Game / default games)
     local _, bones_mode, has_bones_mod = deathstats.get_bones_mode()
     if has_bones_mod then
         if bones_mode == "keep" then
@@ -2273,12 +4543,12 @@ function deathstats.is_inventory_dropped(player)
         end
     end
 
-    -- 4. Mod-specific drop handlers
+    -- Mod-specific drop handlers
     if rawget(_G, "mcl_death_drop") ~= nil or rawget(_G, "rp_drop_items_on_die") ~= nil then
         return true
     end
 
-    -- 5. Default engine behavior (without bones or drop mods, inventory is kept)
+    -- Default engine behavior (without bones or drop mods, inventory is kept)
     return false
 end
 
@@ -2290,14 +4560,14 @@ function deathstats.get_player_wield_item(player)
         return ""
     end
 
-    -- 1. Check player's direct wielded item
+    -- Check player's direct wielded item
     local stack = player:get_wielded_item()
     local name = deathstats.get_stack_name(stack)
     if name ~= "" and name ~= "deathstats:camera_hand" then
         return name
     end
 
-    -- 2. Check inventory main list at wield index
+    -- Check inventory main list at wield index
     local inv = player:get_inventory()
     local wield_idx = player:get_wield_index() or 1
     if inv then
@@ -2308,7 +4578,7 @@ function deathstats.get_player_wield_item(player)
         end
     end
 
-    -- 3. Check stashed main inventory from player metadata if available
+    -- Check stashed main inventory from player metadata if available
     local meta = player:get_meta()
     if meta then
         local raw_main = meta:get_string("deathstats:stashed_main")
@@ -2323,7 +4593,7 @@ function deathstats.get_player_wield_item(player)
         end
     end
 
-    -- 4. Check 3d_armor textures table if available
+    -- Check 3d_armor textures table if available
     local armor_mod = rawget(_G, "armor")
     if armor_mod and armor_mod.textures then
         local pname = player:get_player_name()
@@ -2387,7 +4657,7 @@ function deathstats.get_player_visuals(player)
 
     local textures
 
-    -- 1. skinsdb + 3d_armor support: 4 material slots
+    -- skinsdb + 3d_armor support: 4 material slots
     -- Slot 1: v10 (1.0 skin or blank.png, + cape)
     -- Slot 2: v18 (1.8 skin or blank.png, + clothing overlays)
     -- Slot 3: 3d_armor geometry overlay (blank.png if dropped/naked)
@@ -2462,7 +4732,7 @@ function deathstats.get_player_visuals(player)
             wielditem_texture,
         }
 
-    -- 2. Standalone 3d_armor support: 3 material slots (skin, armor, wielditem)
+    -- Standalone 3d_armor support: 3 material slots (skin, armor, wielditem)
     elseif is_3d_armor then
         mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or "3d_armor_character.b3d"
         local a_tex = (armor_mod and armor_mod.textures and armor_mod.textures[name]) or {}
@@ -2492,7 +4762,7 @@ function deathstats.get_player_visuals(player)
             wield_tex,
         }
 
-    -- 3. Fallback skin mods: skinsdb (legacy/without armor), simple_skins, wardrobe, player_api, mcl_skins
+    -- Fallback skin mods: skinsdb (legacy/without armor), simple_skins, wardrobe, player_api, mcl_skins
     else
         textures = copy(props.textures or { "character.png" })
 
@@ -2539,7 +4809,7 @@ function deathstats.get_player_visuals(player)
         end
     end
 
-    -- 4. Fallback for transparent texture trap:
+    -- Fallback for transparent texture trap:
     -- If textures only contains deathstats_transparent.png, recover original textures from metadata or default
     local is_transparent = true
     if type(textures) == "table" and #textures > 0 then
@@ -2738,9 +5008,9 @@ function deathstats.find_ground_surface(pos, bones_pos, death_info)
         return bones_pos.y + 0.5
     end
 
-    -- 1. Check if direct node or bones is already right below or at pos
+    -- Check if direct node or bones is already right below or at pos
     local check_pos = vector.round(pos)
-    local direct_node = core.get_node(check_pos)
+    local direct_node = core.get_node_or_nil(check_pos) or { name = "air" }
     if direct_node.name == "bones:bones" then
         return check_pos.y + 0.5
     end
@@ -2750,17 +5020,18 @@ function deathstats.find_ground_surface(pos, bones_pos, death_info)
     -- allow searching down to ground impact level (up to 40 nodes).
     -- For non-fall deaths in mid-air (suicide, /kill, mobs, projectiles, fire), only search near feet (2.5 nodes)
     -- to snap to floors/slabs/stairs if standing on solid ground. If suspended in mid-air, retain exact death height pos.y!
-    local is_fall = (death_info == nil) or (death_info.category == nil) or (death_info.category == "fall")
+    local is_fall = (death_info == nil) or (death_info.category == nil)
+        or (death_info.category == "fall") or (death_info.category == "explosion")
     local max_depth = is_fall and 40 or 2.5
 
-    -- 2. Downward raycast to detect exact collision surface (handles nodes, slabs, stairs, meshes)
+    -- Downward raycast to detect exact collision surface (handles nodes, slabs, stairs, meshes)
     local start_pos = vector.new(pos.x, pos.y + 0.5, pos.z)
     local end_pos = vector.new(pos.x, pos.y - max_depth, pos.z)
     local ray = core.raycast(start_pos, end_pos, false, false)
     for pointed_thing in ray do
         if pointed_thing.type == "node" and pointed_thing.under then
-            local node = core.get_node(pointed_thing.under)
-            local def = core.registered_nodes[node.name]
+            local node = core.get_node_or_nil(pointed_thing.under)
+            local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
             if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
                 if pointed_thing.intersection_point then
                     return pointed_thing.intersection_point.y
@@ -2771,15 +5042,15 @@ function deathstats.find_ground_surface(pos, bones_pos, death_info)
         end
     end
 
-    -- 3. Fallback: discrete node scanning downward from math.floor(pos.y + 0.5) down to max_depth
+    -- Fallback: discrete node scanning downward from math.floor(pos.y + 0.5) down to max_depth
     local start_y = math.floor(pos.y + 0.5)
     local check_x = math.floor(pos.x + 0.5)
     local check_z = math.floor(pos.z + 0.5)
     local min_y = math.floor(pos.y - max_depth + 0.5)
     for y = start_y, min_y, -1 do
         local npos = vector.new(check_x, y, check_z)
-        local node = core.get_node(npos)
-        local def = core.registered_nodes[node.name]
+        local node = core.get_node_or_nil(npos)
+        local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
         if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
             return y + 0.5
         end
@@ -2787,6 +5058,20 @@ function deathstats.find_ground_surface(pos, bones_pos, death_info)
 
     -- If no solid ground found within max_depth (e.g. suspended in mid-air / floating), retain pos.y
     return pos.y
+end
+
+--- Compute 3D camera eye coordinates along the orbit path around an orbit center
+---@param center Vector 3D coordinates of the orbit center (corpse or bones)
+---@param radius number Horizontal distance from center
+---@param height number Vertical elevation above center
+---@param angle number Orbit angle (yaw) in radians
+---@return Vector cam_pos 3D world position of the camera eye
+function deathstats.get_camera_orbit_pos(center, radius, height, angle)
+    return vector.new(
+        center.x + radius * math.sin(angle),
+        center.y + height,
+        center.z - radius * math.cos(angle)
+    )
 end
 
 --- Update camera position and orientation along the circular orbit
@@ -2815,7 +5100,7 @@ function deathstats.update_death_camera(player, dtime)
         return
     end
 
-    -- 1. Check for delayed bones placement if bones were not initially detected
+    -- Check for delayed bones placement if bones were not initially detected
     if not data.has_bones then
         local bones_pos = deathstats.find_player_bones(player)
         if bones_pos then
@@ -2836,14 +5121,34 @@ function deathstats.update_death_camera(player, dtime)
             end
             data.corpse_pos = nil
             data.corpse_visuals = nil
-            if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.set_pos then
-                data.anchor:set_pos(new_center)
+            local eff_r = data.eff_radius or data.orbit_radius or (deathstats.config.orbit_radius or 3.2)
+            local eff_h = data.eff_height or (eff_r * (data.nominal_ratio or 0.46875))
+            local cur_angle = data.orbit_angle or (data.yaw or 0)
+            if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                if data.anchor.set_velocity then
+                    data.anchor:set_velocity(vector.zero())
+                end
+                if data.anchor.set_acceleration then
+                    data.anchor:set_acceleration(vector.zero())
+                end
+                if data.anchor.move_to then
+                    data.anchor:move_to(new_center, false)
+                elseif data.anchor.set_pos then
+                    data.anchor:set_pos(new_center)
+                end
             end
             if player.set_detach then player:set_detach() end
             if player.set_pos then player:set_pos(new_center) end
             if data.anchor and player.set_attach then
                 player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
             end
+            if player.set_eye_offset then
+                player:set_eye_offset({ x = 0, y = eff_h * 10, z = -eff_r * 10 }, vector.zero())
+                data.last_sent_eye_z = -eff_r * 10
+                data.last_sent_eye_y = eff_h * 10
+            end
+            if player.set_look_horizontal then player:set_look_horizontal(cur_angle) end
+            if player.set_look_vertical then player:set_look_vertical(atan2(eff_h, eff_r)) end
         end
     end
 
@@ -2852,7 +5157,7 @@ function deathstats.update_death_camera(player, dtime)
     local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
     if not bones_active then
         if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
-            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player)
+            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player, data.death_info, data.last_blow)
             if new_corpse then
                 data.corpse = new_corpse
                 data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
@@ -2860,7 +5165,110 @@ function deathstats.update_death_camera(player, dtime)
             if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners then
                 local effect_type = deathstats.get_corpse_effect_type(data.corpse_pos, data.death_info)
                 if effect_type ~= "impact" then
-                    data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info)
+                    data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info, data.corpse)
+                    data.current_effect_type = effect_type
+                end
+            end
+        end
+
+        -- Transfer fatal arrow from player to corpse on first camera step (dtime > 0)
+        -- after on_dieplayer and deferred x_bows core.after(0) attachments have executed
+        if dtime and dtime > 0 and not data.arrows_transferred and data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
+            data.arrows_transferred = true
+            local xbows_loaded = rawget(_G, "XBows")
+            if xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
+                xbows_loaded.transfer_arrows_to_corpse(player, data.corpse)
+                deathstats.unhide_corpse_arrows(data.corpse)
+            end
+        end
+
+        -- 1c. Dynamic corpse tracking: smoothly update orbit_center to follow the moving ragdoll corpse
+        if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) and data.corpse.get_pos then
+            local cpos = data.corpse:get_pos()
+            if cpos then
+                local cvel = (data.corpse.get_velocity and data.corpse:get_velocity()) or vector.zero()
+                local cacc = (data.corpse.get_acceleration and data.corpse:get_acceleration()) or vector.zero()
+                local vel_len = vector.length(cvel)
+                local pos_diff = data.orbit_center and vector.distance(cpos, data.orbit_center) or 0
+                local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
+                local is_settled = (luaent and luaent._settled) or (vel_len < 0.05 and pos_diff < 0.02)
+
+                if not is_settled then
+                    -- Ragdoll corpse is actively moving/falling: translate orbit center and move anchor
+                    data.corpse_settled = false
+                    data.corpse_settled_particles_checked = false
+                    data.corpse_pos = cpos
+                    data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
+                    data.corpse_vel = cvel
+                    data.corpse_acc = cacc
+
+                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                        if data.anchor.move_to then
+                            data.anchor:move_to(data.orbit_center, false)
+                        elseif data.anchor.set_pos then
+                            data.anchor:set_pos(data.orbit_center)
+                        end
+                        if data.anchor.set_velocity then
+                            data.anchor:set_velocity(cvel)
+                        end
+                        if data.anchor.set_acceleration then
+                            data.anchor:set_acceleration(cacc)
+                        end
+                    end
+                elseif not data.corpse_settled then
+                    -- Ragdoll corpse has settled: lock final stationary position and zero out velocity once
+                    data.corpse_settled = true
+                    data.corpse_pos = cpos
+                    data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
+                    data.corpse_vel = VEC_ZERO
+                    data.corpse_acc = VEC_ZERO
+
+                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                        if data.anchor.set_velocity then
+                            data.anchor:set_velocity(VEC_ZERO)
+                        end
+                        if data.anchor.set_acceleration then
+                            data.anchor:set_acceleration(VEC_ZERO)
+                        end
+                        if data.anchor.set_pos then
+                            data.anchor:set_pos(data.orbit_center)
+                        end
+                    end
+                end
+                -- When corpse_settled is true, anchor is NEVER touched: zero packets sent, 100% calm stationary scene node!
+
+                -- Re-evaluate environment effect once corpse has settled
+                if luaent and luaent._settled and not data.corpse_settled_particles_checked then
+                    data.corpse_settled_particles_checked = true
+                    if deathstats.config.enable_corpse_particles ~= false then
+                        local settled_effect = deathstats.get_corpse_effect_type(cpos, data.death_info)
+                        local current_effect = data.current_effect_type or deathstats.get_corpse_effect_type(data.initial_death_pos or cpos, data.death_info)
+                        local has_active_spawners = data.particle_spawners and #data.particle_spawners > 0
+                        if settled_effect ~= current_effect or not has_active_spawners then
+                            if data.particle_spawners then
+                                for _, pid in ipairs(data.particle_spawners) do
+                                    core.delete_particlespawner(pid)
+                                end
+                                data.particle_spawners = nil
+                            end
+                            if luaent._particle_spawners then
+                                for _, pid in ipairs(luaent._particle_spawners) do
+                                    core.delete_particlespawner(pid)
+                                end
+                                luaent._particle_spawners = nil
+                            end
+                            if settled_effect ~= "impact" then
+                                local spawners, eff = deathstats.spawn_corpse_particles(cpos, data.death_info, data.corpse)
+                                data.particle_spawners = spawners
+                                data.current_effect_type = eff
+                                luaent._particle_spawners = spawners
+                                luaent._effect_type = eff
+                            else
+                                data.current_effect_type = settled_effect
+                                luaent._effect_type = settled_effect
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -2878,7 +5286,7 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
-    -- 1c. Check if camera anchor needs to be re-instantiated if lost across engine reload
+    -- 1d. Check if camera anchor needs to be re-instantiated if lost across engine reload
     if (not data.anchor or (data.anchor.is_valid and not data.anchor:is_valid())) and data.orbit_center then
         local new_anchor = core.add_entity(data.orbit_center, "deathstats:camera_anchor")
         if new_anchor then
@@ -2894,10 +5302,25 @@ function deathstats.update_death_camera(player, dtime)
                     show_on_minimap = false,
                 })
             end
+            local cvel = data.corpse_vel or vector.zero()
+            if new_anchor.set_velocity then
+                new_anchor:set_velocity(cvel)
+            end
+            local cacc = data.corpse_acc or vector.zero()
+            if new_anchor.set_acceleration then
+                new_anchor:set_acceleration(cacc)
+            end
             data.anchor = new_anchor
             if player.set_pos then player:set_pos(data.orbit_center) end
             if player.set_attach then
                 player:set_attach(new_anchor, "", vector.zero(), vector.zero(), false)
+            end
+            local eff_r = data.eff_radius or data.orbit_radius or (deathstats.config.orbit_radius or 3.2)
+            local eff_h = data.eff_height or (eff_r * (data.nominal_ratio or 0.46875))
+            if player.set_eye_offset then
+                player:set_eye_offset({ x = 0, y = eff_h * 10, z = -eff_r * 10 }, vector.zero())
+                data.last_sent_eye_z = -eff_r * 10
+                data.last_sent_eye_y = eff_h * 10
             end
         end
     end
@@ -3008,23 +5431,34 @@ function deathstats.update_death_camera(player, dtime)
         if children then
             for _, child in ipairs(children) do
                 if child and (not child.is_valid or child:is_valid()) and child ~= data.anchor and child ~= data.corpse and child ~= data.corpse_wielditem then
-                    if child.get_properties and child.set_properties then
-                        local cp = child:get_properties()
-                        if cp and (cp.is_visible ~= false
-                            or (cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0))
-                            or cp.pointable ~= false) then
+                    local cent = child.get_luaentity and child:get_luaentity()
+                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
+                    if is_arrow then
+                        if child.set_properties then
+                            child:set_properties({
+                                is_visible = false,
+                                pointable = false,
+                            })
+                        end
+                    else
+                        if child.get_properties and child.set_properties then
+                            local cp = child:get_properties()
+                            if cp and (cp.is_visible ~= false
+                                or (cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0))
+                                or cp.pointable ~= false) then
+                                child:set_properties({
+                                    is_visible = false,
+                                    visual_size = { x = 0, y = 0, z = 0 },
+                                    pointable = false,
+                                })
+                            end
+                        elseif child.set_properties then
                             child:set_properties({
                                 is_visible = false,
                                 visual_size = { x = 0, y = 0, z = 0 },
                                 pointable = false,
                             })
                         end
-                    elseif child.set_properties then
-                        child:set_properties({
-                            is_visible = false,
-                            visual_size = { x = 0, y = 0, z = 0 },
-                            pointable = false,
-                        })
                     end
                 end
             end
@@ -3038,10 +5472,13 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
-    -- 2. Advance orbit angle smoothly
+    -- Advance orbit angle smoothly only after ragdoll corpse has settled
     data.orbit_speed = data.orbit_speed or deathstats.config.orbit_speed or 0.4
-    data.orbit_angle = ((data.orbit_angle or 0) + data.orbit_speed * (dtime or 0)) % (2 * math.pi)
-    local angle = data.orbit_angle
+    if data.corpse_settled ~= false then
+        data.orbit_angle = ((data.orbit_angle or 0) + data.orbit_speed * (dtime or 0)) % (2 * math.pi)
+    end
+    local angle = data.orbit_angle or (data.yaw or 0)
+    data.orbit_angle = angle
 
     local radius = data.orbit_radius or deathstats.config.orbit_radius or 3.2
     local height = data.orbit_height or deathstats.config.orbit_height or 1.5
@@ -3052,16 +5489,16 @@ function deathstats.update_death_camera(player, dtime)
     local buffer = 0.45
     local probe_radius = radius + buffer
     local nominal_ratio = height / math.max(0.1, radius)
-    local probe_height = math.max(0.65, probe_radius * nominal_ratio)
+    local probe_height = probe_radius * nominal_ratio
 
     if core.raycast and data.orbit_center then
         local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.8, data.orbit_center.z)
         local min_clear_r = probe_radius
 
-        -- Multi-angle probe: check primary camera sightline plus lookahead/lookbehind (+/- 0.08 rad)
-        -- to detect approaching walls before camera sweeps into them and prevent edge chattering
-        local probe_angles = { angle, angle + 0.08, angle - 0.08 }
-        for _, p_angle in ipairs(probe_angles) do
+        -- Directional lookahead probing: check primary camera sightline plus forward lookahead (+0.06 rad)
+        -- to detect approaching walls before camera sweeps into them while avoiding phantom drag from past obstacles
+        for step = 1, 2 do
+            local p_angle = (step == 1) and angle or (angle + 0.06)
             local cam_x = data.orbit_center.x + probe_radius * math.sin(p_angle)
             local cam_y = data.orbit_center.y + probe_height
             local cam_z = data.orbit_center.z - probe_radius * math.cos(p_angle)
@@ -3069,8 +5506,8 @@ function deathstats.update_death_camera(player, dtime)
             local ray = core.raycast(ray_start, cam_target, false, false)
             for pointed_thing in ray do
                 if pointed_thing.type == "node" and pointed_thing.under then
-                    local node = core.get_node(pointed_thing.under)
-                    local def = core.registered_nodes[node.name]
+                    local node = core.get_node_or_nil(pointed_thing.under)
+                    local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
                     if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
                         local hit_pos = pointed_thing.intersection_point or pointed_thing.under
                         -- Safely ignore floor nodes directly beneath/around the corpse (not an obstacle)
@@ -3129,19 +5566,30 @@ function deathstats.update_death_camera(player, dtime)
     end
     local eff_radius = data.eff_radius
 
-    -- Proportional height scaling: keeping height proportional to radius maintains
+    -- Strict proportional height scaling: keeping height proportional to radius maintains
     -- a constant sightline angle (pitch) relative to the corpse, eliminating vertical bobbing
-    local eff_height = math.max(0.65, eff_radius * nominal_ratio)
+    local eff_height = eff_radius * nominal_ratio
 
-    -- Decimeter eye offsets for Luanti client
+    data.eff_height = eff_height
+    data.nominal_ratio = nominal_ratio
+
+    -- Update floating-point eye offset in decimeters (1 dm = 0.1 node)
+    -- Negative z offsets camera backwards from player entity along line of sight;
+    -- positive y offsets camera upwards to maintain the downward orbit vantage point.
+    -- Stream eye offset synchronously on active zoom lerp (0.02 dm threshold) while
+    -- completely suppressing redundant packets in steady state / open air.
     local target_dm_z = -eff_radius * 10
     local target_dm_y = eff_height * 10
+
     if player.set_eye_offset then
-        local cur_first = player.get_eye_offset and player:get_eye_offset()
+        local cur_first = (player.get_eye_offset and player:get_eye_offset())
+            or (data.last_sent_eye_z and { y = data.last_sent_eye_y, z = data.last_sent_eye_z })
         if not cur_first
-            or math.abs(cur_first.y - target_dm_y) > 0.08
-            or math.abs(cur_first.z - target_dm_z) > 0.08 then
+            or math.abs(cur_first.y - target_dm_y) > 0.02
+            or math.abs(cur_first.z - target_dm_z) > 0.02 then
             player:set_eye_offset({ x = 0, y = target_dm_y, z = target_dm_z }, vector.zero())
+            data.last_sent_eye_z = target_dm_z
+            data.last_sent_eye_y = target_dm_y
         end
     end
 
@@ -3155,14 +5603,14 @@ function deathstats.update_death_camera(player, dtime)
     end
     local pitch = data.eff_pitch
 
-    -- Suppress redundant horizontal yaw updates to avoid packet flooding
+    -- Suppress redundant horizontal yaw updates to avoid packet flooding (deadband 0.008 rad matching 08cdd88)
     if player.set_look_horizontal then
         local cur_yaw = player.get_look_horizontal and player:get_look_horizontal()
         if not cur_yaw or math.abs(angle - cur_yaw) > 0.008 then
             player:set_look_horizontal(angle)
         end
     end
-    -- Suppress redundant vertical pitch updates to avoid packet flooding
+    -- Suppress redundant vertical pitch updates to avoid packet flooding (deadband 0.005 rad matching 08cdd88)
     if player.set_look_vertical then
         local cur_pitch = player.get_look_vertical and player:get_look_vertical()
         if not cur_pitch or math.abs(pitch - cur_pitch) > 0.005 then
@@ -3190,8 +5638,8 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
 
     if data then
         data.has_bones = true
-        data.bones_pos = bones_pos
-        local new_center = bones_pos
+        local new_center = vector.copy(bones_pos)
+        data.bones_pos = new_center
         data.orbit_center = new_center
         if data.corpse then
             deathstats.remove_corpse(data.corpse)
@@ -3205,14 +5653,36 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
         end
         data.corpse_pos = nil
         data.corpse_visuals = nil
-        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.set_pos then
-            data.anchor:set_pos(new_center)
+        data.corpse_vel = nil
+        local eff_r = data.eff_radius or data.orbit_radius or (deathstats.config.orbit_radius or 3.2)
+        local eff_h = data.eff_height or (eff_r * (data.nominal_ratio or 0.46875))
+        local cur_angle = data.orbit_angle or (data.yaw or 0)
+        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+            if data.anchor.set_velocity then
+                data.anchor:set_velocity(vector.zero())
+            end
+            if data.anchor.set_acceleration then
+                data.anchor:set_acceleration(vector.zero())
+            end
+            if data.anchor.move_to then
+                data.anchor:move_to(new_center, false)
+            elseif data.anchor.set_pos then
+                data.anchor:set_pos(new_center)
+            end
         end
         if player.set_detach then player:set_detach() end
         if player.set_pos then player:set_pos(new_center) end
         if data.anchor and player.set_attach then
             player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
         end
+        if player.set_eye_offset then
+            player:set_eye_offset({ x = 0, y = eff_h * 10, z = -eff_r * 10 }, vector.zero())
+            data.last_sent_eye_z = -eff_r * 10
+            data.last_sent_eye_y = eff_h * 10
+        end
+        local target_pitch = atan2(eff_h, eff_r)
+        if player.set_look_horizontal then player:set_look_horizontal(cur_angle) end
+        if player.set_look_vertical then player:set_look_vertical(target_pitch) end
         deathstats.update_death_camera(player, 0)
     end
 end
@@ -3231,7 +5701,7 @@ function deathstats.restore_player_inventory_and_hand(player)
     local meta = player:get_meta()
     local restored = false
 
-    -- 1. Restore Main Inventory if stashed
+    -- Restore Main Inventory if stashed
     local stashed_main = (data and data.stashed_main)
     if not stashed_main and meta then
         local raw = meta:get_string("deathstats:stashed_main")
@@ -3260,7 +5730,7 @@ function deathstats.restore_player_inventory_and_hand(player)
         meta:set_string("deathstats:stashed_offhand", "")
     end
 
-    -- 2. Restore Hand Inventory Slot / Reach
+    -- Restore Hand Inventory Slot / Reach
     local saved_hand_size = (data and data.saved_hand_size)
     local saved_hand_stack = (data and data.saved_hand_stack)
     if (not saved_hand_size or saved_hand_size == 0) and meta then
@@ -3296,7 +5766,7 @@ function deathstats.restore_player_inventory_and_hand(player)
         if meta then meta:set_string("deathstats:stashed_hand", "") end
     end
 
-    -- 4. Strip any deathstats:camera_hand if it leaked into main/craft/offhand
+    -- Strip any deathstats:camera_hand if it leaked into main/craft/offhand
     for _, list_name in ipairs({ "main", "craft", "offhand" }) do
         if inv.get_list and inv.set_stack and inv:get_list(list_name) then
             local list = inv:get_list(list_name)
@@ -3310,7 +5780,7 @@ function deathstats.restore_player_inventory_and_hand(player)
         end
     end
 
-    -- 5. Restore pointability and interaction range if player is alive
+    -- Restore pointability and interaction range if player is alive
     if player.get_hp and player:get_hp() > 0 and player.set_properties then
         player:set_properties({
             pointable = true,
@@ -3319,6 +5789,52 @@ function deathstats.restore_player_inventory_and_hand(player)
     end
 
     return restored
+end
+
+--- Hide all external HUD bars (hudbars, hunger, stamina) for a player during death sequence
+---@param player ObjectRef The deceased player object
+function deathstats.hide_all_hudbars(player)
+    if not player or not player:is_player() then return end
+    local name = player:get_player_name()
+
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.hide then
+        deathstats.compat_hudbars.hide(player)
+    else
+        local hb_mod = rawget(_G, "hb") or hb
+        if hb_mod and hb_mod.hudtables and hb_mod.hide_hudbar and name then
+            for id, ht in pairs(hb_mod.hudtables) do
+                if ht.hudstate and ht.hudstate[name] and ht.hudids and ht.hudids[name] then
+                    hb_mod.hide_hudbar(player, id)
+                end
+            end
+        end
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.hide_standalone_huds then
+        deathstats.compat_hunger.hide_standalone_huds(player)
+    end
+end
+
+--- Restore all external HUD bars (hudbars, hunger, stamina) for a player on respawn
+---@param player ObjectRef The respawned player object
+function deathstats.restore_all_hudbars(player)
+    if not player or not player:is_player() then return end
+    local name = player:get_player_name()
+
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.unhide then
+        deathstats.compat_hudbars.unhide(player)
+    else
+        local hb_mod = rawget(_G, "hb") or hb
+        if hb_mod and hb_mod.hudtables and hb_mod.unhide_hudbar and name then
+            for id, ht in pairs(hb_mod.hudtables) do
+                if ht.hudstate and ht.hudstate[name] and ht.hudids and ht.hudids[name] then
+                    hb_mod.unhide_hudbar(player, id)
+                end
+            end
+        end
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.restore_standalone_huds then
+        deathstats.compat_hunger.restore_standalone_huds(player)
+    end
 end
 
 --- Switch player camera to death perspective (smooth circular orbit around corpse/bones)
@@ -3361,7 +5877,7 @@ function deathstats.set_death_camera(player, death_info)
     end
     deathstats.zero_player_velocity(player)
 
-    -- 1. Determine ground surface and orbit center
+    -- Determine ground surface and orbit center
     local meta = player:get_meta()
     local saved_corpse = nil
     if meta then
@@ -3384,7 +5900,7 @@ function deathstats.set_death_camera(player, death_info)
     local in_liquid = deathstats.is_in_liquid(ppos, death_info)
     local orbit_center = (in_liquid and corpse_pos) or bones_pos or corpse_pos
 
-    -- 2. Cache original player properties and armor groups for clean respawn restoration
+    -- Cache original player properties and armor groups for clean respawn restoration
     local props = player:get_properties() or {}
     local old_visual_size = copy(props.visual_size or { x = 1, y = 1, z = 1 })
     local old_collisionbox = copy(props.collisionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 })
@@ -3460,7 +5976,7 @@ function deathstats.set_death_camera(player, death_info)
         player:set_armor_groups({ immortal = 1, fall_damage_add_percent = -100 })
     end
 
-    -- 4. Extract player visuals across skin mods and spawn corpse placeholder entity
+    -- Extract player visuals across skin mods and spawn corpse placeholder entity
     local visuals = deathstats.get_player_visuals(player)
     if saved_corpse then
         if saved_corpse.mesh then visuals.mesh = saved_corpse.mesh end
@@ -3487,33 +6003,35 @@ function deathstats.set_death_camera(player, death_info)
         }))
     end
 
+    local lb = deathstats.last_blow[name]
     local corpse = nil
     if not expect_bones then
-        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player)
+        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb)
     end
     local particle_spawners = nil
+    local current_effect_type = nil
     if deathstats.config.enable_corpse_particles ~= false then
         local particle_pos = bones_pos or corpse_pos
-        particle_spawners = deathstats.spawn_corpse_particles(particle_pos, death_info)
+        particle_spawners, current_effect_type = deathstats.spawn_corpse_particles(particle_pos, death_info, corpse)
     end
     if not expect_bones and not corpse and core.after then
         core.after(0.2, function()
             local p = core.get_player_by_name(name)
             local cdata = deathstats.player_camera_data[name]
             if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse and not cdata.has_bones and not cdata.expect_bones then
-                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p)
+                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p, death_info, lb)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
                     cdata.corpse_wielditem = deathstats.get_corpse_wielditem(retry_corpse)
                 end
                 if deathstats.config.enable_corpse_particles ~= false and not cdata.particle_spawners then
-                    cdata.particle_spawners = deathstats.spawn_corpse_particles(corpse_pos, death_info)
+                    cdata.particle_spawners, cdata.current_effect_type = deathstats.spawn_corpse_particles(corpse_pos, death_info, retry_corpse)
                 end
             end
         end)
     end
 
-    -- 5. Hide the real player (ghost), nametag, and lock in first-person camera mode
+    -- Hide the real player (ghost), nametag, and lock in first-person camera mode
     if player.set_nametag_attributes then
         player:set_nametag_attributes({
             text = "",
@@ -3547,12 +6065,21 @@ function deathstats.set_death_camera(player, death_info)
         if children then
             for _, child in ipairs(children) do
                 if child and (not child.is_valid or child:is_valid()) and child ~= corpse then
+                    local cent = child.get_luaentity and child:get_luaentity()
+                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
                     if child.set_properties then
-                        child:set_properties({
-                            is_visible = false,
-                            visual_size = { x = 0, y = 0, z = 0 },
-                            pointable = false,
-                        })
+                        if is_arrow then
+                            child:set_properties({
+                                is_visible = false,
+                                pointable = false,
+                            })
+                        else
+                            child:set_properties({
+                                is_visible = false,
+                                visual_size = { x = 0, y = 0, z = 0 },
+                                pointable = false,
+                            })
+                        end
                     end
                 end
             end
@@ -3571,16 +6098,7 @@ function deathstats.set_death_camera(player, death_info)
         minimap = false,
         wielditem = false,
     })
-    if deathstats.compat_hudbars and deathstats.compat_hudbars.hide then
-        deathstats.compat_hudbars.hide(player)
-    else
-        local hb_mod = rawget(_G, "hb")
-        if hb_mod and hb_mod.hudtables and hb_mod.hide_hudbar then
-            for id in pairs(hb_mod.hudtables) do
-                hb_mod.hide_hudbar(player, id)
-            end
-        end
-    end
+    deathstats.hide_all_hudbars(player)
 
     -- Notify player_api / default that player is attached so standard animation steps are bypassed
     deathstats.set_engine_player_attached(name, true)
@@ -3599,20 +6117,72 @@ function deathstats.set_death_camera(player, death_info)
     local radius = deathstats.config.orbit_radius or 3.2
     local height = deathstats.config.orbit_height or 1.5
     local speed = deathstats.config.orbit_speed or 0.4
-    local radius_dm = math.floor(radius * 10)
-    local height_dm = math.floor(height * 10)
+    local initial_pitch = atan2(height, radius)
 
-    -- Set camera eye offset projecting backwards by radius and up by height
-    if player.set_eye_offset then
-        player:set_eye_offset({ x = 0, y = height_dm, z = -radius_dm }, vector.zero())
+    -- Determine initial camera orbit angle:
+    -- When ragdoll functionality is enabled, position camera looking towards the dead player
+    -- from where the last lethal force originated (punch, explosion, projectile, knockback).
+    local initial_angle = visuals.yaw or 0
+    if deathstats.config.enable_corpse_ragdoll ~= false then
+        local force_dir = nil
+        local cvel = (corpse and corpse.get_velocity and corpse:get_velocity())
+        if not cvel and corpse and corpse.get_luaentity then
+            local clua = corpse:get_luaentity()
+            cvel = clua and clua._velocity
+        end
+
+        -- Check corpse initial horizontal velocity (impulse from last blow)
+        if cvel and (cvel.x * cvel.x + cvel.z * cvel.z >= 0.01) then
+            force_dir = safe_normalize({ x = cvel.x, y = 0, z = cvel.z })
+        end
+
+        -- Check recent punch direction
+        if not force_dir then
+            local last_punch = name and deathstats.recent_punches[name]
+            if last_punch and last_punch.hitter_pos and orbit_center then
+                local d = vector.direction(last_punch.hitter_pos, orbit_center)
+                if d.x ~= 0 or d.z ~= 0 then
+                    force_dir = safe_normalize({ x = d.x, y = 0, z = d.z })
+                end
+            elseif last_punch and last_punch.dir and (last_punch.dir.x ~= 0 or last_punch.dir.z ~= 0) then
+                force_dir = safe_normalize({ x = last_punch.dir.x, y = 0, z = last_punch.dir.z })
+            end
+        end
+
+        -- Check lethal blow reason object
+        if not force_dir and lb and lb.reason and lb.reason.object and lb.reason.object.get_pos and orbit_center then
+            local opos = lb.reason.object:get_pos()
+            if opos then
+                local d = vector.direction(opos, orbit_center)
+                if d.x ~= 0 or d.z ~= 0 then
+                    force_dir = safe_normalize({ x = d.x, y = 0, z = d.z })
+                end
+            end
+        end
+
+        -- Check lethal blow residual velocity
+        if not force_dir and lb and lb.velocity then
+            local vx, vz = lb.velocity.x or 0, lb.velocity.z or 0
+            if vx * vx + vz * vz >= 0.25 then
+                force_dir = safe_normalize({ x = vx, y = 0, z = vz })
+            end
+        end
+
+        if force_dir and (force_dir.x ~= 0 or force_dir.z ~= 0) then
+            -- With eye offset -R backwards along camera line-of-sight, the camera look direction
+            -- for yaw angle θ is (-sin(θ), 0, cos(θ)). Setting this equal to force_dir (pointing
+            -- from the force source towards the player) positions the camera at the source of force:
+            initial_angle = (atan2(-force_dir.x, force_dir.z) + 2 * math.pi) % (2 * math.pi)
+        end
     end
 
-    -- 6. Setup stationary camera anchor and attach player at orbit center
-    -- Attaching to an anchor bypasses Luanti client physics, gravity, and fall damage completely.
-    local anchor_pos = orbit_center
-    local anchor = core.add_entity(anchor_pos, "deathstats:camera_anchor")
+    -- Setup camera anchor directly at orbit_center (corpse / bones position).
+    -- By stationing the anchor at orbit_center and co-locating the player's base position at orbit_center,
+    -- player:set_look_horizontal(angle) sends TOCLIENT_MOVE_PLAYER with Δ = 0, completely eliminating
+    -- the 20Hz tug-of-war position snap between the client prediction and server anchor!
+    local anchor = core.add_entity(orbit_center, "deathstats:camera_anchor")
     if anchor then
-        anchor:set_pos(anchor_pos)
+        anchor:set_pos(orbit_center)
         if anchor.set_properties then
             anchor:set_properties({
                 is_visible = false,
@@ -3624,32 +6194,55 @@ function deathstats.set_death_camera(player, death_info)
                 show_on_minimap = false,
             })
         end
+        local cvel = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
+        local is_moving = vector.length(cvel) >= 0.05
+        if is_moving then
+            if anchor.set_velocity then
+                anchor:set_velocity(cvel)
+            end
+            local cacc = (corpse and corpse.get_acceleration and corpse:get_acceleration()) or vector.zero()
+            if anchor.set_acceleration then
+                anchor:set_acceleration(cacc)
+            end
+        end
     end
-    if player.set_pos then player:set_pos(anchor_pos) end
+    if player.set_pos then player:set_pos(orbit_center) end
     if anchor and player.set_attach then
         player:set_attach(anchor, "", vector.zero(), vector.zero(), false)
     end
 
-    local initial_angle = visuals.yaw or 0
-    local initial_pitch = atan2(height, radius)
+    -- Project camera backwards and upwards using floating-point eye offset (in decimeters: 1 dm = 0.1 node)
+    if player.set_eye_offset then
+        player:set_eye_offset({ x = 0, y = height * 10, z = -radius * 10 }, vector.zero())
+    end
 
     if player.set_look_horizontal then player:set_look_horizontal(initial_angle) end
     if player.set_look_vertical then player:set_look_vertical(initial_pitch) end
+
+    local cvel_init = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
+    local has_motion = vector.length(cvel_init) >= 0.05
 
     deathstats.player_camera_data[name] = {
         has_bones = (bones_pos ~= nil),
         bones_pos = bones_pos,
         expect_bones = expect_bones,
         corpse_pos = (not expect_bones) and corpse_pos or nil,
+        initial_death_pos = corpse_pos,
         corpse_visuals = (not expect_bones) and visuals or nil,
         orbit_center = orbit_center,
         orbit_angle = initial_angle,
         orbit_radius = radius,
         orbit_height = height,
+        nominal_ratio = height / math.max(0.1, radius),
+        eff_radius = radius,
+        eff_height = height,
+        last_sent_eye_z = -radius * 10,
+        last_sent_eye_y = height * 10,
         orbit_speed = speed,
         corpse = corpse,
         corpse_wielditem = deathstats.get_corpse_wielditem(corpse),
         anchor = anchor,
+        corpse_settled = (not corpse) or (not has_motion),
         old_armor_groups = old_armor_groups,
         old_is_visible = old_is_visible,
         old_visual_size = old_visual_size,
@@ -3664,10 +6257,14 @@ function deathstats.set_death_camera(player, death_info)
         saved_hand_stack = saved_hand_stack,
         stashed_main = stashed_main,
         death_info = death_info,
+        last_blow = lb,
         particle_spawners = particle_spawners,
+        current_effect_type = current_effect_type,
+        arrows_transferred = false,
+        corpse_settled_particles_checked = false,
     }
 
-    -- 7. Immediately orient camera to starting orbit vantage
+    -- Immediately orient camera to starting orbit vantage
     deathstats.update_death_camera(player, 0)
 end
 
@@ -3679,12 +6276,12 @@ function deathstats.reset_camera(player, is_leaving)
     local name = player:get_player_name()
     local data = deathstats.player_camera_data[name]
 
-    -- 1. Detach player from camera anchor
+    -- Detach player from camera anchor
     if player.set_detach then
         player:set_detach()
     end
 
-    -- 2. Remove corpse placeholder, camera anchor entities, and particle spawners
+    -- Remove corpse placeholder, camera anchor entities, and particle spawners
     if data then
         if data.particle_spawners then
             for _, pid in ipairs(data.particle_spawners) do
@@ -3693,8 +6290,30 @@ function deathstats.reset_camera(player, is_leaving)
             data.particle_spawners = nil
         end
         if data.corpse then
-            deathstats.remove_corpse(data.corpse)
-            data.corpse = nil
+            local decay = deathstats.config.corpse_decay_time or 180
+            if decay > 0 and not is_leaving then
+                -- Check if player already has an active persistent corpse; dissolve older one to prevent spam
+                if deathstats.player_corpses[name] and deathstats.player_corpses[name] ~= data.corpse then
+                    deathstats.dissolve_corpse(deathstats.player_corpses[name])
+                end
+                deathstats.player_corpses[name] = data.corpse
+                local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
+                if luaent then
+                    luaent._decay_time = core.get_gametime() + decay
+                    luaent._persisted_after_respawn = true
+                end
+                data.corpse = nil
+                data.corpse_wielditem = nil
+            else
+                deathstats.remove_corpse(data.corpse)
+                data.corpse = nil
+                if data.corpse_wielditem then
+                    if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
+                        data.corpse_wielditem:remove()
+                    end
+                    data.corpse_wielditem = nil
+                end
+            end
         end
         if data.corpse_wielditem then
             if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
@@ -3708,7 +6327,7 @@ function deathstats.reset_camera(player, is_leaving)
         end
     end
 
-    -- 3. Restore player armor groups
+    -- Restore player armor groups
     if data and data.old_armor_groups then
         if player.set_armor_groups then
             player:set_armor_groups(data.old_armor_groups)
@@ -3722,10 +6341,10 @@ function deathstats.reset_camera(player, is_leaving)
     -- Clear player_attached flag
     deathstats.set_engine_player_attached(name, nil)
 
-    -- 4. Restore original inventory and hand reach (verified against in-memory data and persistent metadata)
+    -- Restore original inventory and hand reach (verified against in-memory data and persistent metadata)
     deathstats.restore_player_inventory_and_hand(player)
 
-    -- 5. Restore player physical and visual properties & nametag
+    -- Restore player physical and visual properties & nametag
     if data then
         if player.set_nametag_attributes then
             if data.old_nametag_attributes then
@@ -3796,22 +6415,22 @@ function deathstats.reset_camera(player, is_leaving)
         return
     end
 
-    -- 5. Restore camera mode back to first person, then unlock to any mode
+    -- Restore camera mode back to first person, then unlock to any mode
     if player.set_camera then
         player:set_camera({ mode = "first" })
     end
 
-    -- 6. Reset eye offsets to zero
+    -- Reset eye offsets to zero
     if player.set_eye_offset then
         player:set_eye_offset(vector.zero(), vector.zero(), vector.zero())
     end
 
-    -- 7. Reset pitch back to horizontal eye level
+    -- Reset pitch back to horizontal eye level
     if player.set_look_vertical then
         player:set_look_vertical(0)
     end
 
-    -- 8. Restore standing animation (with deferred retries to ensure player_api handshake is complete)
+    -- Restore standing animation (with deferred retries to ensure player_api handshake is complete)
     local function restore_stand()
         if not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
@@ -3831,7 +6450,7 @@ function deathstats.reset_camera(player, is_leaving)
     core.after(0.2, restore_stand)
     core.after(0.5, restore_stand)
 
-    -- 9. Unlock camera to "any" after short delay
+    -- Unlock camera to "any" after short delay
     core.after(0.2, function()
         if not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
@@ -3840,7 +6459,7 @@ function deathstats.reset_camera(player, is_leaving)
         end
     end)
 
-    -- 9. Restore gameplay HUD flags and custom hudbars
+    -- Restore gameplay HUD flags and custom hudbars
     local is_hb_health = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar()
     local is_hb_breath = deathstats.compat_hudbars and deathstats.compat_hudbars.manages_breathbar and deathstats.compat_hudbars.manages_breathbar()
     player:hud_set_flags({
@@ -3851,19 +6470,7 @@ function deathstats.reset_camera(player, is_leaving)
         minimap = true,
         wielditem = true,
     })
-    if deathstats.compat_hudbars and deathstats.compat_hudbars.unhide then
-        deathstats.compat_hudbars.unhide(player)
-    else
-        local hb_mod = rawget(_G, "hb")
-        if hb_mod and hb_mod.hudtables and hb_mod.unhide_hudbar then
-            for id in pairs(hb_mod.hudtables) do
-                hb_mod.unhide_hudbar(player, id)
-            end
-        end
-    end
-    if deathstats.compat_hunger and deathstats.compat_hunger.restore_standalone_huds then
-        deathstats.compat_hunger.restore_standalone_huds(player)
-    end
+    deathstats.restore_all_hudbars(player)
 end
 
 -- Clean up corpse and camera data when a player leaves the server
@@ -3903,34 +6510,26 @@ core.register_on_leaveplayer(function(player)
     deathstats.respawn_immunity[name] = nil
 end)
 
--- Cleanly verify and restore inventory and hand on player join
-core.register_on_joinplayer(function(player)
-    if not player or not player:is_player() then return end
-    if player:get_hp() > 0 then
-        deathstats.restore_player_inventory_and_hand(player)
-    end
-end)
-
 -- Guard all interaction callbacks: orbiting dead players cannot punch, place, dig, or eat
-core.register_on_punchnode(function(pos, node, puncher, pointed_thing)
+core.register_on_punchnode(function(_pos, _node, puncher, _pointed_thing)
     if puncher and puncher:is_player() and deathstats.dead_players[puncher:get_player_name()] then
         return true
     end
 end)
 
-core.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, pointed_thing)
+core.register_on_placenode(function(_pos, _newnode, placer, _oldnode, _itemstack, _pointed_thing)
     if placer and placer:is_player() and deathstats.dead_players[placer:get_player_name()] then
         return true
     end
 end)
 
-core.register_on_dignode(function(pos, oldnode, digger)
+core.register_on_dignode(function(_pos, _oldnode, digger)
     if digger and digger:is_player() and deathstats.dead_players[digger:get_player_name()] then
         return true
     end
 end)
 
-core.register_on_item_eat(function(hp_change, replace_with_item, itemstack, user, pointed_thing)
+core.register_on_item_eat(function(_hp_change, _replace_with_item, itemstack, user, _pointed_thing)
     if user and user:is_player() and deathstats.dead_players[user:get_player_name()] then
         return itemstack
     end
@@ -3993,26 +6592,32 @@ function deathstats.reset_player_effects(player, is_leaving)
     if not player or not player:is_player() then return end
     local name = player:get_player_name()
 
-    -- 1. Wipe in-memory death state for this player
+    -- Wipe in-memory death state for this player
     deathstats.dead_players[name] = nil
     deathstats.is_respawning[name] = nil
     deathstats.active_animations[name] = nil
     deathstats.recent_starvations[name] = nil
     deathstats.recent_dehydrations[name] = nil
+    deathstats.last_blow[name] = nil
+    if deathstats.fall_peaks then
+        deathstats.fall_peaks[name] = nil
+    end
 
-    -- 2. Clear all death and scoreboard HUD elements
+    -- Clear all death and scoreboard HUD elements
     deathstats.clear_death_hud(player)
     if deathstats.hide_scoreboard_hud then
         deathstats.hide_scoreboard_hud(player)
     end
 
-    -- 3. Close any open death screen or statistics formspecs
+    -- Close any open death screen or statistics formspecs
     core.close_formspec(name, "deathstats:death")
+    core.close_formspec(name, "deathstats:photo_mode")
     core.close_formspec(name, "deathstats:lifetime")
     core.close_formspec(name, "deathstats:death_screen")
     core.close_formspec(name, "deathstats:more_stats")
+    core.close_formspec(name, "deathstats:corpse_epitaph")
 
-    -- 4. Restore camera perspective, eye offset, fov, gameplay HUDs, and standing animation
+    -- Restore camera perspective, eye offset, fov, gameplay HUDs, and standing animation
     deathstats.reset_camera(player, is_leaving)
 end
 
@@ -4075,7 +6680,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
     if not player or not player:is_player() then return end
     local name = player:get_player_name()
 
-    -- 1. Strictly guard against repeating death loops:
+    -- Strictly guard against repeating death loops:
     -- If player is already dead and death sequence is active, NEVER re-trigger
     if deathstats.dead_players[name] then
         return
@@ -4085,7 +6690,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         deathstats.hide_scoreboard_hud(player)
     end
 
-    -- 2. Hide gameplay HUD elements (hotbar, healthbar, minimap, crosshair, wielditem) for clean cinematic death screen
+    -- Hide gameplay HUD elements (hotbar, healthbar, minimap, crosshair, wielditem) for clean cinematic death screen
     player:hud_set_flags({
         crosshair = false,
         hotbar = false,
@@ -4094,21 +6699,9 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         minimap = false,
         wielditem = false,
     })
-    if deathstats.compat_hudbars and deathstats.compat_hudbars.hide then
-        deathstats.compat_hudbars.hide(player)
-    else
-        local hb_mod = rawget(_G, "hb")
-        if hb_mod and hb_mod.hudtables and hb_mod.hide_hudbar then
-            for id in pairs(hb_mod.hudtables) do
-                hb_mod.hide_hudbar(player, id)
-            end
-        end
-    end
-    if deathstats.compat_hunger and deathstats.compat_hunger.hide_standalone_huds then
-        deathstats.compat_hunger.hide_standalone_huds(player)
-    end
+    deathstats.hide_all_hudbars(player)
 
-    -- 3. Analyze death or recover previous death info for reconnecting dead player
+    -- Analyze death or recover previous death info for reconnecting dead player
     local data = deathstats.get_player_data(player)
     local death_info
     local meta = player:get_meta()
@@ -4170,16 +6763,16 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         deathstats.save_player_stats(name)
     end
 
-    -- 5. Camera: switch to cinematic circular orbit around corpse
+    -- Camera: switch to cinematic circular orbit around corpse
     deathstats.set_death_camera(player, death_info)
 
-    -- 6. Play random death audio
+    -- Play random death audio
     deathstats.play_death_sound(player)
 
-    -- 7. Clear any old HUDs
+    -- Clear any old HUDs
     deathstats.clear_death_hud(player)
 
-    -- 8. Setup HUD Elements positioned down around the horizon
+    -- Setup HUD Elements positioned down around the horizon
     local huds = {}
 
     -- A. Fullscreen Splatter Vignette Overlay (Thematic per death type)
@@ -4259,7 +6852,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
 
     deathstats.active_huds[name] = huds
 
-    -- 9. Display side-docked death formspec immediately to capture input and prevent player movement
+    -- Display side-docked death formspec immediately to capture input and prevent player movement
     deathstats.show_death_formspec(player, death_info)
 
     -- Trigger HUD banner animation if enabled
@@ -4298,10 +6891,10 @@ function deathstats.respawn_player(player)
     -- Cancel any residual downward fall velocity
     deathstats.zero_player_velocity(player)
 
-    -- 1. Cleanly reset all death screen effects, HUDs, physics, camera, and state
+    -- Cleanly reset all death screen effects, HUDs, physics, camera, and state
     deathstats.reset_player_effects(player)
 
-    -- 2. Trigger engine respawn (invokes core.register_on_respawnplayer)
+    -- Trigger engine respawn (invokes core.register_on_respawnplayer)
     player:respawn()
 
     deathstats.is_respawning[name] = nil
@@ -4335,6 +6928,34 @@ function deathstats.on_player_respawn(player)
         meta:set_string("deathstats:orig_mesh", "")
         meta:set_string("deathstats:orig_visual_size", "")
         meta:set_string("deathstats:orig_yaw", "")
+    end
+
+    -- Send death coordinates chat message if enabled
+    if deathstats.config.chat_death_coords ~= false then
+        local data = deathstats.players[name]
+        local last = data and data.last_life
+        local ldr = deathstats.last_death_reason and deathstats.last_death_reason[name]
+        local pos = (last and last.death_pos) or (ldr and ldr.death_pos) or (ldr and ldr.pos)
+        if pos then
+            local depth = (last and last.depth_desc) or (ldr and ldr.depth_desc) or deathstats.get_depth_description(pos.y)
+            local biome = (last and last.biome_name) or (ldr and ldr.biome_name) or deathstats.get_biome_at_pos(pos)
+            core.chat_send_player(name, core.colorize(deathstats.colors.text_gold, "[DeathStats] ") ..
+                core.colorize(deathstats.colors.text_white, string.format("You died at (%d, %d, %d) in %s (%s).",
+                    pos.x, pos.y, pos.z, biome, depth)))
+        end
+    end
+
+    -- Send active vendetta prompt if revenge system is enabled
+    if deathstats.config.enable_revenge ~= false then
+        local pdata = deathstats.players[name]
+        local v_target = pdata and pdata.current_run and pdata.current_run.vendetta_target
+        if v_target then
+            core.chat_send_player(name, core.colorize(deathstats.colors.text_crimson, "[DeathStats] ") ..
+                core.colorize(deathstats.colors.text_gold, "Vendetta Active: ") ..
+                core.colorize(deathstats.colors.text_white, "Slay ") ..
+                core.colorize(deathstats.colors.text_crimson, v_target) ..
+                core.colorize(deathstats.colors.text_white, " during this life to claim revenge!"))
+        end
     end
 
     -- Deferred reinforcement ticks to guarantee full health across engine/client respawn handshake
@@ -4373,6 +6994,162 @@ end
 --- Display the elevated death formspec with consistent padding above hotbar area
 ---@param player ObjectRef The deceased player object
 ---@param death_info table The death analysis metadata table containing cause, killer, and notes
+--- Show minimal photo mode overlay with single button to restore death UI
+---@param player ObjectRef The deceased player object
+function deathstats.show_photo_mode_formspec(player)
+    if not player then return end
+    local name = player:get_player_name()
+    local c = deathstats.colors
+    local fs = {
+        "formspec_version[6]",
+        "size[2.8,0.65]",
+        "position[0.96,0.94]",
+        "anchor[1.0,1.0]",
+        "no_prepends[]",
+        "bgcolor[" .. c.transparent .. ";both;" .. c.transparent .. "]",
+        "style_type[button;border=true;bgimg_middle=true]",
+        string.format("style[btn_show_ui;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+            c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border),
+        "button[0,0;2.8,0.65;btn_show_ui;        " .. F(S("SHOW UI")) .. "]",
+        "image[0.22,0.14;0.36,0.36;deathstats_icon_eye.png]",
+        "tooltip[btn_show_ui;" .. F(S("Restore Death Screen UI")) .. ";" .. c.tooltip_bg .. ";" .. c.text_gold .. "]",
+    }
+    core.show_formspec(name, "deathstats:photo_mode", table.concat(fs, ""))
+end
+
+--- Show corpse epitaph tombstone plaque formspec when living players right-click a settled corpse
+---@param clicker ObjectRef The living player inspecting the corpse
+---@param corpse_ref ObjectRef|table The corpse entity reference or luaentity table
+function deathstats.show_corpse_epitaph_formspec(clicker, corpse_ref)
+    if not clicker or not clicker:is_player() then return end
+    local clicker_name = clicker:get_player_name()
+    local luaent = corpse_ref
+    if corpse_ref and corpse_ref.get_luaentity then
+        luaent = corpse_ref:get_luaentity() or corpse_ref
+    end
+    if not luaent then return end
+
+    local pname = (luaent and luaent._player_name) or (corpse_ref and corpse_ref._player_name) or "An Adventurer"
+    local dinfo = (luaent and luaent._death_info) or (corpse_ref and corpse_ref._death_info) or {}
+    local last = (luaent and luaent._last_life) or (corpse_ref and corpse_ref._last_life) or {}
+    local cause = dinfo.reason_text or last.last_cause
+    if not cause or cause == "" then
+        if dinfo.category == "fall" and dinfo.fall_height then
+            cause = string.format(S("Fell %dm to their demise"), dinfo.fall_height)
+        elseif dinfo.fall_height then
+            cause = string.format(S("Fell %dm"), dinfo.fall_height)
+        else
+            cause = S("Met their untimely end")
+        end
+    elseif dinfo.fall_height and not cause:find("%d+m") then
+        cause = cause .. string.format(" (%dm)", dinfo.fall_height)
+    end
+    local weapon = dinfo.weapon_name or dinfo.weapon or last.last_weapon
+    local funny = dinfo.funny_note or last.last_funny or "May they rest in peace."
+    local time_alive = deathstats.format_time(last.time_alive or 0)
+
+    -- Build rich tooltips for Cause of Death, Survival Summary, and Inscripted Words
+    local cause_tt = { F(S("Cause of Death: @1", cause)) }
+    if dinfo.killer or dinfo.killer_name then
+        local k_name = dinfo.killer_name or dinfo.killer
+        if dinfo.killer_hp and dinfo.killer_max_hp then
+            table.insert(cause_tt, F(S("Slayer: @1 (@2/@3 HP)", k_name, dinfo.killer_hp, dinfo.killer_max_hp)))
+        else
+            table.insert(cause_tt, F(S("Slayer: @1", k_name)))
+        end
+    end
+    if weapon and weapon ~= "" and weapon ~= "None" then
+        table.insert(cause_tt, F(S("Weapon: @1", weapon)))
+    end
+    if dinfo.fall_height then
+        table.insert(cause_tt, F(S("Fall Distance: @1m", dinfo.fall_height)))
+    end
+    local death_pos = dinfo.pos or (last and last.death_pos)
+    if death_pos then
+        table.insert(cause_tt, string.format("Location: (%d, %d, %d)",
+            math.floor(death_pos.x + 0.5), math.floor(death_pos.y + 0.5), math.floor(death_pos.z + 0.5)))
+    end
+
+    local surv_tt = { F(S("Survived: @1", time_alive)) }
+    if (last.blocks_mined and last.blocks_mined > 0) or (last.total_ores and last.total_ores > 0) then
+        table.insert(surv_tt, F(S("Mining: @1 blocks (@2 ores)",
+            deathstats.format_number(last.blocks_mined or 0), deathstats.format_number(last.total_ores or 0))))
+    end
+    if (last.damage_dealt and last.damage_dealt > 0) or (last.damage_taken and last.damage_taken > 0) then
+        table.insert(surv_tt, F(S("Combat: @1 dealt / @2 taken",
+            deathstats.format_number(last.damage_dealt or 0), deathstats.format_number(last.damage_taken or 0))))
+    end
+    if last.mobs_killed and last.mobs_killed > 0 then
+        table.insert(surv_tt, F(S("Mobs Slain: @1", deathstats.format_number(last.mobs_killed))))
+    end
+    if last.players_killed and last.players_killed > 0 then
+        table.insert(surv_tt, F(S("Players Slain: @1", deathstats.format_number(last.players_killed))))
+    end
+    if last.distance_traveled and last.distance_traveled > 0 then
+        table.insert(surv_tt, string.format("Distance Traveled: %.1f m", last.distance_traveled))
+    end
+
+    local funny_tt = {
+        F(S("Epitaph in Memory of @1:", pname)),
+        "\"" .. F(funny) .. "\"",
+    }
+
+    local c = deathstats.colors
+    local fs = {
+        "formspec_version[6]",
+        "size[8.0,5.4]",
+        "position[0.5,0.5]",
+        "anchor[0.5,0.5]",
+        "no_prepends[]",
+        "bgcolor[" .. c.transparent .. ";both;" .. c.transparent .. "]",
+
+        -- Stone plaque modal box
+        "box[0.3,0.3;7.4,4.8;" .. c.card_modal .. "]",
+        "box[0.3,0.3;7.4,0.08;" .. c.btn_secondary_border .. "]",
+        "box[0.3,5.02;7.4,0.08;" .. c.btn_secondary_border .. "]",
+        "box[0.3,0.3;0.08,4.8;" .. c.btn_secondary_border .. "]",
+        "box[7.62,0.3;0.08,4.8;" .. c.btn_secondary_border .. "]",
+
+        -- Header
+        "image[0.6,0.5;0.6,0.6;deathstats_icon_skull.png]",
+        string.format("style_type[label;textcolor=%s]", c.text_gold),
+        "label[1.4,0.75;" .. F(S("IN MEMORIAM")) .. "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
+        "label[1.4,1.05;" .. F(S("Here lies @1", pname)) .. "]",
+
+        -- Details Inset
+        "box[0.6,1.4;6.8,2.8;" .. c.card_inset .. "]",
+        string.format("style_type[label;textcolor=%s]", c.text_crimson),
+        "label[0.9,1.72;" .. F(S("Cause of Death:")) .. "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
+        "label[0.9,2.05;" .. F(deathstats.truncate_str(cause, 45)) .. "]",
+        "tooltip[0.8,1.60;6.4,0.65;" .. table.concat(cause_tt, "\n") .. ";" .. c.tooltip_bg .. ";" .. c.text_gold .. "]",
+
+        string.format("style_type[label;textcolor=%s]", c.text_gold),
+        "label[0.9,2.45;" .. F(S("Time Survived:")) .. "]",
+        string.format("style_type[label;textcolor=%s]", c.text_white),
+        "label[0.9,2.78;" .. F(time_alive) .. (weapon and weapon ~= "None" and ("  |  " .. F(weapon)) or "") .. "]",
+        "tooltip[0.8,2.35;6.4,0.65;" .. table.concat(surv_tt, "\n") .. ";" .. c.tooltip_bg .. ";" .. c.text_gold .. "]",
+
+        string.format("style_type[label;textcolor=%s]", c.text_muted),
+        "label[0.9,3.18;" .. F(S("Inscripted Words:")) .. "]",
+        string.format("style_type[label;textcolor=%s]", c.text_gold),
+        "label[0.9,3.52;\"" .. F(deathstats.truncate_str(funny, 50)) .. "\"]",
+        "tooltip[0.8,3.10;6.4,0.65;" .. table.concat(funny_tt, "\n") .. ";" .. c.tooltip_bg .. ";" .. c.text_gold .. "]",
+
+        -- Close Button
+        "style_type[button;border=true;bgimg_middle=true]",
+        string.format("style[btn_close_epitaph;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+            c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border),
+        "button[2.8,4.4;2.4,0.55;btn_close_epitaph;" .. F(S("CLOSE")) .. "]",
+    }
+
+    core.show_formspec(clicker_name, "deathstats:corpse_epitaph", table.concat(fs, ""))
+end
+
+--- Display the elevated death formspec with consistent padding above hotbar area
+---@param player ObjectRef The deceased player object
+---@param death_info table The death analysis metadata table containing cause, killer, and notes
 function deathstats.show_death_formspec(player, death_info)
     if not player then return end
     local name = player:get_player_name()
@@ -4406,69 +7183,138 @@ function deathstats.show_death_formspec(player, death_info)
 
     local c = deathstats.colors
 
+    -- Location formatting
+    local loc_str = nil
+    local loc_tooltip = nil
+    local death_p = last.death_pos or (death_info and (death_info.death_pos or death_info.pos))
+    if death_p then
+        local p = death_p
+        local depth = (death_info and death_info.depth_desc) or last.depth_desc or deathstats.get_depth_description(p.y)
+        local biome = (death_info and death_info.biome_name) or last.biome_name or deathstats.get_biome_at_pos(p)
+        if biome and biome ~= "" and biome ~= "Unknown" then
+            loc_str = string.format("(%d, %d, %d) · %s [%s]", p.x, p.y, p.z, depth, biome)
+        else
+            loc_str = string.format("(%d, %d, %d) · %s", p.x, p.y, p.z, depth)
+        end
+        loc_tooltip = string.format("Death Location: (X: %d, Y: %d, Z: %d)\nElevation: %s (Y=%d)%s",
+            p.x, p.y, p.z, depth, p.y,
+            (biome and biome ~= "" and biome ~= "Unknown") and ("\nBiome: " .. biome) or "")
+    end
+
+    -- Specific lethal context
+    local lethal_sub = nil
+    if (death_info and death_info.killer_hp) or last.killer_hp then
+        local khp = (death_info and death_info.killer_hp) or last.killer_hp
+        local kmax = (death_info and (death_info.killer_max_hp or death_info.killer_hp_max)) or last.killer_max_hp or last.killer_hp_max or 20
+        lethal_sub = string.format(S("Killer HP: %d / %d ❤️"), khp, kmax)
+    elseif (death_info and death_info.fall_height) or last.fall_height then
+        local fh = (death_info and death_info.fall_height) or last.fall_height
+        local fs_val = (death_info and death_info.fall_speed) or last.fall_speed
+        if fs_val then
+            lethal_sub = string.format(S("Fell %dm at %.1f m/s"), fh, fs_val)
+        else
+            lethal_sub = string.format(S("Fell %d meters"), fh)
+        end
+    end
+
     -- Compact sidebar card docked to the side leaving center death scene completely unobstructed
     local fs = {
         "formspec_version[6]",
-        "size[5.6,5.65]",
+        "size[5.6,6.2]",
         string.format("position[%.2f,0.88]", pos_x),
         string.format("anchor[%.2f,1.0]", anchor_x),
         "no_prepends[]",
         "bgcolor[" .. c.transparent .. ";both;" .. c.transparent .. "]",
 
         -- Dark stylized card container (width 5.0, margins 0.3)
-        "box[0.3,0.2;5.0,4.45;" .. c.card_sidebar .. "]",
+        "box[0.3,0.2;5.0,5.05;" .. c.card_sidebar .. "]",
         "box[0.3,0.2;5.0,0.05;" .. c.crimson_border .. "]",
-        "box[0.3,4.60;5.0,0.05;" .. c.crimson_border .. "]",
+        "box[0.3,5.20;5.0,0.05;" .. c.crimson_border .. "]",
+
+        -- Photo Mode Toggle Button (Top Right of Card)
+        string.format("style[btn_photo_mode;border=false;bgcolor=%s;bgcolor_hovered=#ffffff22;bordercolor=%s]",
+            c.transparent, c.transparent),
+        "image_button[4.75,0.30;0.40,0.40;deathstats_icon_camera.png;btn_photo_mode;]",
+        "tooltip[btn_photo_mode;" .. F(S("Photo Mode (Hide UI)")) .. ";" .. c.tooltip_bg .. ";" .. c.text_gold .. "]",
 
         -- Header: Last Life Summary
         "image[0.5,0.35;0.35,0.35;deathstats_icon_clock.png]",
         string.format("style_type[label;textcolor=%s]", c.text_gold),
-        "label[0.95,0.58;", F(S("Last Life Summary")), "]",
+        "label[0.95,0.56;", F(S("Last Life Summary")), "]",
         string.format("style_type[label;textcolor=%s]", c.text_white),
-        "label[0.95,0.85;", F(S("Survived: @1", time_str)), "]",
-
-        -- Row 1: Combat Stats
-        "image[0.5,1.15;0.32,0.32;deathstats_icon_sword.png]",
-        "label[0.95,1.38;", F(S("Damage: @1 dealt / @2 taken", dmg_dealt, dmg_taken)), "]",
-
-        -- Row 2: Kills
-        "image[0.5,1.57;0.32,0.32;deathstats_icon_skull.png]",
-        "label[0.95,1.80;", F(S("Slain: @1 mobs / @2 pvp", mobs_slain, players_slain)), "]",
-
-        -- Row 3: Mining
-        "image[0.5,1.99;0.32,0.32;deathstats_icon_pickaxe.png]",
-        "label[0.95,2.22;", F(S("Mined: @1 (@2 ores)", mined_str, ores_str)), "]",
-
-        -- Row 4: Items
-        "image[0.5,2.41;0.32,0.32;deathstats_icon_heart.png]",
-        "label[0.95,2.64;", F(S("Items: @1 made / @2 eaten", items_crafted, items_consumed)), "]",
-
-        -- Row 5: Fatal Blow Inset Box
-        "box[0.5,2.88;4.6,1.52;" .. c.card_inset .. "]",
-        string.format("style_type[label;textcolor=%s]", c.text_crimson),
-        "label[0.7,3.16;", F(S("Fatal Blow:")), "]",
-        string.format("style_type[label;textcolor=%s]", c.text_white),
-        "label[0.7,3.52;", F(deathstats.truncate_str(fatal_cause, 30)), "]",
-        "label[0.7,3.95;", F(deathstats.truncate_str(fatal_weapon, 20) .. "  |  " .. dist_str), "]",
-
-        -- Button Styling
-        "style_type[button;border=true;bgimg_middle=true]",
-        string.format("style[btn_try_again;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
-            c.btn_primary_bg, c.btn_primary_hover_bg, c.btn_primary_text, c.btn_primary_border, c.btn_primary_hover_border),
-        string.format("style[btn_more_stats;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
-            c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border),
-
-        -- Action Buttons side by side at bottom
-        "button[0.3,4.80;2.4,0.72;btn_try_again;", F(S("TRY AGAIN")), "]",
-        "button[2.9,4.80;2.4,0.72;btn_more_stats;", F(S("MORE STATS")), "]",
+        "label[0.95,0.82;", F(S("Survived: @1", time_str)), "]",
     }
+
+    if last.is_new_record then
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_gold))
+        table.insert(fs, "label[0.95,1.05;" .. F(S("★ NEW PERSONAL RECORD!")) .. "]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+    end
+
+    local row_offset = last.is_new_record and 0.22 or 0.0
+
+    -- Row 1: Combat Stats
+    table.insert(fs, string.format("image[0.5,%.2f;0.32,0.32;deathstats_icon_sword.png]", 1.15 + row_offset))
+    table.insert(fs, string.format("label[0.95,%.2f;%s]", 1.38 + row_offset, F(S("Damage: @1 dealt / @2 taken", dmg_dealt, dmg_taken))))
+
+    -- Row 2: Kills
+    table.insert(fs, string.format("image[0.5,%.2f;0.32,0.32;deathstats_icon_skull.png]", 1.57 + row_offset))
+    table.insert(fs, string.format("label[0.95,%.2f;%s]", 1.80 + row_offset, F(S("Slain: @1 mobs / @2 pvp", mobs_slain, players_slain))))
+
+    -- Row 3: Mining
+    table.insert(fs, string.format("image[0.5,%.2f;0.32,0.32;deathstats_icon_pickaxe.png]", 1.99 + row_offset))
+    table.insert(fs, string.format("label[0.95,%.2f;%s]", 2.22 + row_offset, F(S("Mined: @1 (@2 ores)", mined_str, ores_str))))
+
+    -- Row 4: Items
+    table.insert(fs, string.format("image[0.5,%.2f;0.32,0.32;deathstats_icon_heart.png]", 2.41 + row_offset))
+    table.insert(fs, string.format("label[0.95,%.2f;%s]", 2.64 + row_offset, F(S("Items: @1 made / @2 eaten", items_crafted, items_consumed))))
+
+    -- Row 5: Fatal Blow Inset Box (Expands gracefully with coordinates and lethal details)
+    local box_y = 2.85 + row_offset
+    local box_h = 2.20 - row_offset
+    table.insert(fs, string.format("box[0.5,%.2f;4.6,%.2f;%s]", box_y, box_h, c.card_inset))
+
+    local fatal_full_tt = string.format("Fatal Blow: %s\nWeapon: %s (Distance: %s)%s%s",
+        fatal_cause, fatal_weapon, dist_str,
+        loc_tooltip and ("\n" .. loc_tooltip) or "",
+        lethal_sub and ("\n" .. lethal_sub) or "")
+    table.insert(fs, string.format("tooltip[0.5,%.2f;4.6,%.2f;%s;%s;%s]", box_y, box_h, F(fatal_full_tt), c.tooltip_bg, c.text_gold))
+
+    table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_crimson))
+    table.insert(fs, string.format("label[0.7,%.2f;%s]", box_y + 0.25, F(S("Fatal Blow:"))))
+    table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+    table.insert(fs, string.format("label[0.7,%.2f;%s]", box_y + 0.58, F(deathstats.truncate_str(fatal_cause, 32))))
+    table.insert(fs, string.format("label[0.7,%.2f;%s]", box_y + 0.95, F(deathstats.truncate_str(fatal_weapon, 20) .. "  |  " .. dist_str)))
+
+    if loc_str then
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_gold))
+        table.insert(fs, string.format("label[0.7,%.2f;%s]", box_y + 1.30, F(deathstats.truncate_str(loc_str, 42))))
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+    end
+
+    if lethal_sub then
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_crimson))
+        table.insert(fs, string.format("label[0.7,%.2f;%s]", box_y + 1.62, F(lethal_sub)))
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+    end
+
+    -- Button Styling
+    table.insert(fs, "style_type[button;border=true;bgimg_middle=true]")
+    table.insert(fs, string.format("style[btn_try_again;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+        c.btn_primary_bg, c.btn_primary_hover_bg, c.btn_primary_text, c.btn_primary_border, c.btn_primary_hover_border))
+    table.insert(fs, string.format("style[btn_more_stats;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+        c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border))
+
+    -- Action Buttons side by side at bottom
+    table.insert(fs, string.format("button[0.3,5.40;2.4,0.68;btn_try_again;%s]", F(S("TRY AGAIN"))))
+    table.insert(fs, string.format("button[2.9,5.40;2.4,0.68;btn_more_stats;%s]", F(S("MORE STATS"))))
 
     core.show_formspec(name, "deathstats:death", table.concat(fs, ""))
 end
 
 --- Display the Lifetime Statistics Dashboard with transparent backdrop and accessible tabs
 ---@param player ObjectRef The player viewing statistics
----@param tab string|nil The active tab name ("overview", "ores", or "combat")
+---@param tab string|nil The active tab name ("overview", "records", "ores", or "combat")
 function deathstats.show_lifetime_stats_formspec(player, tab)
     if not player then return end
     local name = player:get_player_name()
@@ -4508,27 +7354,25 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
         "box[0.4,1.48;13.7,0.04;" .. c.tab_bar_sep .. "]",
     }
 
-    -- Tab Button Styles: active tab has high-contrast bright crimson + glowing border, inactive has distinct slate
+    -- 4 Tab Button Styles: active tab has high-contrast bright crimson + glowing border, inactive has distinct slate
     local tab_defs = {
-        { id = "tab_overview", key = "overview", x = 0.5 },
-        { id = "tab_ores",     key = "ores",     x = 5.1 },
-        { id = "tab_combat",   key = "combat",   x = 9.7 },
+        { id = "tab_overview", key = "overview", title = "Overview",       x = 0.5 },
+        { id = "tab_records",  key = "records",  title = "Personal Bests", x = 3.9 },
+        { id = "tab_ores",     key = "ores",     title = "Ores Breakdown", x = 7.3 },
+        { id = "tab_combat",   key = "combat",   title = "Combat Record",  x = 10.7 },
     }
     for _, t in ipairs(tab_defs) do
         if tab == t.key then
             table.insert(fs, string.format("style[%s;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
                 t.id, c.tab_active_bg, c.tab_active_hover_bg, c.tab_active_text, c.tab_active_border, c.tab_active_hover_border))
-            table.insert(fs, string.format("box[%.1f,1.45;4.3,0.07;%s]", t.x, c.active_strip))
+            table.insert(fs, string.format("box[%.1f,1.45;3.2,0.07;%s]", t.x, c.active_strip))
         else
             table.insert(fs, string.format("style[%s;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
                 t.id, c.tab_inactive_bg, c.tab_inactive_hover_bg, c.tab_inactive_text, c.tab_inactive_border, c.tab_inactive_hover_border))
         end
+        local label_txt = (tab == t.key) and ("▶ " .. t.title) or t.title
+        table.insert(fs, string.format("button[%.1f,0.85;3.2,0.58;%s;%s]", t.x, t.id, F(label_txt)))
     end
-
-    -- Tab Buttons
-    table.insert(fs, "button[0.5,0.85;4.3,0.58;tab_overview;" .. F(tab == "overview" and "▶ Overview" or "Overview") .. "]")
-    table.insert(fs, "button[5.1,0.85;4.3,0.58;tab_ores;" .. F(tab == "ores" and "▶ Ores Breakdown" or "Ores Breakdown") .. "]")
-    table.insert(fs, "button[9.7,0.85;4.3,0.58;tab_combat;" .. F(tab == "combat" and "▶ Combat Record" or "Combat Record") .. "]")
 
     if tab == "overview" then
         -- Overview Content: 2x2 grid with generous widths preventing text overflow
@@ -4553,15 +7397,74 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
         table.insert(fs, "label[1.5,4.18;" .. F(S("Total Ores Mined: @1", deathstats.format_number(life.total_ores or 0))) .. "]")
         table.insert(fs, "label[1.5,4.60;" .. F(S("Blocks Placed: @1", deathstats.format_number(life.blocks_placed or 0))) .. "]")
 
-        -- Card 4: Sustenance & Recent Cause (Bottom Right, formatted across multiple lines)
+        -- Card 4: Nemesis & Recent Cause (Bottom Right)
         table.insert(fs, "box[7.4,3.45;6.4,1.6;" .. c.card_panel .. "]")
         table.insert(fs, "image[7.6,3.55;0.4,0.4;deathstats_icon_heart.png]")
-        table.insert(fs, "label[8.2,3.75;" .. F(S("Items: @1 crafted / @2 eaten", deathstats.format_number(life.items_crafted or 0), deathstats.format_number(life.items_consumed or 0))) .. "]")
+        local nemesis_str = S("None")
+        local nemesis_max = 0
+        if life.killers_count then
+            for k, count in pairs(life.killers_count) do
+                if count > nemesis_max then
+                    nemesis_max = count
+                    local display_k = k
+                    if k:find(":") then
+                        display_k = deathstats.format_name(k)
+                    end
+                    nemesis_str = string.format("%s (%d deaths)", display_k, count)
+                end
+            end
+        end
+        table.insert(fs, "label[8.2,3.75;" .. F(S("Arch-Nemesis: @1", nemesis_str)) .. "]")
         table.insert(fs, "label[8.2,4.18;" .. F(S("Most Recent Cause:")) .. "]")
         table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_crimson))
         table.insert(fs, "label[8.2,4.58;" .. F(deathstats.truncate_str(life.last_cause or "None", 36)) .. "]")
         table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
 
+        local nemesis_tooltip = string.format("Arch-Nemesis: %s\nMost Recent Cause: %s", nemesis_str, life.last_cause or "None")
+        table.insert(fs, string.format("tooltip[7.4,3.45;6.4,1.6;%s;%s;%s]", F(nemesis_tooltip), c.tooltip_bg, c.text_gold))
+
+    elseif tab == "records" then
+        -- Personal Bests Showcase (Left Panel)
+        table.insert(fs, "box[0.7,1.65;6.4,3.4;" .. c.card_panel .. "]")
+        table.insert(fs, "image[0.9,1.75;0.4,0.4;deathstats_icon_trophy.png]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_gold))
+        table.insert(fs, "label[1.5,1.95;" .. F(S("Personal Bests (Single Life)")) .. "]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+        local pb = life.personal_bests or {}
+        table.insert(fs, "label[1.0,2.45;" .. F(S("Longest Life: @1", deathstats.format_time(pb.survival_time or 0))) .. "]")
+        table.insert(fs, "label[1.0,2.88;" .. F(S("Best Killstreak: @1", pb.killstreak or 0)) .. "]")
+        table.insert(fs, "label[1.0,3.31;" .. F(S("Most Kills in 1 Life: @1", pb.kills or 0)) .. "]")
+        table.insert(fs, "label[1.0,3.74;" .. F(S("Most Damage Dealt: @1", deathstats.format_number(pb.damage_dealt or 0))) .. "]")
+        table.insert(fs, "label[1.0,4.17;" .. F(S("Most Blocks Mined: @1", deathstats.format_number(pb.blocks_mined or 0))) .. "]")
+        table.insert(fs, "label[1.0,4.60;" .. F(S("Most Ores Mined: @1", deathstats.format_number(pb.total_ores or 0))) .. "]")
+
+        -- Cause-of-Death Distribution (Right Panel)
+        table.insert(fs, "box[7.4,1.65;6.4,3.4;" .. c.card_panel .. "]")
+        table.insert(fs, "image[7.6,1.75;0.4,0.4;deathstats_icon_skull.png]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_crimson))
+        table.insert(fs, "label[8.2,1.95;" .. F(S("Cause of Death Breakdown")) .. "]")
+        table.insert(fs, string.format("style_type[label;textcolor=%s]", c.text_white))
+
+        local cat_counts = life.deaths_by_category or {}
+        local total_d = life.deaths or 0
+        local cat_list = {}
+        for cat_name, count in pairs(cat_counts) do
+            table.insert(cat_list, { name = cat_name, count = count })
+        end
+        table.sort(cat_list, function(a, b) return a.count > b.count end)
+
+        if #cat_list == 0 then
+            table.insert(fs, "label[8.2,2.60;" .. F(S("No deaths recorded yet. Undefeated!")) .. "]")
+        else
+            for i, entry in ipairs(cat_list) do
+                if i <= 6 then
+                    local y = 2.15 + i * 0.42
+                    local pct = (total_d > 0) and math.floor((entry.count / total_d) * 100 + 0.5) or 0
+                    local cat_title = deathstats.format_name(entry.name)
+                    table.insert(fs, string.format("label[8.0,%.2f;%s]", y, F(string.format("%s: %d (%d%%)", cat_title, entry.count, pct))))
+                end
+            end
+        end
     elseif tab == "ores" then
         -- Ores Breakdown Table (Dynamic Scrollable 2-Column Grid)
         table.insert(fs, "box[0.7,1.65;13.1,3.4;" .. c.card_panel .. "]")
@@ -4602,7 +7505,12 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
                 end
                 table.insert(fs, "item_image[" .. (x + 0.1) .. "," .. (y - 0.06) .. ";0.38,0.38;" .. F(ore.name) .. "]")
                 table.insert(fs, "label[" .. (x + 0.65) .. "," .. (y + 0.13) .. ";" .. F(deathstats.truncate_str(ore.title, 22)) .. "]")
-                table.insert(fs, "label[" .. (x + (col_w - 1.85)) .. "," .. (y + 0.13) .. ";" .. F(deathstats.format_number(ore.count)) .. " mined]")
+                table.insert(fs, "label[" .. (x + (col_w - 1.85)) .. "," .. (y + 0.13) .. ";" .. F(deathstats.format_compact_number(ore.count)) .. " mined]")
+
+                local ore_tt = string.format("Ore / Mineral: %s\nTechnical Name: %s\nTotal Extracted: %s",
+                    ore.title, ore.name, deathstats.format_number(ore.count))
+                table.insert(fs, string.format("tooltip[%s,%.2f;%s,0.42;%s;%s;%s]",
+                    x, y - 0.08, col_w, F(ore_tt), c.tooltip_bg, c.text_gold))
             end
 
             if has_scroll then
@@ -4620,20 +7528,44 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
         -- Combat Details (Dynamic Scrollable 2-Column Grid)
         table.insert(fs, "box[0.7,1.65;13.1,3.4;" .. c.card_panel .. "]")
 
-        local mobs = life.mobs_slain or {}
-        local mob_list = {}
-        for mob_name, count in pairs(mobs) do
-            table.insert(mob_list, { name = mob_name, count = count, title = deathstats.format_name(mob_name) })
+        local combat_list = {}
+        local players = life.players_slain or {}
+        for pvictim, count in pairs(players) do
+            table.insert(combat_list, {
+                name = pvictim,
+                count = count,
+                title = pvictim, -- exact player username!
+                is_player = true,
+                icon = "deathstats_icon_sword.png",
+            })
         end
-        table.sort(mob_list, function(a, b) return a.count > b.count end)
+        local mobs = life.mobs_slain or {}
+        for mob_name, count in pairs(mobs) do
+            table.insert(combat_list, {
+                name = mob_name,
+                count = count,
+                title = deathstats.format_name(mob_name),
+                is_player = false,
+                icon = "deathstats_icon_skull.png",
+            })
+        end
+        table.sort(combat_list, function(a, b)
+            if a.count == b.count then
+                return a.title < b.title
+            end
+            return a.count > b.count
+        end)
 
-        local total_mob_types = #mob_list
-        table.insert(fs, "label[1.0,1.9;" .. F(S("Total Combat Slayings: @1 (@2 players, @3 mobs)", deathstats.format_number(kills), deathstats.format_number(life.players_killed or 0), deathstats.format_number(life.mobs_killed or 0))) .. "]")
+        local total_combat_types = #combat_list
+        table.insert(fs, "label[1.0,1.9;" .. F(S("Total Combat Slayings: @1 (@2 players, @3 mobs)",
+            deathstats.format_number(kills),
+            deathstats.format_number(life.players_killed or 0),
+            deathstats.format_number(life.mobs_killed or 0))) .. "]")
 
-        if total_mob_types == 0 and (life.players_killed or 0) == 0 then
+        if total_combat_types == 0 and (life.players_killed or 0) == 0 then
             table.insert(fs, "label[5.0,3.2;" .. F(S("No combat kills recorded yet. A peaceful record.")) .. "]")
         else
-            local total_rows = math.ceil(total_mob_types / 2)
+            local total_rows = math.ceil(total_combat_types / 2)
             local has_scroll = total_rows > 5
             local container_w = has_scroll and 12.4 or 12.8
             local col_w = has_scroll and 5.95 or 6.15
@@ -4645,7 +7577,7 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
                 table.insert(fs, "container[0.8,2.18]")
             end
 
-            for i, mob in ipairs(mob_list) do
+            for i, entry in ipairs(combat_list) do
                 local col = ((i - 1) % 2) + 1
                 local row = math.floor((i - 1) / 2)
                 local x = (col == 1) and 0.1 or col2_x
@@ -4654,9 +7586,14 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
                 if row % 2 == 1 then
                     table.insert(fs, "box[" .. x .. "," .. (y - 0.08) .. ";" .. col_w .. ",0.42;" .. c.row_alt .. "]")
                 end
-                table.insert(fs, "image[" .. (x + 0.1) .. "," .. (y - 0.04) .. ";0.35,0.35;deathstats_icon_skull.png]")
-                table.insert(fs, "label[" .. (x + 0.65) .. "," .. (y + 0.13) .. ";" .. F(deathstats.truncate_str(mob.title, 22)) .. "]")
-                table.insert(fs, "label[" .. (x + (col_w - 1.85)) .. "," .. (y + 0.13) .. ";" .. F(deathstats.format_number(mob.count)) .. " slain]")
+                table.insert(fs, string.format("image[%s,%.2f;0.35,0.35;%s]", x + 0.1, y - 0.04, entry.icon))
+                table.insert(fs, string.format("label[%s,%.2f;%s]", x + 0.65, y + 0.13, F(deathstats.truncate_str(entry.title, 22))))
+                table.insert(fs, string.format("label[%s,%.2f;%s]", x + (col_w - 1.85), y + 0.13, F(deathstats.format_number(entry.count)) .. " slain"))
+
+                local row_tt = string.format("%s: %s\nIdentifier: %s\nTotal Slain: %s",
+                    entry.is_player and "Player" or "Mob", entry.title, entry.name, deathstats.format_number(entry.count))
+                table.insert(fs, string.format("tooltip[%s,%.2f;%s,0.42;%s;%s;%s]",
+                    x, y - 0.08, col_w, F(row_tt), c.tooltip_bg, c.text_gold))
             end
 
             if has_scroll then
@@ -4673,12 +7610,19 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
 
     -- Bottom Buttons: Consistent styling and placement below content card
     table.insert(fs, "style_type[button;border=true;bgimg_middle=true]")
-    table.insert(fs, string.format("style[btn_back_death;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
-        c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border))
-    table.insert(fs, string.format("style[btn_modal_respawn;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
-        c.btn_primary_bg, c.btn_primary_hover_bg, c.btn_primary_text, c.btn_primary_border, c.btn_primary_hover_border))
-    table.insert(fs, "button[0.4,5.35;5.0,0.72;btn_back_death;" .. F(S("< BACK TO DEATH SCREEN")) .. "]")
-    table.insert(fs, "button[9.1,5.35;5.0,0.72;btn_modal_respawn;" .. F(S("TRY AGAIN")) .. "]")
+    local is_dead = deathstats.is_player_dead and deathstats.is_player_dead(player)
+    if is_dead then
+        table.insert(fs, string.format("style[btn_back_death;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+            c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_text, c.btn_secondary_border, c.btn_secondary_hover_border))
+        table.insert(fs, string.format("style[btn_modal_respawn;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+            c.btn_primary_bg, c.btn_primary_hover_bg, c.btn_primary_text, c.btn_primary_border, c.btn_primary_hover_border))
+        table.insert(fs, "button[0.4,5.35;5.0,0.72;btn_back_death;" .. F(S("< BACK TO DEATH SCREEN")) .. "]")
+        table.insert(fs, "button[9.1,5.35;5.0,0.72;btn_modal_respawn;" .. F(S("TRY AGAIN")) .. "]")
+    else
+        table.insert(fs, string.format("style[btn_close;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s;bordercolor_hovered=%s]",
+            c.btn_primary_bg, c.btn_primary_hover_bg, c.btn_primary_text, c.btn_primary_border, c.btn_primary_hover_border))
+        table.insert(fs, "button[4.75,5.35;5.0,0.72;btn_close;" .. F(S("CLOSE")) .. "]")
+    end
 
     core.show_formspec(name, "deathstats:lifetime", table.concat(fs, ""))
 end
