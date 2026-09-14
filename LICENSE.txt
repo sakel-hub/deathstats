@@ -465,16 +465,24 @@ Copyright (C) 2026 SaKeL
 
 **CC0-1.0, by SaKeL**
 
+- deathstats_badge_crown.png
+- deathstats_badge_hourglass.png
+- deathstats_badge_pickaxe.png
+- deathstats_badge_shield.png
+- deathstats_badge_sword.png
 - deathstats_blood_splatter.png
 - deathstats_drown_splatter.png
 - deathstats_fire_splatter.png
 - deathstats_lava_splatter.png
 - deathstats_icon_afk.png
+- deathstats_icon_camera.png
 - deathstats_icon_clock.png
+- deathstats_icon_eye.png
 - deathstats_icon_heart.png
 - deathstats_icon_pickaxe.png
 - deathstats_icon_ping.png
 - deathstats_icon_player.png
+- deathstats_icon_refresh.png
 - deathstats_icon_shield.png
 - deathstats_icon_skull.png
 - deathstats_icon_star.png
