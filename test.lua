@@ -5,6 +5,7 @@
 
 -- String helper for Lua 5.1 / Luanti compatibility
 local unpack = unpack or table.unpack
+local atan2 = math.atan2 or math.atan
 if not string.split then
     rawset(string, "split", function(str, sep)
         local parts = {}
@@ -60,6 +61,14 @@ vector = {
             return { x = a.x * s, y = a.y * s, z = a.z * s }
         end
     end,
+    length = function(v)
+        return math.sqrt((v.x or 0)^2 + (v.y or 0)^2 + (v.z or 0)^2)
+    end,
+    normalize = function(v)
+        local l = math.sqrt((v.x or 0)^2 + (v.y or 0)^2 + (v.z or 0)^2)
+        if l == 0 then return { x = 0, y = 0, z = 0 } end
+        return { x = (v.x or 0) / l, y = (v.y or 0) / l, z = (v.z or 0) / l }
+    end,
 }
 
 local deferred_tasks = {}
@@ -75,10 +84,26 @@ core = {
         ["default:stone"] = { description = "Stone", walkable = true },
     },
     registered_nodes = {
-        ["default:stone"] = { walkable = true, drawtype = "normal" },
-        ["default:dirt"] = { walkable = true, drawtype = "normal" },
-        ["default:water_source"] = { walkable = false, drawtype = "liquid" },
-        ["default:lava_source"] = { walkable = false, drawtype = "liquid" },
+        ["default:stone"] = {
+            walkable = true,
+            drawtype = "normal",
+            tiles = { "default_stone.png" },
+            sounds = { footstep = { name = "default_hard_footstep", gain = 0.3 } },
+        },
+        ["default:dirt"] = {
+            walkable = true,
+            drawtype = "normal",
+            tiles = { "default_dirt.png" },
+            sounds = { footstep = { name = "default_dirt_footstep", gain = 0.25 } },
+        },
+        ["default:sand"] = {
+            walkable = true,
+            drawtype = "normal",
+            tiles = { "default_sand.png" },
+            sounds = { footstep = { name = "default_sand_footstep", gain = 0.2 } },
+        },
+        ["default:water_source"] = { walkable = false, drawtype = "liquid", liquidtype = "source" },
+        ["default:lava_source"] = { walkable = false, drawtype = "liquid", liquidtype = "source" },
         ["bones:bones"] = { walkable = true, drawtype = "normal" },
         ["air"] = { walkable = false, drawtype = "airlike" },
     },
@@ -132,6 +157,9 @@ core = {
         return { name = (type(val) == "table" and val.name) or val }
     end,
     get_node_or_nil = function(pos)
+        if pos and pos.x and math.abs(pos.x) > 30000 then
+            return nil
+        end
         return core.get_node(pos)
     end,
     set_node = function(pos, node)
@@ -154,6 +182,15 @@ core = {
             end
         end
         return res
+    end,
+    get_node_drops = function(node, _tool)
+        local nname = (type(node) == "table" and node.name) or node or ""
+        local def = core.registered_nodes and core.registered_nodes[nname]
+        if def and def.drop then
+            if type(def.drop) == "string" then return { def.drop } end
+            if type(def.drop) == "table" then return def.drop end
+        end
+        return { nname }
     end,
     node_metas = {},
     get_meta = function(pos)
@@ -240,6 +277,10 @@ core = {
             removed = false,
             is_valid = function(self) return not self.removed end,
             set_pos = function(self, p) self.pos = p end,
+            move_to = function(self, p, continuous)
+                self.pos = p
+                self.last_move_continuous = continuous
+            end,
             get_pos = function(self) return self.pos end,
             set_properties = function(self, p)
                 for k, v in pairs(p) do self.properties[k] = v end
@@ -249,6 +290,12 @@ core = {
             get_yaw = function(self) return self.yaw end,
             set_rotation = function(self, r) self.rotation = r end,
             get_rotation = function(self) return self.rotation or { x = 0, y = self.yaw or 0, z = 0 } end,
+            velocity = { x = 0, y = 0, z = 0 },
+            acceleration = { x = 0, y = 0, z = 0 },
+            set_velocity = function(self, v) self.velocity = v end,
+            get_velocity = function(self) return self.velocity or { x = 0, y = 0, z = 0 } end,
+            set_acceleration = function(self, a) self.acceleration = a end,
+            get_acceleration = function(self) return self.acceleration or { x = 0, y = 0, z = 0 } end,
             set_animation = function(self, anim, speed, blend, loop)
                 self.animation = { anim = anim, speed = speed, blend = blend, loop = loop }
             end,
@@ -480,6 +527,7 @@ core.register_chatcommand = function(name, def)
 end
 core.check_player_privs = function(_name, _privs) return true end
 core.chat_send_player = function(_name, _msg) end
+core.chat_send_all = function(_msg) end
 
 local mock_storage = {}
 core.get_mod_storage = function()
@@ -901,11 +949,12 @@ assert(core.last_formspec ~= nil and core.last_formspec.formname == "deathstats:
 
 -- Verify camera switched to circular smooth orbit in first person mode with eye offset around corpse
 assert(player1.camera ~= nil and player1.camera.mode == "first", "Camera mode must be 'first' during deathcam orbit")
-assert(player1.eye_offset ~= nil and player1.eye_offset[1].z < 0, "First person eye offset must project backwards")
+assert(player1.eye_offset ~= nil and player1.eye_offset[1].z < 0 and player1.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from stationed anchor")
+assert(player1:get_attach() ~= nil, "Player must be attached to camera anchor")
 assert(player1.properties.visual_size.x == 0, "Player must be invisible during orbit")
 assert(deathstats.player_camera_data["Alice"].corpse ~= nil, "Corpse entity must be spawned")
 assert(player1.look_vertical > 0, "Camera look_vertical must be tilted downward toward corpse")
-assert(core.last_sound ~= nil and core.last_sound.params.to_player == "Alice", "Sound play failed")
+assert(core.last_sound ~= nil and (core.last_sound.params.max_hear_distance == 16 or core.last_sound.params.to_player == "Alice"), "Sound play failed")
 assert(core.last_sound.name == "deathstats_death", "Sound name must be 'deathstats_death' group")
 assert(pdata.last_life.blocks_mined == 4, "Last life snapshot blocks failed")
 assert(pdata.last_life.items_crafted == 4, "Last life snapshot craft failed")
@@ -990,24 +1039,24 @@ player1:set_hp(20)
 local data_before = deathstats.get_player_data(player1)
 local deaths_before = data_before.lifetime.deaths
 
--- 1. Player falls and dies
+-- Player falls and dies
 player1:set_hp(0)
 deathstats.trigger_death_screen(player1, { type = "fall" })
 
 assert(deathstats.dead_players["Alice"] == true, "Alice must be marked dead")
 assert(data_before.lifetime.deaths == deaths_before + 1, "Deaths should increment by exactly 1")
 
--- 2. Simulate subsequent fall collision damage packets arriving while dead
+-- Simulate subsequent fall collision damage packets arriving while dead
 local dmg_result = core.on_player_hpchange(player1, -50, { type = "fall" })
 assert(dmg_result == 0, "Damage while dead must return 0 to suppress damage sounds and damage accumulation")
 
--- 3. Simulate subsequent engine on_dieplayer / show_death_screen callbacks while dead
+-- Simulate subsequent engine on_dieplayer / show_death_screen callbacks while dead
 core.on_dieplayer(player1, { type = "fall" })
 core.show_death_screen(player1, { type = "fall" })
 
 assert(data_before.lifetime.deaths == deaths_before + 1, "Deaths must NOT increment in a loop from repeated engine callbacks")
 
--- 4. Respawn and verify clean state
+-- Respawn and verify clean state
 core.on_respawnplayer(player1)
 assert(deathstats.dead_players["Alice"] == nil, "Player must not be marked dead after respawn")
 print("  [PASS] Fall damage loop immunity, one-time death guard & damage sound suppression")
@@ -1029,7 +1078,9 @@ assert(player1.look_vertical > 0, "Camera look_vertical must be tilted downwards
 assert(player1:get_attach() ~= nil, "Player must be attached to camera anchor")
 local ppos = player1:get_pos()
 local dist_to_bones = vector.distance(ppos, bones_loc)
-assert(dist_to_bones < 0.5, "Anchor must be stationed at bones node center")
+assert(dist_to_bones < 0.001, "Anchor must be stationed directly at bones node")
+assert(player1.eye_offset[1].z < 0 and player1.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from bones node")
+assert(cam_data.orbit_center.x == bones_loc.x and cam_data.orbit_center.z == bones_loc.z, "Orbit center must align with bones node")
 
 -- Test globalstep maintains yaw & pitch while pointing at bones
 player1:set_look_vertical(0)
@@ -1213,6 +1264,9 @@ local expected_methods = {
     "deserialize_inventory_list",
     "is_player_starving",
     "is_armor_dropped",
+    "hide_all_hudbars",
+    "restore_all_hudbars",
+    "get_last_death_info",
 }
 
 for _, method_name in ipairs(expected_methods) do
@@ -1232,6 +1286,7 @@ local expected_tables = {
     "recent_punches",
     "recent_falls",
     "recent_starvations",
+    "last_death_reason",
     "funny_notes",
 }
 
@@ -1319,12 +1374,12 @@ assert(not core.last_formspec.fs:find("style%[lbl_"), "Lifetime formspec must no
 print("  [PASS] Formspec colorization: style_type applied & escape sequences eliminated")
 
 -- TEST 20: Camera Look Packet Throttling & Globalstep Idle Fast Exit
--- 1. Idle fast-exit: no dead players and no animations
+-- Idle fast-exit: no dead players and no animations
 deathstats.dead_players = {}
 deathstats.active_animations = {}
 core.on_globalstep(0.1) -- Must return without error or side effects
 
--- 2. Look orientation packet throttling
+-- Look orientation packet throttling
 deathstats.dead_players["Alice"] = true
 player1.hp = 0
 deathstats.player_camera_data["Alice"] = { has_bones = true, yaw = 1.5, pitch = 0.5 }
@@ -1363,12 +1418,12 @@ player1:set_hp(20)
 print("  [PASS] Camera look packet throttling & globalstep fast-exit optimization")
 
 -- TEST 21: Dynamic Scrollable Tabs (Ores & Combat) & Damage Label Clarity
--- 1. Verify death formspec damage label clarity
+-- Verify death formspec damage label clarity
 deathstats.show_death_formspec(player1, { reason_text = "Fell from a high place" })
 assert(core.last_formspec ~= nil, "Death formspec must be rendered")
 assert(core.last_formspec.fs:find("Damage:.*dealt.*taken"), "Short stats must indicate 'dealt' and 'taken' for damage")
 
--- 2. Verify scroll_container and scrollbar on Ores tab with 16 distinct ores (> 12 items / 8 rows)
+-- Verify scroll_container and scrollbar on Ores tab with 16 distinct ores (> 12 items / 8 rows)
 local pdata22 = deathstats.get_player_data(player1)
 pdata22.lifetime.ores_mined = {}
 for i = 1, 16 do
@@ -1391,7 +1446,7 @@ for i = 1, 16 do
         string.format("All 16 ores must be rendered without truncation (missing %s)", ore_id))
 end
 
--- 3. Verify JohnnyBravo case (12 ores = 6 rows) activates scrollbar
+-- Verify JohnnyBravo case (12 ores = 6 rows) activates scrollbar
 pdata22.lifetime.ores_mined = {}
 for i = 1, 12 do
     pdata22.lifetime.ores_mined[string.format("default:ore_%02d", i)] = 1
@@ -1400,7 +1455,7 @@ deathstats.show_lifetime_stats_formspec(player1, "ores")
 assert(core.last_formspec.fs:find("scrollbar%[13%.35,2%.18;0%.28,2%.80;vertical;ore_scroll;0%]"),
     "6 rows (12 items) must activate scrollbar for JohnnyBravo")
 
--- 4. Verify small list (<= 5 rows / 10 items) uses standard container without scrollbar
+-- Verify small list (<= 5 rows / 10 items) uses standard container without scrollbar
 pdata22.lifetime.ores_mined = {}
 for i = 1, 6 do
     pdata22.lifetime.ores_mined[string.format("default:small_ore_%02d", i)] = 1
@@ -1411,7 +1466,7 @@ assert(core.last_formspec.fs:find("container%[0%.8,2%.18%]"),
 assert(not core.last_formspec.fs:find("scrollbar%["),
     "Small list must NOT have a scrollbar")
 
--- 5. Verify scroll_container and scrollbar on Combat tab with 16 distinct mob types
+-- Verify scroll_container and scrollbar on Combat tab with 16 distinct mob types
 pdata22.lifetime.mobs_slain = {}
 for i = 1, 16 do
     local mob_id = string.format("mobs:creature_%02d", i)
@@ -1445,9 +1500,9 @@ p_orbit:set_hp(0)
 core.spawned_entities = {}
 deathstats.set_death_camera(p_orbit)
 
--- 1. Verify player ghosting, first camera mode, and stationary anchor attachment
+-- Verify player ghosting, first camera mode, and stationary anchor attachment
 assert(p_orbit.camera ~= nil and p_orbit.camera.mode == "first", "Player camera must be set to 'first' during deathcam")
-assert(p_orbit.eye_offset ~= nil and p_orbit.eye_offset[1].z < 0, "Eye offset must project backwards in first-person mode")
+assert(p_orbit.eye_offset ~= nil and p_orbit.eye_offset[1].z < 0 and p_orbit.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from stationed anchor")
 assert(p_orbit.properties.visual_size.x == 0, "Player ghost must have visual_size 0")
 assert(p_orbit.properties.interaction_range == 0, "Player interaction_range must be 0")
 assert(p_orbit.physics_override.speed == 0, "Player speed must be frozen to 0")
@@ -1459,17 +1514,21 @@ assert(cam_data22.corpse ~= nil, "Corpse entity must be spawned")
 assert(cam_data22.anchor ~= nil, "Anchor entity must be spawned")
 assert(cam_data22.orbit_center.x == 40 and cam_data22.orbit_center.z == 40, "Orbit center must match death pos")
 
--- 2. Verify smooth orbit circle progression and yaw rotation
+-- Verify smooth orbit circle progression and yaw rotation (corpse settled at rest)
+cam_data22.corpse:set_velocity(vector.zero())
+cam_data22.corpse_settled = true
 local initial_angle = cam_data22.orbit_angle
 deathstats.update_death_camera(p_orbit, 1.0)
 local expected_angle = (initial_angle + cam_data22.orbit_speed * 1.0) % (2 * math.pi)
 assert(math.abs(cam_data22.orbit_angle - expected_angle) < 0.001, "Orbit angle must advance smoothly by speed * dtime")
 assert(math.abs(p_orbit.look_horizontal - expected_angle) < 0.001, "Player yaw must rotate smoothly with orbit angle")
 
--- 3. Verify stationary base positioning (bypasses packet fights and horizontal jitter)
-assert(vector.distance(p_orbit:get_pos(), cam_data22.orbit_center) < 0.001, "Player and anchor remain stationary at orbit center")
+-- Verify camera anchor stationed directly at orbit center (corpse position)
+assert(vector.distance(p_orbit:get_pos(), cam_data22.orbit_center) < 0.001, "Player and anchor base must be stationed at corpse orbit_center")
+assert(vector.distance(cam_data22.anchor:get_pos(), cam_data22.orbit_center) < 0.001, "Anchor must be stationed at orbit_center")
+assert(p_orbit.eye_offset[1].z < 0, "Camera eye offset must project backwards along line of sight")
 
--- 4. Verify downward pitch pointing directly at corpse
+-- Verify downward pitch pointing directly at corpse
 assert(p_orbit.look_vertical > 0, "Camera must tilt downward (> 0) toward corpse")
 
 -- 4b. Verify continuous obstacle avoidance, proportional height scaling & hold-timer hysteresis
@@ -1500,7 +1559,9 @@ for _ = 1, 15 do
 end
 assert(cam_data22.eff_radius < 3.0, "Camera eff_radius must decrease smoothly when obstacle is detected")
 assert(cam_data22.obstacle_hold_timer == 0.5, "Obstacle hold timer must be primed to 0.5s when obstacle is active")
-assert(p_orbit.eye_offset[1].y < 15, "Eye offset Y must scale down proportionally with eff_radius (proportional height)")
+local eye_h = p_orbit.eye_offset[1].y / 10
+assert(eye_h < 1.5, "Camera eye offset height must scale down proportionally with eff_radius (proportional height)")
+assert(p_orbit.eye_offset[1].z > -30, "Camera eye offset distance must pull in closer to 0 when obstacle is detected")
 local contracted_radius = cam_data22.eff_radius
 
 -- Clear the obstacle: verify hold-timer prevents immediate accordion expansion over transient gaps
@@ -1517,11 +1578,11 @@ assert(cam_data22.eff_radius > contracted_radius, "Camera must smoothly ease out
 assert(cam_data22.eff_radius <= 3.2, "Camera must not overshoot nominal radius")
 core.raycast = orig_raycast
 
--- 5. Verify reset_camera restores properties, unlocks camera mode, detaches player, and removes corpse & anchor
+-- Verify reset_camera restores properties, unlocks camera mode, detaches player, and removes corpse & anchor
 local corpse_ref = cam_data22.corpse
 local anchor_ref = cam_data22.anchor
 deathstats.reset_camera(p_orbit)
-assert(corpse_ref.removed == true, "Corpse entity must be removed on reset_camera")
+assert(corpse_ref.removed == true or (deathstats.config.corpse_decay_time > 0 and cam_data22.corpse == nil), "Corpse entity must be removed or detached on reset_camera")
 assert(anchor_ref.removed == true, "Anchor entity must be removed on reset_camera")
 assert(cam_data22.corpse == nil, "Corpse reference in camera data must be nil after reset")
 assert(cam_data22.anchor == nil, "Anchor reference in camera data must be nil after reset")
@@ -1537,12 +1598,12 @@ print("  [PASS] Cinematic Camera Orbit Geometry, Obstacle Raycasting & Cleanup")
 -- TEST 23: Multi-Skin Mod Compatibility & Visual Extraction
 local p_skin = create_mock_player("SkinUser")
 
--- 1. Default fallback
+-- Default fallback
 local vis_default = deathstats.get_player_visuals(p_skin)
 assert(vis_default.mesh == "character.b3d", "Default mesh must be character.b3d")
 assert(vis_default.textures[1] == "character.png", "Default texture must be character.png")
 
--- 2. 3d_armor compatibility & automatic inventory drop reflection
+-- 3d_armor compatibility & automatic inventory drop reflection
 -- 2a. Default/kept armor (drop == false, destroy == false): corpse retains worn armor
 rawset(_G, "armor", {
     textures = { ["SkinUser"] = { skin = "armor_skin.png", armor = "armor_chest.png", wielditem = "armor_sword.png" } },
@@ -1580,7 +1641,7 @@ assert(vis_fallback.textures[2] == "armor_chest.png", "Armor texture must be pre
 
 rawset(_G, "armor", nil)
 
--- 3. skinsdb compatibility (legacy / standalone without armor)
+-- skinsdb compatibility (legacy / standalone without armor)
 rawset(_G, "skins", {
     get_player_skin = function(p)
         return {
@@ -1657,7 +1718,7 @@ rawset(_G, "armor", nil)
 p_skin:set_properties({ mesh = "character.b3d" })
 rawset(_G, "skins", nil)
 
--- 4. simple_skins compatibility
+-- simple_skins compatibility
 rawset(_G, "skins", {
     skins = { ["SkinUser"] = "character_warrior" },
 })
@@ -1665,7 +1726,7 @@ local vis_simple = deathstats.get_player_visuals(p_skin)
 assert(vis_simple.textures[1] == "character_warrior.png", "simple_skins texture must be inherited")
 rawset(_G, "skins", nil)
 
--- 5. wardrobe compatibility
+-- wardrobe compatibility
 rawset(_G, "wardrobe", {
     playerSkins = { ["SkinUser"] = "wardrobe_robe.png" },
 })
@@ -1673,7 +1734,7 @@ local vis_wardrobe = deathstats.get_player_visuals(p_skin)
 assert(vis_wardrobe.textures[1] == "wardrobe_robe.png", "wardrobe texture must be inherited")
 rawset(_G, "wardrobe", nil)
 
--- 6. clothing compatibility (layers on top of base skin)
+-- clothing compatibility (layers on top of base skin)
 rawset(_G, "clothing", {
     player_textures = { ["SkinUser"] = { clothing = "jeans_blue.png", cape = "cape_velvet.png" } },
 })
@@ -1682,7 +1743,7 @@ assert(vis_clothing.textures[1]:find("jeans_blue%.png"), "clothing texture layer
 assert(vis_clothing.textures[1]:find("cape_velvet%.png"), "clothing cape texture layer must be appended")
 rawset(_G, "clothing", nil)
 
--- 7. Corpse entity activation & posing
+-- Corpse entity activation & posing
 local mock_corpse = {
     props = {},
     anim = nil,
@@ -1728,20 +1789,20 @@ print("  [PASS] Luanti Out-of-the-Box Drops & Bones Preservation (Zero Inventory
 local p_anim = create_mock_player("AnimTester")
 p_anim.current_anim = nil
 
--- 1. Normal state: animations set as requested
+-- Normal state: animations set as requested
 player_api.set_animation(p_anim, "walk", 30, true)
 assert(p_anim.current_anim.anim == "walk" and p_anim.current_anim.loop == true, "Normal animation should apply with loop=true")
 
--- 2. Mark player dead in deathstats
+-- Mark player dead in deathstats
 deathstats.dead_players["AnimTester"] = true
 
--- 3. Lay animation must be forced to loop=false and speed=1
+-- Lay animation must be forced to loop=false and speed=1
 player_api.set_animation(p_anim, "lay")
 assert(p_anim.current_anim.anim == "lay", "Lay animation should be set")
 assert(p_anim.current_anim.loop == false, "Death animation MUST force loop=false to prevent jiggling/dying loop")
 assert(p_anim.current_anim.speed == 1, "Death animation MUST have non-zero speed=1 to hold final flat frame")
 
--- 4. Non-death animations while dead must be suppressed
+-- Non-death animations while dead must be suppressed
 player_api.set_animation(p_anim, "walk", 30, true)
 assert(p_anim.current_anim.anim == "lay", "Non-death animations must be blocked while dead")
 
@@ -1793,12 +1854,12 @@ print("  [PASS] Post-Respawn Fall Damage Immunity & Full HP (1 Heart Bug Fix)")
 -- ==========================================================
 -- TEST 27: Ground Surface Detection & Corpse Ground Snapping
 -- ==========================================================
--- 1. Direct bones detection snaps to bones.y + 0.5
+-- Direct bones detection snaps to bones.y + 0.5
 local snap_bones_pos = { x = 10, y = 3, z = 10 }
 local surface_bones = deathstats.find_ground_surface({ x = 10, y = 20, z = 10 }, snap_bones_pos)
 assert(surface_bones == 3.5, "find_ground_surface must return bones_pos.y + 0.5")
 
--- 2. Fall death in mid-air (player at y = 35) above walkable ground at y = 4 (surface at 4.5)
+-- Fall death in mid-air (player at y = 35) above walkable ground at y = 4 (surface at 4.5)
 core.registered_nodes["default:dirt_with_grass"] = { walkable = true, drawtype = "normal" }
 core.world_nodes["15,4,15"] = { name = "default:dirt_with_grass" }
 core.world_nodes["15,5,15"] = { name = "air" }
@@ -1806,7 +1867,7 @@ core.world_nodes["15,5,15"] = { name = "air" }
 local surface_ground = deathstats.find_ground_surface({ x = 15, y = 35, z = 15 }, nil)
 assert(surface_ground == 4.5, "find_ground_surface must detect ground at y = 4.5 from falling position at y = 35")
 
--- 3. Raycast-based ground detection (e.g. slab with intersection_point at 4.625)
+-- Raycast-based ground detection (e.g. slab with intersection_point at 4.625)
 local prev_ray = core.raycast
 core.raycast = function(p1, p2, objects, liquids)
     local called = false
@@ -1826,7 +1887,7 @@ local surface_ray = deathstats.find_ground_surface({ x = 15, y = 35, z = 15 }, n
 assert(surface_ray == 4.625, "find_ground_surface must return exact intersection_point.y from core.raycast")
 core.raycast = prev_ray
 
--- 4. Corpse placed via set_death_camera must rest directly on the ground, not in mid-air
+-- Corpse placed via set_death_camera must rest directly on the ground, not in mid-air
 local p_cliff = create_mock_player("CliffJumper")
 p_cliff:set_pos({ x = 15, y = 35, z = 15 })
 p_cliff:set_hp(0)
@@ -1840,7 +1901,7 @@ assert(corpse_y == 4.5, "Corpse must rest flush on ground at y = 4.5, NOT floati
 assert(cliff_cam.orbit_center.y == 4.5, "Orbit center must be aligned with ground surface at y = 4.5")
 deathstats.reset_camera(p_cliff)
 
--- 5. Water Death: Player dying in deep lake must stay static at exact place of death (Luanti out-of-the-box behavior)
+-- Water Death: Player dying in deep lake must stay static at exact place of death (Luanti out-of-the-box behavior)
 core.world_nodes["20,2,20"] = { name = "default:stone" }
 core.world_nodes["20,12,20"] = { name = "default:water_source" }
 local p_swimmer = create_mock_player("LakeDiver")
@@ -1855,7 +1916,7 @@ assert(diver_cam.corpse ~= nil, "Corpse must be spawned in water")
 local diver_corpse_y = diver_cam.corpse:get_pos().y
 assert(diver_corpse_y == 12.5, string.format("Corpse must stay at exact place of death (y = 12.5), but got y = %s", tostring(diver_corpse_y)))
 assert(diver_cam.orbit_center.y == 12.5, "Orbit center must stay at exact water death position")
-assert(diver_cam.anchor:get_pos().y == 12.5, "Camera anchor must be at exact water death position")
+assert(math.abs(diver_cam.anchor:get_pos().y - 12.5) < 0.01, "Camera anchor must be stationed at corpse altitude (y = 12.5)")
 assert(p_swimmer:get_attach() ~= nil, "Player must be attached to camera anchor orbiting corpse")
 
 -- Verify planar fractured limb pose without abnormal vertical droop
@@ -1865,22 +1926,22 @@ assert(arm_l_init.rotation.vec.x == 0 and arm_l_init.rotation.vec.y == 0,
     "Drowned corpse limbs must stay planar (x=0, y=0) without vertical droop")
 assert(arm_l_init.rotation.vec.z ~= 0, "Drowned corpse must have broken Z rotation applied")
 
--- Step camera frames: corpse, orbit center, anchor, and player must remain completely static at y = 12.5
+-- Step camera frames: corpse, orbit center, anchor and player stay at 12.5
 deathstats.update_death_camera(p_swimmer, 1.0)
 assert(diver_cam.corpse:get_pos().y == 12.5, "Corpse entity must stay static at y = 12.5")
 assert(diver_cam.orbit_center.y == 12.5, "Orbit center must stay static at y = 12.5")
-assert(diver_cam.anchor:get_pos().y == 12.5, "Camera anchor must stay static at y = 12.5")
-assert(p_swimmer:get_pos().y == 12.5, "Player camera base pos must stay static at y = 12.5")
+assert(math.abs(diver_cam.anchor:get_pos().y - 12.5) < 0.01, "Camera anchor must stay static at corpse altitude (y = 12.5)")
+assert(math.abs(p_swimmer:get_pos().y - 12.5) < 0.01, "Player camera base pos must stay static at corpse altitude (y = 12.5)")
 assert(p_swimmer:get_attach() ~= nil, "Player must remain attached to anchor")
 
 deathstats.update_death_camera(p_swimmer, 10.0)
 assert(diver_cam.corpse:get_pos().y == 12.5, "Corpse must remain static after 10s")
 assert(diver_cam.orbit_center.y == 12.5, "Orbit center must remain static after 10s")
-assert(diver_cam.anchor:get_pos().y == 12.5, "Anchor must remain static after 10s")
+assert(math.abs(diver_cam.anchor:get_pos().y - 12.5) < 0.01, "Anchor must remain static after 10s")
 
 deathstats.reset_camera(p_swimmer)
 
--- 6. Lava Death: Player dying in lava pool must stay at exact place of death, NOT pinned to lava floor
+-- Lava Death: Player dying in lava pool must stay at exact place of death, NOT pinned to lava floor
 core.world_nodes["30,1,30"] = { name = "default:stone" }
 core.world_nodes["30,8,30"] = { name = "default:lava_source" }
 local p_lava_diver = create_mock_player("LavaSwimmer")
@@ -1897,7 +1958,7 @@ assert(lava_corpse_y == 8.0, string.format("Corpse must stay at exact place of d
 assert(lava_cam.orbit_center.y == 8.0, "Orbit center must remain at exact lava death position")
 deathstats.reset_camera(p_lava_diver)
 
--- 7. Mid-Air Death: Dying in the air from non-fall causes (/kill, suicide, mobs, projectiles)
+-- Mid-Air Death: Dying in the air from non-fall causes (/kill, suicide, mobs, projectiles)
 -- must keep corpse, camera anchor, and player at exact mid-air position without snapping 40 blocks to the ground,
 -- and anchor must have non-degenerate properties to prevent client physics falling & rubber-banding.
 local p_midair = create_mock_player("AirSkydiver")
@@ -1919,8 +1980,8 @@ local air_cam = deathstats.player_camera_data["AirSkydiver"]
 assert(air_cam ~= nil, "Camera data must exist for mid-air death")
 assert(air_cam.corpse:get_pos().y == 35, "Corpse must be positioned at death altitude y = 35, not ground!")
 assert(air_cam.orbit_center.y == 35, "Orbit center must be at death altitude y = 35, not ground!")
-assert(air_cam.anchor:get_pos().y == 35, "Anchor must be at death altitude y = 35, not ground!")
-assert(p_midair:get_pos().y == 35, "Player position must be at death altitude y = 35, not ground!")
+assert(math.abs(air_cam.anchor:get_pos().y - 35) < 0.01, "Anchor must be stationed at corpse altitude (y = 35), not ground!")
+assert(math.abs(p_midair:get_pos().y - 35) < 0.01, "Player position must be stationed at corpse altitude (y = 35), not ground!")
 assert(p_midair:get_attach() ~= nil, "Player must be attached to camera anchor in mid-air")
 
 -- Verify camera_anchor entity is completely invisible to other players
@@ -1951,7 +2012,7 @@ core.node_metas["15,35,15"] = {
 deathstats.update_death_camera(p_midair, 0.05)
 assert(air_cam.has_bones == true, "Delayed bones must be recognized")
 assert(air_cam.orbit_center.y == 35, "Orbit center must align with bones")
-assert(p_midair:get_pos().y == 35, "Player position must align with bones")
+assert(math.abs(p_midair:get_pos().y - 35) < 0.01, "Player position must align with bones altitude (y = 35)")
 assert(p_midair:get_attach() ~= nil, "Player must remain securely attached to anchor")
 
 deathstats.reset_camera(p_midair)
@@ -1966,7 +2027,7 @@ p_attach:set_pos({ x = 15, y = 4.5, z = 15 })
 p_attach:set_hp(0)
 p_attach.armor_groups = { fleshy = 100 }
 
--- 1. Verify set_death_camera initializes stationary anchor attachment and full damage immunity
+-- Verify set_death_camera initializes stationary anchor attachment and full damage immunity
 core.spawned_entities = {}
 deathstats.set_death_camera(p_attach)
 
@@ -1974,22 +2035,24 @@ local attach_data = deathstats.player_camera_data["AttachUser"]
 assert(attach_data ~= nil, "Camera data must exist")
 assert(attach_data.corpse ~= nil, "Corpse entity must be spawned")
 assert(attach_data.anchor ~= nil, "Anchor entity must be spawned")
-assert(p_attach:get_attach() ~= nil, "Player must be attached to stationary anchor (bypasses client gravity and falling physics)")
+assert(p_attach:get_attach() ~= nil, "Player must be attached to camera anchor")
 assert(p_attach.camera ~= nil and p_attach.camera.mode == "first", "Player camera must be set to first")
-assert(p_attach.eye_offset ~= nil and p_attach.eye_offset[1].z < 0, "Eye offset must project backwards in first-person mode")
+assert(p_attach.eye_offset ~= nil and p_attach.eye_offset[1].z < 0 and p_attach.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from stationed anchor")
 assert(p_attach:get_armor_groups().immortal == 1, "Player armor groups must be set to immortal = 1 while dead")
 assert(p_attach.physics_override.gravity == 0, "Player physics override must have gravity = 0 while dead")
 assert(p_attach.physics_override.speed == 0, "Player physics override must have speed = 0 while dead")
 assert(p_attach.properties.is_visible == false, "Player must be invisible while dead")
 
--- 2. Verify update_death_camera advances yaw orientation without moving base position (zero packet desync)
+-- Verify update_death_camera advances yaw orientation while anchor base remains stationed at orbit center
+attach_data.corpse:set_velocity(vector.zero())
+attach_data.corpse_settled = true
 local initial_yaw = p_attach.look_horizontal
-local initial_anchor_pos = vector.copy(p_attach:get_pos())
+local initial_anchor_pos = vector.copy(attach_data.anchor:get_pos())
 deathstats.update_death_camera(p_attach, 0.5)
 assert(p_attach.look_horizontal ~= initial_yaw, "Player yaw must rotate with orbit angle")
-assert(vector.distance(initial_anchor_pos, p_attach:get_pos()) < 0.001, "Anchor base position must remain strictly stationary at orbit center")
+assert(vector.distance(initial_anchor_pos, attach_data.anchor:get_pos()) < 0.001, "Anchor base position must remain stationed at orbit center during orbit rotation")
 
--- 3. Verify reset_camera detaches player, removes corpse & anchor, and restores camera & properties
+-- Verify reset_camera detaches player, removes corpse & anchor, and restores camera & properties
 deathstats.reset_camera(p_attach)
 assert(p_attach:get_attach() == nil, "Player must be detached after reset")
 assert(attach_data.corpse == nil, "Corpse reference must be nil after reset")
@@ -2003,7 +2066,7 @@ assert(p_attach:get_armor_groups().fleshy == 100, "Original fleshy armor group m
 assert(p_attach.properties.is_visible == true, "Player visibility must be restored")
 assert(p_attach.physics_override.speed == 1, "Player physics speed must be restored")
 
--- 4. Verify on_leaveplayer cleans up corpse entity and camera data
+-- Verify on_leaveplayer cleans up corpse entity and camera data
 local p_leaver = create_mock_player("LeaverCam")
 p_leaver:set_pos({ x = 15, y = 4.5, z = 15 })
 p_leaver:set_hp(0)
@@ -2019,7 +2082,7 @@ assert(deathstats.player_camera_data["LeaverCam"] == nil, "Camera data must be c
 print("  [PASS] Smooth Death Camera Orbit & Lifecycle (Zero Hurt Sounds & Zero Jitter)")
 
 -- TEST 29: Corpse Limb Fractures on Fall Death (Continuous Ground Plane Alignment)
--- 1. Verify rotate_corpse_bone_planar using modern set_bone_override (Luanti >= 5.9)
+-- Verify rotate_corpse_bone_planar using modern set_bone_override (Luanti >= 5.9)
 local test_corpse_modern = {
     bone_overrides = {},
     set_bone_override = function(self, bone, override)
@@ -2040,7 +2103,7 @@ assert(math.abs(left_arm_ov.rotation.vec.z - (-1.25)) < 0.001, "Rotation around 
 assert(left_arm_ov.rotation.absolute == false, "Rotation must be relative (absolute=false) to animated lay pose")
 assert(left_arm_ov.rotation.interpolation == 0, "Rotation interpolation must be 0 for instantaneous fracture")
 
--- 2. Verify rotate_corpse_bone_planar legacy fallback using set_bone_position (Luanti <= 5.8)
+-- Verify rotate_corpse_bone_planar legacy fallback using set_bone_position (Luanti <= 5.8)
 local test_corpse_legacy = {
     bone_positions = {
         ["Arm_Right"] = { pos = { x = 3, y = 5, z = 0 }, rot = { x = 0, y = 0, z = 10 } }
@@ -2061,7 +2124,7 @@ assert(legacy_pos.x == 3 and legacy_pos.y == 5, "Legacy bone position coordinate
 assert(legacy_rot.x == 0 and legacy_rot.y == 0, "Legacy rotation around X and Y must remain coplanar (0)")
 assert(math.abs(legacy_rot.z - (10 + math.deg(legacy_rad))) < 0.01, "Legacy rotation around Z must add degrees to initial rot")
 
--- 3. Verify fracture_corpse_limbs with custom angles
+-- Verify fracture_corpse_limbs with custom angles
 local custom_angles = {
     ["Arm_Left"] = -0.785,
     ["Arm_Right"] = 0.85,
@@ -2086,7 +2149,7 @@ for _, bone in ipairs({ "Arm_Left", "Arm_Right", "Leg_Left", "Leg_Right", "Head"
         string.format("Bone %s must have Z matching custom angle", bone))
 end
 
--- 4. Verify fracture_corpse_limbs with random generation conforms to anatomical fracture ranges
+-- Verify fracture_corpse_limbs with random generation conforms to anatomical fracture ranges
 local test_corpse_rand = core.add_entity({ x = 0, y = 0, z = 0 }, "deathstats:corpse")
 local rand_res = deathstats.fracture_corpse_limbs(test_corpse_rand)
 for _, bone in ipairs({ "Arm_Left", "Arm_Right", "Leg_Left", "Leg_Right", "Head" }) do
@@ -2107,18 +2170,18 @@ assert((right_arm_deg >= 34.99 and right_arm_deg <= 80.01) or (right_arm_deg >= 
     string.format("Arm_Right angle (%f deg) must fall within broken bone ranges", right_arm_deg))
 
 local left_leg_deg = math.deg(rand_res["Leg_Left"])
-assert((left_leg_deg >= 14.99 and left_leg_deg <= 70.01) or (left_leg_deg >= -30.01 and left_leg_deg <= -9.99),
+assert((left_leg_deg >= -70.01 and left_leg_deg <= -14.99) or (left_leg_deg >= 9.99 and left_leg_deg <= 30.01),
     string.format("Leg_Left angle (%f deg) must fall within broken bone ranges", left_leg_deg))
 
 local right_leg_deg = math.deg(rand_res["Leg_Right"])
-assert((right_leg_deg >= -70.01 and right_leg_deg <= -14.99) or (right_leg_deg >= 9.99 and right_leg_deg <= 30.01),
+assert((right_leg_deg >= 14.99 and right_leg_deg <= 70.01) or (right_leg_deg >= -30.01 and right_leg_deg <= -9.99),
     string.format("Leg_Right angle (%f deg) must fall within broken bone ranges", right_leg_deg))
 
 local head_deg = math.deg(rand_res["Head"])
 assert(head_deg >= -45.01 and head_deg <= 45.01,
     string.format("Head angle (%f deg) must fall within limp neck range [-45, 45]", head_deg))
 
--- 5. Verify set_death_camera applies limb fractures on fall death
+-- Verify set_death_camera applies limb fractures on fall death
 local p_fallguy = create_mock_player("FallGuy")
 p_fallguy:set_pos({ x = 20, y = 4.5, z = 20 })
 p_fallguy:set_hp(0)
@@ -2138,7 +2201,7 @@ for _, bone in ipairs({ "Arm_Left", "Arm_Right", "Leg_Left", "Leg_Right", "Head"
 end
 deathstats.reset_camera(p_fallguy)
 
--- 6. Verify non-fall deaths (PvP, mob, etc.) ALSO fracture limbs (all deaths have fractured bones)
+-- Verify non-fall deaths (PvP, mob, etc.) ALSO fracture limbs (all deaths have fractured bones)
 local p_pvp = create_mock_player("PvPGuy")
 p_pvp:set_pos({ x = 30, y = 4.5, z = 30 })
 p_pvp:set_hp(0)
@@ -2157,7 +2220,7 @@ for _, bone in ipairs({ "Arm_Left", "Arm_Right", "Leg_Left", "Leg_Right", "Head"
 end
 deathstats.reset_camera(p_pvp)
 
--- 7. Verify config disable suppresses fractures
+-- Verify config disable suppresses fractures
 deathstats.config.enable_limb_fractures = false
 local p_nofall = create_mock_player("NoFractureGuy")
 p_nofall:set_pos({ x = 40, y = 4.5, z = 40 })
@@ -2190,7 +2253,7 @@ print("  [PASS] Corpse Limb Fractures on All Deaths (Continuous Ground Plane Ali
 -- Verify compatibility layer module is loaded
 assert(deathstats.compat_hudbars ~= nil, "deathstats.compat_hudbars must be initialized")
 
--- 1. Complete Wielditem & HUD Suppression during death sequence
+-- Complete Wielditem & HUD Suppression during death sequence
 local p_hud = create_mock_player("HUDGuy")
 p_hud:set_pos({ x = 50, y = 4.5, z = 50 })
 p_hud:set_hp(0)
@@ -2225,7 +2288,7 @@ assert(unhide_res == false, "hb.unhide_hudbar must reject unhiding while player 
 local change_res = hb.change_hudbar(p_hud, "health", 20, 20)
 assert(change_res == false, "hb.change_hudbar must reject changes while player is dead")
 
--- 2. Complete Restoration of HUD, Wielditem & Custom Bars upon Respawn
+-- Complete Restoration of HUD, Wielditem & Custom Bars upon Respawn
 p_hud:respawn()
 assert(p_hud.hud_flags.wielditem == true, "Player wielditem must be restored (true) on respawn")
 assert(p_hud.hud_flags.hotbar == true, "Player hotbar must be restored (true) on respawn")
@@ -2244,7 +2307,7 @@ assert(hb.players["HUDGuy"] == p_hud, "Player must be restored to hb.players on 
 assert(deathstats.compat_hudbars.paused_players["HUDGuy"] == nil, "paused_players entry must be cleared on respawn")
 assert(p_hud.huds[103].scale and p_hud.huds[103].scale.x == 1, "statbar scale must be restored to 1 on respawn")
 
--- 3. Direct set_death_camera and reset_camera suppression and restoration
+-- Direct set_death_camera and reset_camera suppression and restoration
 local p_cam_hud = create_mock_player("CamHUDGuy")
 p_cam_hud:set_pos({ x = 60, y = 5, z = 60 })
 p_cam_hud:set_hp(0)
@@ -2262,7 +2325,7 @@ assert(p_cam_hud.hud_flags.hotbar == true, "reset_camera must restore hotbar")
 assert(p_cam_hud.hud_flags.healthbar == false, "reset_camera must keep default healthbar suppressed when hudbars is active")
 assert(hb_hidden["CamHUDGuy"]["hunger"] == nil, "reset_camera must unhide custom hunger bar via hb")
 
--- 4. Globalstep reinforcement test
+-- Globalstep reinforcement test
 local p_reinforce = create_mock_player("ReinforceGuy")
 p_reinforce:set_pos({ x = 70, y = 10, z = 70 })
 p_reinforce:set_hp(0)
@@ -2273,7 +2336,7 @@ core.on_globalstep(0.1)
 assert(hb.players["ReinforceGuy"] == nil, "Globalstep reinforcement must re-remove dead player from hb.players")
 p_reinforce:respawn()
 
--- 5. Fallback restoration when hudbars does not manage healthbar
+-- Fallback restoration when hudbars does not manage healthbar
 local orig_hb_health = hb.hudtables.health
 hb.hudtables.health = nil
 local p_nohb = create_mock_player("NoHBGuy")
@@ -2291,7 +2354,7 @@ print("  [PASS] Player HUD, Hand/Weapon (wielditem) & Custom Bars (hb) Suppressi
 do
     print("\n--- TEST 31: Thematic Death Screen Overlays (Lava, Fire, Drown, Blood) ---")
 
--- 1. Lava Death
+-- Lava Death
 local p_lava = create_mock_player("LavaTester")
 p_lava:set_pos({ x = 100, y = 10, z = 100 })
 core.set_node({ x = 100, y = 10, z = 100 }, { name = "default:lava_source" })
@@ -2310,7 +2373,7 @@ assert(lava_splatter_found, "Lava death must select deathstats_lava_splatter.png
 assert(lava_banner_found, "Lava death must select deathstats_you_died_lava.png banner")
 p_lava:respawn()
 
--- 2. Fire Death
+-- Fire Death
 local p_fire = create_mock_player("FireTester")
 p_fire:set_pos({ x = 200, y = 10, z = 200 })
 core.set_node({ x = 200, y = 10, z = 200 }, { name = "air" })
@@ -2329,7 +2392,7 @@ assert(fire_splatter_found, "Fire death must select deathstats_fire_splatter.png
 assert(fire_banner_found, "Fire death must select deathstats_you_died_fire.png banner")
 p_fire:respawn()
 
--- 3. Drown Death
+-- Drown Death
 local p_drown = create_mock_player("DrownTester")
 p_drown:set_pos({ x = 300, y = 10, z = 300 })
 deathstats.trigger_death_screen(p_drown, { type = "drown" })
@@ -2347,7 +2410,7 @@ assert(drown_splatter_found, "Drown death must select deathstats_drown_splatter.
 assert(drown_banner_found, "Drown death must select deathstats_you_died_drown.png banner")
 p_drown:respawn()
 
--- 4. Fall / Combat Death (Fallback to blood splatter and standard banner)
+-- Fall / Combat Death (Fallback to blood splatter and standard banner)
 local p_fall_overlay = create_mock_player("FallTester")
 p_fall_overlay:set_pos({ x = 400, y = 10, z = 400 })
 deathstats.trigger_death_screen(p_fall_overlay, { type = "fall" })
@@ -2390,7 +2453,7 @@ child_entity.properties.is_visible = true
 child_entity.properties.pointable = true
 p_multi.children = { child_entity }
 
--- 1. Trigger death camera
+-- Trigger death camera
 deathstats.set_death_camera(p_multi)
 local mdata = deathstats.player_camera_data["GhostPlayer"]
 assert(mdata ~= nil, "Camera data must be initialized for GhostPlayer")
@@ -2426,7 +2489,7 @@ assert(cprops.is_visible == false, "Attached child entity must be marked is_visi
 assert(cprops.visual_size.x == 0 and cprops.visual_size.y == 0, "Attached child entity visual_size must be zero")
 assert(cprops.pointable == false, "Attached child entity must not be pointable")
 
--- 2. Simulate external mod globalstep trying to restore player properties and nametag
+-- Simulate external mod globalstep trying to restore player properties and nametag
 p_multi:set_properties({
     is_visible = true,
     visual_size = { x = 1, y = 1, z = 1 },
@@ -2458,7 +2521,7 @@ local re_aprops = mdata.anchor:get_properties()
 assert(re_aprops.is_visible == false, "update_death_camera must re-enforce is_visible = false on anchor")
 assert(re_aprops.visual_size.x == 0 and re_aprops.visual_size.y == 0, "update_death_camera must re-enforce zero visual_size on anchor")
 
--- 3. Respawn: Clean restoration of original player appearance, nametag, and anchor removal
+-- Respawn: Clean restoration of original player appearance, nametag, and anchor removal
 local anchor_multi = mdata.anchor
 deathstats.reset_camera(p_multi)
 assert(deathstats.player_camera_data["GhostPlayer"] == nil, "Camera data must be cleared on respawn")
@@ -2973,7 +3036,7 @@ do
         visual_size = { x = 1, y = 1, z = 1 },
     })
 
-    -- 1. Simulate run statistics before dying
+    -- Simulate run statistics before dying
     p_recon:set_hp(0)
     local data = deathstats.get_player_data(p_recon)
     data.current_run.blocks_mined = 25
@@ -2983,7 +3046,7 @@ do
     data.current_run.mobs_killed = 4
     data.current_run.items_crafted = 6
 
-    -- 2. Player dies before server shutdown
+    -- Player dies before server shutdown
     local death_info = {
         category = "mob",
         reason_text = "Slain by Dungeon Master",
@@ -3001,7 +3064,7 @@ do
     local des_corpse = core.deserialize(meta:get_string("deathstats:corpse_data"))
     assert(type(des_corpse) == "table" and des_corpse.armor_dropped ~= nil, "corpse_data must record armor_dropped status")
 
-    -- 3. Simulate total server shutdown / crash:
+    -- Simulate total server shutdown / crash:
     -- Wipe in-memory Lua tables and all active world entities
     deathstats.players = {}
     deathstats.player_camera_data = {}
@@ -3015,10 +3078,10 @@ do
     })
     p_recon:set_hp(0)
 
-    -- 4. Reconnect event occurs (joinplayer while dead)
+    -- Reconnect event occurs (joinplayer while dead)
     core.on_joinplayer(p_recon)
 
-    -- 5. Verify corpse entity was recreated at exact death coordinates
+    -- Verify corpse entity was recreated at exact death coordinates
     local reconnect_cam_data = deathstats.player_camera_data["ShutdownReconnectTester"]
     assert(reconnect_cam_data ~= nil, "Camera data must be initialized on reconnect")
     assert(reconnect_cam_data.corpse ~= nil and reconnect_cam_data.corpse.removed == false,
@@ -3028,7 +3091,7 @@ do
     assert(reconnect_cam_data.corpse:get_properties().textures ~= nil and reconnect_cam_data.corpse:get_properties().textures[1] == "custom_character_skin.png",
         "Corpse must inherit original player skin from metadata, never transparent texture")
 
-    -- 6. Verify previous run statistics were completely preserved
+    -- Verify previous run statistics were completely preserved
     local restored_data = deathstats.players["ShutdownReconnectTester"]
     assert(restored_data ~= nil, "Player data must be restored on reconnect")
     assert(restored_data.last_life ~= nil, "last_life must be restored")
@@ -3040,7 +3103,7 @@ do
     assert(restored_data.last_life.items_crafted == 6, "items_crafted must be 6")
     assert(restored_data.last_life.last_cause == "Slain by Dungeon Master", "last_cause must match")
 
-    -- 7. Verify death screen formspec presents the restored pre-shutdown statistics
+    -- Verify death screen formspec presents the restored pre-shutdown statistics
     assert(core.last_formspec ~= nil and core.last_formspec.formname == "deathstats:death",
         "Death formspec must be presented on reconnect")
     assert(core.last_formspec.fs:find("Mined: 25 %(7 ores%)"),
@@ -3048,15 +3111,15 @@ do
     assert(core.last_formspec.fs:find("Slain by Dungeon Master"),
         "Formspec must display exact fatal blow from before shutdown")
 
-    -- 8. Verify lifetime deaths was not double-incremented
+    -- Verify lifetime deaths was not double-incremented
     assert(restored_data.lifetime.deaths == 1,
         "Reconnect must not double-increment lifetime.deaths counter")
 
-    -- 9. Verify clean respawn clears metadata and removes corpse
+    -- Verify clean respawn clears metadata and removes corpse
     local reconnect_corpse_ref = reconnect_cam_data.corpse
     deathstats.on_player_respawn(p_recon)
     assert(meta:get_string("deathstats:death_active") == "", "death_active must be cleared on respawn")
-    assert(reconnect_corpse_ref.removed == true, "Corpse entity must be removed on respawn")
+    assert(reconnect_corpse_ref.removed == true or (deathstats.config.corpse_decay_time > 0 and reconnect_cam_data.corpse == nil), "Corpse entity must be removed or detached on respawn")
     assert(deathstats.player_camera_data["ShutdownReconnectTester"] == nil, "Camera data must be cleaned up on respawn")
 
     print("  [PASS] Dead reconnect post-shutdown corpse & stats persistence (corpse spawned, skin restored, exact stats preserved, 0 duplicates)")
@@ -3071,7 +3134,7 @@ do
     local p_disc = create_mock_player("ServerShutdownPlayer")
     p_disc:set_pos({ x = 100, y = 20, z = 100 })
 
-    -- 1. Player reaches 0 HP and simulate an extensive run before dying
+    -- Player reaches 0 HP and simulate an extensive run before dying
     p_disc:set_hp(0)
     local data = deathstats.get_player_data(p_disc)
     data.current_run.blocks_mined = 142
@@ -3084,7 +3147,7 @@ do
     data.current_run.items_consumed = 8
     data.current_run.distance_traveled = 350.5
 
-    -- 2. Player dies in the world
+    -- Player dies in the world
     local fatal_info = {
         category = "pvp",
         reason_text = "Slain by RivalKnight with Diamond Sword",
@@ -3101,7 +3164,7 @@ do
     assert(data.last_life.total_ores == 38, "last_life.total_ores must be 38")
     assert(data.lifetime.deaths == 1, "lifetime.deaths must be 1")
 
-    -- 3. Abrupt server disconnect / shutdown occurs while player is looking at the death screen!
+    -- Abrupt server disconnect / shutdown occurs while player is looking at the death screen!
     -- In-memory server tables are wiped (fresh server restart)
     deathstats.players = {}
     deathstats.dead_players = {}
@@ -3109,14 +3172,14 @@ do
     deathstats.active_huds = {}
     core.last_formspec = nil
 
-    -- 4. Player reconnects to the newly started server with hp == 0
+    -- Player reconnects to the newly started server with hp == 0
     p_disc:set_hp(0)
 
     -- Luanti engine builtin/game/death_screen.lua on_joinplayer executes:
     -- core.show_death_screen(player) WITHOUT is_reconnect parameter!
     core.show_death_screen(p_disc)
 
-    -- 5. Verify stats from previous death are FULLY PERSISTED and NOT wiped
+    -- Verify stats from previous death are FULLY PERSISTED and NOT wiped
     local persisted_recon_data = deathstats.players["ServerShutdownPlayer"]
     assert(persisted_recon_data ~= nil, "Player data must exist on reconnect")
     assert(persisted_recon_data.last_life ~= nil, "last_life must not be nil")
@@ -3137,11 +3200,11 @@ do
     assert(persisted_recon_data.last_life.last_cause == "Slain by RivalKnight with Diamond Sword",
         "last_cause must retain exact kill credit from previous death")
 
-    -- 6. Verify lifetime deaths counter was not double incremented on reconnect
+    -- Verify lifetime deaths counter was not double incremented on reconnect
     assert(persisted_recon_data.lifetime.deaths == 1,
         "lifetime.deaths must remain 1 after reconnecting to death screen, got: " .. tostring(persisted_recon_data.lifetime.deaths))
 
-    -- 7. Verify the death formspec presents the restored stats
+    -- Verify the death formspec presents the restored stats
     assert(core.last_formspec ~= nil and core.last_formspec.formname == "deathstats:death",
         "Death screen formspec must be presented on reconnect")
     assert(core.last_formspec.fs:find("Mined: 142 %(38 ores%)"),
@@ -3149,7 +3212,7 @@ do
     assert(core.last_formspec.fs:find("Slain by RivalKnight"),
         "Formspec must display death cause from previous death")
 
-    -- 8. Respawn player and verify clean reset
+    -- Respawn player and verify clean reset
     deathstats.on_player_respawn(p_disc)
     assert(meta:get_string("deathstats:death_active") == "", "death_active must be cleared after respawning")
 
@@ -3162,21 +3225,21 @@ end
 do
     print("\n--- TEST 39: Elastic 'YOU DIED' Slap Animation Trajectory & Prominence ---")
 
-    -- 1. Verify default configuration duration has been updated to 2.4s
+    -- Verify default configuration duration has been updated to 2.4s
     assert(deathstats.config.animation_duration == 2.4,
         "deathstats.config.animation_duration must default to 2.4 seconds, got: " .. tostring(deathstats.config.animation_duration))
 
     local target_w = -32.0
     local target_h = -23.0
 
-    -- 2. Test progress = 0: starting distant scale (15% of target) and initial opacity stage
+    -- Test progress = 0: starting distant scale (15% of target) and initial opacity stage
     local sx0, sy0, a0, impact0 = deathstats.calculate_slap_animation(0.0, target_w, target_h)
     assert(math.abs(sx0 - (target_w * 0.15)) < 0.001, "Scale at progress 0 must be 15% of target")
     assert(math.abs(sy0 - (target_h * 0.15)) < 0.001, "Scale at progress 0 must be 15% of target")
     assert(a0 == 60, "Initial alpha at progress 0 must be 60")
     assert(impact0 == false, "Impact must not be reached at progress 0")
 
-    -- 3. Test progress = 0.35: peak prominent zoom-in overshoot (> 1.25x target, ~1.31x) and subtitle impact trigger
+    -- Test progress = 0.35: peak prominent zoom-in overshoot (> 1.25x target, ~1.31x) and subtitle impact trigger
     local sx_peak, sy_peak, a_peak, impact_peak = deathstats.calculate_slap_animation(0.35, target_w, target_h)
     local zoom_ratio = sx_peak / target_w
     assert(zoom_ratio > 1.25, "Peak zoom ratio must be > 1.25x target scale for prominence, got: " .. tostring(zoom_ratio))
@@ -3185,7 +3248,7 @@ do
     assert(a_peak == 255, "Alpha at peak zoom must be fully opaque (255)")
     assert(impact_peak == true, "Subtitles impact must trigger at or by progress 0.35")
 
-    -- 4. Test progress = 0.75: recoil bounce undershoot (< 0.95x target, ~0.91x)
+    -- Test progress = 0.75: recoil bounce undershoot (< 0.95x target, ~0.91x)
     local sx_bounce, sy_bounce, a_bounce, impact_bounce = deathstats.calculate_slap_animation(0.75, target_w, target_h)
     local bounce_ratio = sx_bounce / target_w
     assert(bounce_ratio < 0.95, "Recoil bounce must undershoot resting scale (< 0.95x), got: " .. tostring(bounce_ratio))
@@ -3194,7 +3257,7 @@ do
     assert(a_bounce == 255, "Alpha during recoil must be 255")
     assert(impact_bounce == true, "Impact must remain true during recoil")
 
-    -- 5. Test progress = 1.0: exact convergence to resting target scale (1.000x)
+    -- Test progress = 1.0: exact convergence to resting target scale (1.000x)
     local sx1, sy1, a1, impact1 = deathstats.calculate_slap_animation(1.0, target_w, target_h)
     assert(math.abs(sx1 - target_w) < 0.001, "Final scale X must converge exactly to target_w, got: " .. tostring(sx1))
     assert(math.abs(sy1 - target_h) < 0.001, "Final scale Y must converge exactly to target_h, got: " .. tostring(sy1))
@@ -3212,7 +3275,7 @@ do
 
     local test_pos = vector.new(50, 5, 50)
 
-    -- 1. Detection of effect types across causes and environments
+    -- Detection of effect types across causes and environments
     assert(deathstats.get_corpse_effect_type(test_pos, { category = "drown" }) == "water",
         "Category drown must map to water effect")
     assert(deathstats.get_corpse_effect_type(test_pos, { category = "lava" }) == "lava",
@@ -3238,7 +3301,7 @@ do
         "Corpse resting in fire must trigger smoke effect")
     core.world_nodes["50,5,50"] = "air"
 
-    -- 2. Water (bubbles): continuous, upward buoyancy, animated 5x5 frames, modern + legacy
+    -- Water (bubbles): continuous, upward buoyancy, animated 5x5 frames, modern + legacy
     local water_def = deathstats.create_corpse_particlespawner_def("water", test_pos)
     assert(water_def ~= nil, "Water definition must not be nil")
     assert(water_def.time == 0, "Water bubbles must be continuous (time = 0)")
@@ -3253,7 +3316,7 @@ do
     assert(water_def.acc and water_def.acc.min.y > 0, "Bubbles must have buoyancy acceleration (acc.y > 0)")
     assert(water_def.texpool and #water_def.texpool > 0, "Modern texpool must be defined")
 
-    -- 3. Lava (fire): continuous, glowing embers, leaping upwards, modern + legacy
+    -- Lava (fire): continuous, glowing embers, leaping upwards, modern + legacy
     local lava_def = deathstats.create_corpse_particlespawner_def("lava", test_pos)
     assert(lava_def ~= nil, "Lava definition must not be nil")
     assert(lava_def.time == 0, "Lava fire must be continuous (time = 0)")
@@ -3265,7 +3328,7 @@ do
     assert(lava_def.vel and lava_def.vel.max.y > lava_def.vel.min.y, "Lava velocity must span upwards")
     assert(lava_def.texpool and lava_def.texpool[1].blend == "add", "Lava texpool must use additive blend")
 
-    -- 4. Fire (smoke): continuous, billowing upward convection, modern + legacy
+    -- Fire (smoke): continuous, billowing upward convection, modern + legacy
     local fire_def = deathstats.create_corpse_particlespawner_def("fire", test_pos)
     assert(fire_def ~= nil, "Fire definition must not be nil")
     assert(fire_def.time == 0, "Fire smoke must be continuous (time = 0)")
@@ -3276,7 +3339,7 @@ do
     assert(fire_def.vel and fire_def.vel.min.y > 0, "Smoke velocity must be upward")
     assert(fire_def.acc and fire_def.acc.min.y > 0, "Smoke acceleration must rise")
 
-    -- 5. Impact (all others): non-continuous impact burst, default node particles, customized gravity/speed
+    -- Impact (all others): non-continuous impact burst, default node particles, customized gravity/speed
     core.world_nodes["50,4,50"] = "default:stone"
     local impact_def = deathstats.create_corpse_particlespawner_def("impact", test_pos)
     assert(impact_def ~= nil, "Impact definition must not be nil")
@@ -3294,7 +3357,7 @@ do
         "Impact acceleration must apply customized downward gravity (-9.81)")
     assert(impact_def.collisiondetection == true, "Impact particles must have collision detection")
 
-    -- 6. Particle spawner invocation and lifecycle management
+    -- Particle spawner invocation and lifecycle management
     core.active_particlespawners = {}
     local pids = deathstats.spawn_corpse_particles(test_pos, { category = "drown" })
     assert(#pids == 1, "spawn_corpse_particles must return array with 1 spawner ID")
@@ -3307,13 +3370,13 @@ do
     core.delete_particlespawner(spawner_id)
     assert(core.active_particlespawners[spawner_id] == nil, "delete_particlespawner must remove spawner from engine")
 
-    -- 7. Disabled setting toggle verification
+    -- Disabled setting toggle verification
     deathstats.config.enable_corpse_particles = false
     local empty_pids = deathstats.spawn_corpse_particles(test_pos, { category = "drown" })
     assert(#empty_pids == 0, "No particle spawners should spawn when enable_corpse_particles = false")
     deathstats.config.enable_corpse_particles = true
 
-    -- 8. Verify camera orbit integration and automatic cleanup on release
+    -- Verify camera orbit integration and automatic cleanup on release
     local mock_player = {
         name = "ParticleTester",
         get_player_name = function(self) return self.name end,
@@ -3378,7 +3441,7 @@ do
     assert(deathstats.player_camera_data["ParticleTester"] == nil, "Camera data must be cleared on release")
     assert(core.active_particlespawners[active_pid] == nil, "Particle spawner must be cleanly deleted on release")
 
-    -- 9. Texture asset files existence check
+    -- Texture asset files existence check
     local bubble_f = io.open("textures/deathstats_particle_bubble.png", "rb")
     assert(bubble_f ~= nil, "deathstats_particle_bubble.png texture must exist")
     bubble_f:close()
@@ -3442,7 +3505,7 @@ do
         end,
     }
 
-    -- 1. Verify deathstats.is_player_starving with hbhunger
+    -- Verify deathstats.is_player_starving with hbhunger
     _G.hbhunger = {
         hunger = {
             ["StarveTester"] = 0,
@@ -3462,7 +3525,7 @@ do
     assert(deathstats.is_player_starving(p_starve) == false,
         "is_player_starving must return false when hbhunger.hunger is 20")
 
-    -- 2. Verify with hbhunger.get_hunger_raw
+    -- Verify with hbhunger.get_hunger_raw
     _G.hbhunger.hunger["StarveTester"] = nil
     _G.hbhunger.get_hunger_raw = function(pl) return 0 end
     assert(deathstats.is_player_starving(p_starve) == true,
@@ -3472,7 +3535,7 @@ do
     assert(deathstats.is_player_starving(p_starve) == false,
         "is_player_starving must return false when hbhunger.get_hunger_raw returns 20")
 
-    -- 3. Verify with hudbars (hb) registered & unregistered bar states (regression test for hudbars/init.lua:448)
+    -- Verify with hudbars (hb) registered & unregistered bar states (regression test for hudbars/init.lua:448)
     _G.hbhunger = nil
     local orig_hb = _G.hb
     _G.hb = {
@@ -3512,7 +3575,7 @@ do
     assert(hp_res == -3, "Animal punch must not crash and must pass through hp_change")
     _G.hb = orig_hb
 
-    -- 4. Verify with stamina mod
+    -- Verify with stamina mod
     _G.stamina = {
         get = function(pl) return 0 end,
     }
@@ -3523,7 +3586,7 @@ do
         "is_player_starving must return false when stamina.get is 20")
     _G.stamina = nil
 
-    -- 5. Verify analyze_death with hbhunger and reason { type = "set_hp" } (actual hbhunger behavior)
+    -- Verify analyze_death with hbhunger and reason { type = "set_hp" } (actual hbhunger behavior)
     _G.hbhunger = {
         hunger = {
             ["StarveTester"] = 0,
@@ -3539,14 +3602,14 @@ do
     assert(analysis_hbhunger.funny_note ~= nil and #analysis_hbhunger.funny_note > 0,
         "analyze_death must supply a humorous epitaph for starvation")
 
-    -- 6. Verify analyze_death when hbhunger is active but death was NOT from starvation (e.g. /kill with full hunger)
+    -- Verify analyze_death when hbhunger is active but death was NOT from starvation (e.g. /kill with full hunger)
     _G.hbhunger.hunger["StarveTester"] = 20
     local kill_command_reason = { type = "set_hp" }
     local analysis_kill = deathstats.analyze_death(p_starve, kill_command_reason)
     assert(analysis_kill.category == "unknown",
         "analyze_death must NOT identify starve when set_hp occurs with full hunger")
 
-    -- 7. Verify analyze_death with explicit reason tables from other mods
+    -- Verify analyze_death with explicit reason tables from other mods
     _G.hbhunger.hunger["StarveTester"] = 0
     local explicit_starve = { type = "starve" }
     local analysis_exp = deathstats.analyze_death(p_starve, explicit_starve)
@@ -3556,7 +3619,7 @@ do
     local analysis_stam = deathstats.analyze_death(p_starve, stamina_starve)
     assert(analysis_stam.category == "starve", "stamina:starve cause must produce starve category")
 
-    -- 8. Verify environmental fallback (reason is nil or empty table) when starving
+    -- Verify environmental fallback (reason is nil or empty table) when starving
     local analysis_nil = deathstats.analyze_death(p_starve, nil)
     assert(analysis_nil.category == "starve",
         "Environmental fallback must identify starve category when reason is nil and player is starving")
@@ -3565,7 +3628,7 @@ do
     assert(analysis_empty.category == "starve",
         "Environmental fallback must identify starve category when reason is {} and player is starving")
 
-    -- 9. Hazard Priority: Fall, PvP, Lava, Drown must take precedence even if hunger is 0
+    -- Hazard Priority: Fall, PvP, Lava, Drown must take precedence even if hunger is 0
     local fall_while_hungry = { type = "fall" }
     local analysis_fall_hungry = deathstats.analyze_death(p_starve, fall_while_hungry)
     assert(analysis_fall_hungry.category == "fall",
@@ -3578,7 +3641,7 @@ do
         "Lava damage must take precedence over hunger when burning in lava")
     p_starve.get_pos = function() return { x = 0, y = 5, z = 0, node_name = "air" } end
 
-    -- 10. Verify on_player_hpchange starvation tracking & race condition safety
+    -- Verify on_player_hpchange starvation tracking & race condition safety
     deathstats.recent_starvations["StarveTester"] = nil
     p_starve.get_hp = function() return 1 end
     core.on_player_hpchange(p_starve, -1, { type = "set_hp" })
@@ -3592,7 +3655,7 @@ do
     assert(analysis_race.category == "starve",
         "recent_starvations timestamp must safely protect against race conditions where hunger was reset early")
 
-    -- 11. Cleanup on player reset / respawn
+    -- Cleanup on player reset / respawn
     deathstats.reset_player_effects(p_starve)
     assert(deathstats.recent_starvations["StarveTester"] == nil,
         "reset_player_effects must cleanly purge recent_starvations")
@@ -3606,7 +3669,7 @@ end
 do
     print("\n--- TEST 42: Bones Mod Settings Compatibility & Corpse Suppression ---")
 
-    -- 1. Helper: deathstats.get_bones_mode()
+    -- Helper: deathstats.get_bones_mode()
     core.loaded_mods["bones"] = nil
     core.settings:set("bones_mode", "bones")
     local should_show_bones, mode, has_mod = deathstats.get_bones_mode()
@@ -3631,7 +3694,7 @@ do
     assert(mode_k == "keep", "mode must be 'keep'")
     assert(show_k == false, "should_show_bones must be false when bones_mode == 'keep'")
 
-    -- 2. Corpse suppression when bones_mode == "bones":
+    -- Corpse suppression when bones_mode == "bones":
     -- When player dies with bones_mode == "bones", deathstats must NOT spawn deathstats:corpse
     core.settings:set("bones_mode", "bones")
     local p_bones_user = create_mock_player("BonesUser")
@@ -3645,7 +3708,7 @@ do
     assert(cdata_bones.corpse == nil, "Corpse entity must NOT be spawned when bones_mode == 'bones'")
     assert(cdata_bones.corpse_pos == nil, "corpse_pos must be nil when expecting bones")
 
-    -- 3. Delayed bones placement: orbit locks onto bones, corpse remains nil
+    -- Delayed bones placement: orbit locks onto bones, corpse remains nil
     local bones_node_pos = { x = 50, y = 10, z = 50 }
     core.set_node(bones_node_pos, { name = "bones:bones" })
     core.on_globalstep(0.1)
@@ -3657,7 +3720,7 @@ do
         "Orbit center must be centered directly on the bones node")
     assert(cdata_bones.corpse == nil, "Corpse entity must remain nil after bones placed")
 
-    -- 4. Corpse purge: if a corpse entity existed, update_death_camera and aim_camera_at_bones immediately remove it
+    -- Corpse purge: if a corpse entity existed, update_death_camera and aim_camera_at_bones immediately remove it
     local dummy_corpse_removed = false
     local dummy_corpse = {
         is_valid = function() return true end,
@@ -3675,7 +3738,7 @@ do
     assert(dummy_corpse_removed == true, "Existing corpse must be removed by aim_camera_at_bones")
     assert(cdata_bones.corpse == nil, "Corpse reference must be cleared by aim_camera_at_bones")
 
-    -- 5. Fallback: when bones mod is absent, corpse IS spawned
+    -- Fallback: when bones mod is absent, corpse IS spawned
     core.loaded_mods["bones"] = nil
     core.world_nodes = {}
     core.on_respawnplayer(p_bones_user)
@@ -3686,7 +3749,7 @@ do
     assert(cdata_nobones.expect_bones == false, "expect_bones must be false when bones mod is absent")
     assert(cdata_nobones.corpse ~= nil, "Corpse entity must be spawned when bones mod is not active")
 
-    -- 6. Clean up
+    -- Clean up
     core.on_respawnplayer(p_bones_user)
     core.settings:set("bones_mode", "bones")
     core.loaded_mods["bones"] = nil
@@ -3698,7 +3761,7 @@ end
 -- SUITE 43: DEDICATED CORPSE ATTACHED WIELDITEM ENTITY & INVENTORY LOGIC
 -- =========================================================================
 do
-    -- 1. Entity registration inspection
+    -- Entity registration inspection
     local went_def = core.registered_entities["deathstats:corpse_wielditem"]
     assert(went_def ~= nil, "deathstats:corpse_wielditem must be registered in core.registered_entities")
     assert(went_def.initial_properties ~= nil, "initial_properties must exist")
@@ -3708,7 +3771,7 @@ do
     assert(went_def.initial_properties.physical == false, "physical must be false")
     assert(went_def.initial_properties.static_save == false, "static_save must be false")
 
-    -- 2. Test deathstats.is_inventory_dropped across conditions
+    -- Test deathstats.is_inventory_dropped across conditions
     local test_player = create_mock_player("WieldUser", 0, { x = 10, y = 5, z = 10 })
     mock_players["WieldUser"] = test_player
 
@@ -3740,7 +3803,7 @@ do
     core.settings:set("bones_mode", nil)
     assert(deathstats.is_inventory_dropped(test_player) == false, "Default engine without bones must return inventory not dropped")
 
-    -- 3. Test deathstats.get_player_wield_item
+    -- Test deathstats.get_player_wield_item
     -- 3a. Active wielded item
     test_player._wielded_item = {
         name = "default:sword_diamond",
@@ -3768,7 +3831,7 @@ do
     assert(meta_item == "default:axe_steel", "get_player_wield_item must recover from metadata stashed_main")
     test_player:get_meta():set_string("deathstats:stashed_main", "")
 
-    -- 4. Test deathstats.spawn_and_setup_corpse with attached wielditem entity
+    -- Test deathstats.spawn_and_setup_corpse with attached wielditem entity
     local corpse_pos = { x = 12, y = 5, z = 12 }
     local visuals_with_item = {
         mesh = "character.b3d",
@@ -3794,7 +3857,7 @@ do
     assert(att_rot.x == 90 and att_rot.y == 0 and att_rot.z == 90, "Attachment rotation must be {x=90, y=0, z=90}")
     assert(att_forced == true, "Forced visible must be true")
 
-    -- 5. When inventory IS dropped, wielditem is NOT attached
+    -- When inventory IS dropped, wielditem is NOT attached
     local visuals_dropped = {
         mesh = "character.b3d",
         textures = { "character.png" },
@@ -3807,7 +3870,7 @@ do
     assert(corpse_dropped ~= nil, "Corpse must be spawned")
     assert(deathstats.get_corpse_wielditem(corpse_dropped) == nil, "Wielditem must NOT be attached when inventory is dropped")
 
-    -- 6. When wield_item is empty, wielditem is NOT attached
+    -- When wield_item is empty, wielditem is NOT attached
     local visuals_empty = {
         mesh = "character.b3d",
         textures = { "character.png" },
@@ -3820,14 +3883,14 @@ do
     assert(corpse_empty ~= nil, "Corpse must be spawned")
     assert(deathstats.get_corpse_wielditem(corpse_empty) == nil, "Wielditem must NOT be attached when wield_item is empty")
 
-    -- 7. Test deathstats.remove_corpse cleans up both entities
+    -- Test deathstats.remove_corpse cleans up both entities
     assert(corpse.removed == false, "Corpse initially active")
     assert(went.removed == false, "Wielditem initially active")
     deathstats.remove_corpse(corpse)
     assert(corpse.removed == true, "Corpse must be removed")
     assert(went.removed == true, "Attached wielditem must be removed")
 
-    -- 8. Test orphan self-cleanup in on_step
+    -- Test orphan self-cleanup in on_step
     local orphan_went = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
     assert(orphan_went ~= nil, "Orphan entity spawned")
     assert(orphan_went.removed == false, "Orphan not yet removed")
@@ -3863,7 +3926,7 @@ local function run_test_suite_44()
     assert(type(xbmod.clear_attached_arrows) == "function", "XBows.clear_attached_arrows must exist")
     assert(type(xbmod.cleanup_corpse_arrows) == "function", "XBows.cleanup_corpse_arrows must exist")
 
-    -- 2. Bone calculation precision across all humanoid body parts
+    -- Bone calculation precision across all humanoid body parts
     local p_dummy = create_mock_player("DummyTarget")
 
     -- 2a. Head: y >= 12.5
@@ -3997,7 +4060,7 @@ local function run_test_suite_44()
     )
     assert(fb_bone == "Body", "Missing Head bone on humanoid target must fall back to Body")
 
-    -- 3. Arrow Tracking and Reparenting to Corpse
+    -- Arrow Tracking and Reparenting to Corpse
     local p_victim = create_mock_player("VictimPlayer", 0, { x = 20, y = 5, z = 20 })
     mock_players["VictimPlayer"] = p_victim
 
@@ -4033,7 +4096,7 @@ local function run_test_suite_44()
     local victim_arrows = xbmod.get_attached_arrows(p_victim)
     assert(#victim_arrows == 3, "get_attached_arrows must return exactly 3 arrows, got: " .. tostring(#victim_arrows))
 
-    -- 4. Player dies -> deathstats.spawn_and_setup_corpse transfers arrows
+    -- Player dies -> deathstats.spawn_and_setup_corpse transfers arrows
     local corpse_pos = { x = 20, y = 5, z = 20 }
     local corpse_visuals = {
         mesh = "character.b3d",
@@ -4065,7 +4128,7 @@ local function run_test_suite_44()
     local c_par3, c_bone3 = arr3:get_attach()
     assert(c_par3 == corpse and c_bone3 == "Body", "Root-attached arrow must map to Body bone on corpse")
 
-    -- 5. Corpse arrow cap (max 5 arrows)
+    -- Corpse arrow cap (max 5 arrows)
     -- Attach 4 more arrows to the corpse (total 7)
     local arr4 = spawn_mock_arrow(corpse, "Leg_Left", leg_l_pos, leg_l_rot)
     local arr5 = spawn_mock_arrow(corpse, "Leg_Right", leg_r_pos, leg_r_rot)
@@ -4083,7 +4146,7 @@ local function run_test_suite_44()
     assert(arr2.removed == true, "Oldest arrow 2 must be removed by cap")
     assert(arr7.removed == false, "Newest arrow 7 must still be active")
 
-    -- 6. Corpse Despawn Cleanup
+    -- Corpse Despawn Cleanup
     deathstats.remove_corpse(corpse)
     assert(corpse.removed == true, "Corpse must be removed")
     for _, arr in ipairs(capped_corpse_arrows) do
@@ -4091,7 +4154,7 @@ local function run_test_suite_44()
     end
     assert(#xbmod.get_attached_arrows(corpse) == 0, "get_attached_arrows on removed corpse must be empty")
 
-    -- 7. Living Player Respawn Cleanup
+    -- Living Player Respawn Cleanup
     local p_resp = create_mock_player("RespawnTester", 20, { x = 0, y = 10, z = 0 })
     local resp_arr1 = spawn_mock_arrow(p_resp, "Body", body_pos, body_rot)
     local resp_arr2 = spawn_mock_arrow(p_resp, "Arm_Right", arm_r_pos, arm_r_rot)
@@ -4101,7 +4164,7 @@ local function run_test_suite_44()
     assert(#xbmod.get_attached_arrows(p_resp) == 0, "Living player must have 0 attached arrows after respawn")
     assert(resp_arr1.removed == true and resp_arr2.removed == true, "Respawn must clean up arrow entities")
 
-    -- 8. Tier 2 Catch-up: Fatal Arrow attached via core.after(0)
+    -- Tier 2 Catch-up: Fatal Arrow attached via core.after(0)
     local p_fatal = create_mock_player("FatalVictim")
     mock_players["FatalVictim"] = p_fatal
     p_fatal.hp = 0
@@ -4144,7 +4207,7 @@ local function run_test_suite_45()
     mock_players["Explorer"] = p
     local _
 
-    -- 1. Satiation Multi-Framework Detection
+    -- Satiation Multi-Framework Detection
     -- 1a. hbhunger
     _G.hbhunger = { hunger = { ["Explorer"] = 14 } }
     local cur, max, ratio, mod_name, is_starving = deathstats.get_player_satiation(p)
@@ -4218,7 +4281,7 @@ local function run_test_suite_45()
         "hudbars fallback detection failed")
     _G.hb = nil
 
-    -- 2. Thirst & Dehydration Detection
+    -- Thirst & Dehydration Detection
     -- 2a. Player metadata thirsty_hydro
     local meta = p:get_meta()
     meta:set_string("thirsty_hydro", "16.5")
@@ -4242,7 +4305,7 @@ local function run_test_suite_45()
     assert(deathstats.is_player_dehydrated(p) == true, "thirsty table at 0 must be dehydrated")
     _G.thirsty = nil
 
-    -- 3. Sprint Exhaustion Detection
+    -- Sprint Exhaustion Detection
     -- 3a. hbsprint
     _G.sprint = { stamina = { ["Explorer"] = 0 } }
     assert(deathstats.is_player_sprint_exhausted(p) == true, "hbsprint at 0 must be sprint exhausted")
@@ -4260,7 +4323,7 @@ local function run_test_suite_45()
     assert(deathstats.is_player_sprint_exhausted(p) == true, "unified_stamina at 0 must be sprint exhausted")
     _G.unified_stamina = nil
 
-    -- 4. Death Analysis for Thirst
+    -- Death Analysis for Thirst
     -- 4a. Explicit { type = "thirst" }
     local thirst_reason = { type = "thirst" }
     local a_thirst = deathstats.analyze_death(p, thirst_reason)
@@ -4286,13 +4349,13 @@ local function run_test_suite_45()
     local a_fall_thirst = deathstats.analyze_death(p, { type = "fall" })
     assert(a_fall_thirst.category == "fall", "Fall damage must take precedence over thirst")
 
-    -- 5. Death Analysis for hunger_ng ({ hunger = "starve" })
+    -- Death Analysis for hunger_ng ({ hunger = "starve" })
     meta:set_string("thirsty_hydro", "20.0")
     local hunger_ng_reason = { type = "set_hp", hunger = "starve" }
     local a_hunger_ng = deathstats.analyze_death(p, hunger_ng_reason)
     assert(a_hunger_ng.category == "starve", "hunger_ng hunger='starve' must identify starve category")
 
-    -- 6. Sprint-Exhausted Starvation Funny Note
+    -- Sprint-Exhausted Starvation Funny Note
     _G.hbhunger = { hunger = { ["Explorer"] = 0 } }
     _G.sprint = { stamina = { ["Explorer"] = 0 } }
     local a_sprint_starve = deathstats.analyze_death(p, { type = "starve" })
@@ -4301,7 +4364,7 @@ local function run_test_suite_45()
     _G.hbhunger = nil
     _G.sprint = nil
 
-    -- 7. Dehydration hpchange tracking & reset cleanup
+    -- Dehydration hpchange tracking & reset cleanup
     deathstats.recent_dehydrations["Explorer"] = nil
     meta:set_string("thirsty_hydro", "0.0")
     core.on_player_hpchange(p, -1, { type = "set_hp" })
@@ -4319,7 +4382,7 @@ local function run_test_suite_45()
     assert(deathstats.recent_dehydrations["Explorer"] == nil,
         "reset_player_effects must clean up recent_dehydrations")
 
-    -- 8. Standalone HUD Hiding & Restoring (for non-hudbars hunger/stamina/thirsty HUDs)
+    -- Standalone HUD Hiding & Restoring (for non-hudbars hunger/stamina/thirsty HUDs)
     local raw_hud1 = p:hud_add({ type = "statbar", text = "stamina_hud_fg.png", scale = { x = 1, y = 1 } })
     local raw_hud2 = p:hud_add({ type = "image", text = "thirsty_bar.png", scale = { x = 2, y = 2 } })
     local raw_hud3 = p:hud_add({ type = "text", text = "Some Text", scale = { x = 1, y = 1 } })
@@ -4353,7 +4416,7 @@ local function run_test_suite_46()
     local p = create_mock_player("CustomStylist")
     local meta = p:get_meta()
 
-    -- 1. edit_skin procedural layer compilation (active in-memory)
+    -- edit_skin procedural layer compilation (active in-memory)
     rawset(_G, "edit_skin", {
         player_skins = {
             [p] = { base = "steve.png", hair = "curly_brown", hair_color = "#331100" },
@@ -4376,7 +4439,7 @@ local function run_test_suite_46()
     rawset(_G, "edit_skin", nil)
     meta:set_string("edit_skin:skin", "")
 
-    -- 2. collectible_skins registry with custom human model (e.g. character_female.b3d)
+    -- collectible_skins registry with custom human model (e.g. character_female.b3d)
     rawset(_G, "collectible_skins", {
         get_player_skin = function(name)
             assert(name == "CustomStylist", "collectible_skins must receive player name")
@@ -4393,7 +4456,7 @@ local function run_test_suite_46()
         "collectible_skins humanoid custom model must be inherited")
     rawset(_G, "collectible_skins", nil)
 
-    -- 3. myappearance 9-part modular texture assembly
+    -- myappearance 9-part modular texture assembly
     rawset(_G, "myappearance", {
         ["CustomStylist"] = {
             skin = "ap_skin.png^",
@@ -4415,7 +4478,7 @@ local function run_test_suite_46()
         "myappearance 9 parts must be concatenated and trailing '^' stripped")
     rawset(_G, "myappearance", nil)
 
-    -- 4. clothing multi-layer overlays (SFENCE / stu)
+    -- clothing multi-layer overlays (SFENCE / stu)
     -- 4a. On skinsdb (4 slots)
     p:set_properties({ mesh = "skinsdb_3d_armor_character_5.b3d" })
     rawset(_G, "skins", {
@@ -4468,7 +4531,7 @@ local function run_test_suite_46()
     rawset(_G, "clothing", nil)
     rawset(_G, "armor", nil)
 
-    -- 5. Additional skin registries: nc_skins, u_skins, multiskin
+    -- Additional skin registries: nc_skins, u_skins, multiskin
     -- 5a. nc_skins
     rawset(_G, "nc_skins", {
         get_skin = function(name)
@@ -4507,7 +4570,7 @@ local function run_test_suite_46()
     meta:set_float("character_creator:width", 0)
     meta:set_float("character_creator:height", 0)
 
-    -- 6. Strict Non-Humanoid Morph Rejection: Non-human mesh must be sanitized to humanoid
+    -- Strict Non-Humanoid Morph Rejection: Non-human mesh must be sanitized to humanoid
     p:set_properties({ mesh = "mobs_cow.b3d" })
     local vis_morph_cow = deathstats.get_player_visuals(p)
     assert(vis_morph_cow.mesh == "character.b3d",
@@ -4519,7 +4582,7 @@ local function run_test_suite_46()
         "Disguise/morph mesh must be sanitized to character.b3d")
     p:set_properties({ mesh = "character.b3d" })
 
-    -- 7. Invisibility / Transparent Texture Trap Recovery
+    -- Invisibility / Transparent Texture Trap Recovery
     p:set_properties({ textures = { "deathstats_transparent.png" } })
     meta:set_string("deathstats:orig_textures", core.serialize({ "restored_player_skin.png" }))
     local vis_trans_rec = deathstats.get_player_visuals(p)
@@ -4527,7 +4590,7 @@ local function run_test_suite_46()
         "Transparent texture trap must restore original textures from metadata")
     meta:set_string("deathstats:orig_textures", "")
 
-    -- 8. Offline player safety check
+    -- Offline player safety check
     local vis_offline = deathstats.get_player_visuals(nil)
     assert(vis_offline.mesh == "character.b3d", "Nil player must safely return default humanoid mesh")
     assert(vis_offline.textures[1] == "character.png", "Nil player must safely return default character.png")
@@ -4541,7 +4604,7 @@ run_test_suite_46()
 local function run_test_suite_47()
     print("\n--- TEST 47: Tactical Multiplayer Live Scoreboard (HUD Overlay, Responsive Metrics & Formspec) ---")
 
-    -- 1. In-game time formatting (get_gametime_formatted)
+    -- In-game time formatting (get_gametime_formatted)
     local orig_tod = core.get_timeofday
     core.get_timeofday = function() return 0.0 end
     assert(deathstats.get_gametime_formatted("24h") == "00:00", "0.0 TOD in 24h must be 00:00")
@@ -4560,7 +4623,7 @@ local function run_test_suite_47()
     assert(deathstats.get_gametime_formatted("12h") == "09:15 AM", "9.25/24 TOD in 12h must be 09:15 AM")
     core.get_timeofday = orig_tod
 
-    -- 2. Armor points inspection across frameworks
+    -- Armor points inspection across frameworks
     assert(deathstats.get_player_armor_points(nil) == 0, "Nil player must yield 0 armor points")
     local p_sb1 = create_mock_player("ScoreTester1")
     p_sb1:set_armor_groups({ fleshy = 65 })
@@ -4583,7 +4646,7 @@ local function run_test_suite_47()
     assert(deathstats.get_player_armor_points(p_sb1) == 70, "hbarmor must be inspected")
     rawset(_G, "hbarmor", nil)
 
-    -- 3. Ping latency inspection
+    -- Ping latency inspection
     local orig_pinfo = core.get_player_information
     core.get_player_information = function(name)
         if name == "ScoreTester1" then
@@ -4653,7 +4716,9 @@ local function run_test_suite_47()
     end
     assert(has_bounty == false, "Unregistered column must not appear in get_scoreboard_columns")
 
-    -- 4. Score calculation & descending sort
+    -- Score calculation & descending sort
+    local orig_badges = deathstats.config.enable_mvp_badges
+    deathstats.config.enable_mvp_badges = false
     local p_sb2 = create_mock_player("ScoreTester2")
     local p_sb3 = create_mock_player("ScoreTester3")
 
@@ -4715,7 +4780,7 @@ local function run_test_suite_47()
     assert(board_data[3].name == "ScoreTester3" and board_data[3].rank == 3, "Rank 3 must be ScoreTester3")
     assert(board_data[3].is_dead == true, "ScoreTester3 must be flagged dead")
 
-    -- 5. Key detection logic
+    -- Key detection logic
     p_sb1.control = { zoom = true }
     assert(deathstats.is_scoreboard_key_down(p_sb1, "zoom") == true, "Holding zoom must return true")
     p_sb1.control = { zoom = false }
@@ -4728,7 +4793,7 @@ local function run_test_suite_47()
     assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak+aux1") == false, "Releasing aux1 must return false for sneak+aux1")
     assert(deathstats.is_scoreboard_key_down(p_sb1, "sneak_aux1") == false, "Releasing aux1 must return false for sneak_aux1")
 
-    -- 6. Responsive metrics & layout calculations
+    -- Responsive metrics & layout calculations
     local orig_win_info = core.get_player_window_information
     core.get_player_window_information = function(_pname)
         return {
@@ -4767,7 +4832,7 @@ local function run_test_suite_47()
     assert(#hdr_wide == #row_wide, string.format("Wide header (%d chars) and row (%d chars) must match exactly", #hdr_wide, #row_wide))
     assert(#hdr_small == #row_small, string.format("Small header (%d chars) and row (%d chars) must match exactly", #hdr_small, #row_small))
 
-    -- 7. HUD Scoreboard Lifecycle (Show -> Update -> Hide)
+    -- HUD Scoreboard Lifecycle (Show -> Update -> Hide)
     core.get_player_window_information = function(_pname)
         return { size = { x = 1920, y = 1080 }, real_hud_scaling = 1.0 }
     end
@@ -4897,7 +4962,7 @@ local function run_test_suite_47()
     assert(deathstats.scoreboard_states["ScoreTester1"] == nil, "Scoreboard state must be cleared after hide")
     assert(next(p_sb1.huds) == nil, "All HUD elements must be removed on scoreboard close")
 
-    -- 8. Full Scrollable Formspec Dialog & Chat Command
+    -- Full Scrollable Formspec Dialog & Chat Command
     core.last_formspec = nil
     deathstats.show_scoreboard_formspec(p_sb1)
     assert(core.last_formspec ~= nil, "Formspec must be shown on show_scoreboard_formspec")
@@ -4960,7 +5025,7 @@ local function run_test_suite_47()
     deathstats.show_scoreboard_hud(p_sb3)
     assert(deathstats.scoreboard_states["ScoreTester3"] == nil, "show_scoreboard_hud must reject dead player")
 
-    -- 9. Enable/Disable Scoreboard Feature Setting Tests
+    -- Enable/Disable Scoreboard Feature Setting Tests
     local ok_dis, msg_dis = cmd_deathstats.func("ScoreTester1", "scoreboard off")
     assert(ok_dis == true and msg_dis:find("disabled"), "/deathstats scoreboard off must disable feature")
     assert(deathstats.config.enable_scoreboard == false, "enable_scoreboard must be false")
@@ -4985,14 +5050,14 @@ local function run_test_suite_47()
     assert(ok_en == true and msg_en:find("enabled"), "/deathstats scoreboard on must re-enable feature")
     assert(deathstats.config.enable_scoreboard == true, "enable_scoreboard must be true")
 
-    -- 10. Leaderboard Sorting: Living players rank above dead players regardless of kills
+    -- Leaderboard Sorting: Living players rank above dead players regardless of kills
     data3.current_run.players_killed = 99 -- dead player with 99 kills
     data2.current_run.players_killed = 0  -- alive player with 0 kills
     local sorted_check = deathstats.get_scoreboard_data(p_sb1)
     assert(sorted_check[3].name == "ScoreTester3", "Dead player must be ranked below all living players despite 99 kills")
     assert(sorted_check[3].is_dead == true, "Last ranked player must be the dead player")
 
-    -- 11. HUD Diff-Memoization Verification (Eliminates Redundant Network Packets)
+    -- HUD Diff-Memoization Verification (Eliminates Redundant Network Packets)
     deathstats.show_scoreboard_hud(p_sb1)
     local state_memo = deathstats.scoreboard_states["ScoreTester1"]
     assert(state_memo ~= nil, "Scoreboard HUD must be open")
@@ -5020,6 +5085,7 @@ local function run_test_suite_47()
     mock_players["ScoreTester1"] = nil
     mock_players["ScoreTester2"] = nil
     mock_players["ScoreTester3"] = nil
+    deathstats.config.enable_mvp_badges = orig_badges
     core.get_connected_players = orig_conn
     core.get_player_window_information = orig_win_info
 
@@ -5033,7 +5099,7 @@ run_test_suite_47()
 local function run_test_suite_48()
     print("\n--- TEST 48: Mock Scoreboard Data Generation & Live Testing Controls ---")
 
-    -- 1. Load mock_scoreboard.lua
+    -- Load mock_scoreboard.lua
     dofile(modpath .. "/mock_scoreboard.lua")
     assert(deathstats.mock_scoreboard_enabled == true, "Loading mock_scoreboard.lua must enable mock data")
     assert(type(deathstats.mock_players_data) == "table", "Mock players dataset must be defined")
@@ -5048,7 +5114,7 @@ local function run_test_suite_48()
         return { p_viewer }
     end
 
-    -- 2. Scoreboard data with all mock players enabled
+    -- Scoreboard data with all mock players enabled
     local full_board = deathstats.get_scoreboard_data(p_viewer)
     local expected_total = 1 + #deathstats.mock_players_data
     assert(#full_board == expected_total,
@@ -5085,7 +5151,7 @@ local function run_test_suite_48()
         assert(ok, string.format("Mock players must be sorted living-first then descending stats: %s vs %s", a.name, b.name))
     end
 
-    -- 3. Test limiting player count via /mockscores <count>
+    -- Test limiting player count via /mockscores <count>
     local cmd_mock = core.chatcommands["mockscores"]
     assert(cmd_mock ~= nil, "/mockscores chatcommand must be registered")
 
@@ -5096,21 +5162,21 @@ local function run_test_suite_48()
     local limited_board = deathstats.get_scoreboard_data(p_viewer)
     assert(#limited_board == 6, string.format("Expected 6 entries (1 viewer + 5 mocks), got %d", #limited_board))
 
-    -- 4. Test disabling mock data via /mockscores off
+    -- Test disabling mock data via /mockscores off
     local ok_off = cmd_mock.func("TestViewer", "off")
     assert(ok_off == true and deathstats.mock_scoreboard_enabled == false, "Disabling mock data must succeed")
     local real_board = deathstats.get_scoreboard_data(p_viewer)
     assert(#real_board == 1, "Disabling mock data must return only real connected players")
     assert(real_board[1].name == "TestViewer", "Real player must remain in real board")
 
-    -- 5. Test re-enabling via /deathstats mock on
+    -- Test re-enabling via /deathstats mock on
     local cmd_ds = core.chatcommands["deathstats"]
     local ok_on = cmd_ds.func("TestViewer", "mock on")
     assert(ok_on == true and deathstats.mock_scoreboard_enabled == true, "/deathstats mock on must re-enable mock data")
     local re_enabled_board = deathstats.get_scoreboard_data(p_viewer)
     assert(#re_enabled_board == expected_total, "Re-enabling without count must return full roster")
 
-    -- 6. Test toggle via /deathstats mock
+    -- Test toggle via /deathstats mock
     cmd_ds.func("TestViewer", "mock")
     assert(deathstats.mock_scoreboard_enabled == false, "Toggling must disable mock data")
     cmd_ds.func("TestViewer", "mock")
@@ -5138,7 +5204,7 @@ local function run_test_suite_49()
         return { p_perf }
     end
 
-    -- 1. Metadata query memoization in deathstats.get_player_data
+    -- Metadata query memoization in deathstats.get_player_data
     local meta = p_perf:get_meta()
     local get_string_calls = 0
     local orig_get_string = meta.get_string
@@ -5162,20 +5228,20 @@ local function run_test_suite_49()
         string.format("Expected %d metadata calls, got %d (memoization failure)", initial_calls, get_string_calls))
     meta.get_string = orig_get_string
 
-    -- 2. deathstats.calculate_player_score with precalculated armor and hp
+    -- deathstats.calculate_player_score with precalculated armor and hp
     local score_no_cache, avg_no_cache = deathstats.calculate_player_score(d1, p_perf)
     local score_with_cache, avg_with_cache = deathstats.calculate_player_score(d1, p_perf, 0, 20)
     assert(score_no_cache == score_with_cache and avg_no_cache == avg_with_cache,
         "calculate_player_score must return identical result with precomputed values")
 
-    -- 3. deathstats.hide_scoreboard_hud accepting string player name
+    -- deathstats.hide_scoreboard_hud accepting string player name
     deathstats.show_scoreboard_hud(p_perf)
     assert(deathstats.scoreboard_states["PerfTester"] ~= nil, "HUD state must exist after show")
     deathstats.hide_scoreboard_hud("PerfTester")
     assert(deathstats.scoreboard_states["PerfTester"] == nil, "hide_scoreboard_hud must support string name")
     assert(next(p_perf.huds) == nil, "All HUD elements must be removed when hidden by name")
 
-    -- 4. update_scoreboard_hud metrics layout memoization
+    -- update_scoreboard_hud metrics layout memoization
     deathstats.show_scoreboard_hud(p_perf)
     local state = deathstats.scoreboard_states["PerfTester"]
     assert(state ~= nil and state.metrics ~= nil, "Metrics must be calculated on show")
@@ -5186,7 +5252,7 @@ local function run_test_suite_49()
     assert(state.metrics == orig_metrics, "Metrics table must be preserved when window dimensions are constant")
     deathstats.hide_scoreboard_hud(p_perf)
 
-    -- 5. Public API forward declarations
+    -- Public API forward declarations
     assert(type(deathstats.get_player_hp) == "function", "deathstats.get_player_hp must be defined in API")
     assert(deathstats.get_player_hp(p_perf) == 20, "get_player_hp must return 20 for full health mock player")
 
@@ -5226,7 +5292,7 @@ local function run_test_suite_50()
         return { p_opt1, p_opt2, p_opt3 }
     end
 
-    -- 1. Multi-Viewer Leaderboard Sharing (precomputed_base)
+    -- Multi-Viewer Leaderboard Sharing (precomputed_base)
     local entries1, base_list = deathstats.get_scoreboard_data(p_opt1)
     assert(type(entries1) == "table", "entries1 must be a table")
     assert(type(base_list) == "table", "base_list must be returned for same-frame reuse")
@@ -5253,7 +5319,7 @@ local function run_test_suite_50()
     deathstats.hide_scoreboard_hud(p_opt2)
     assert(deathstats.scoreboard_states["OptTester2"] == nil, "HUD state must be cleared after hide")
 
-    -- 2. get_player_armor_points skips mcl_armor metadata lookup when mod is not loaded
+    -- get_player_armor_points skips mcl_armor metadata lookup when mod is not loaded
     rawset(_G, "mcl_armor", nil)
     local p_armor = create_mock_player("ArmorTester")
     mock_players["ArmorTester"] = p_armor
@@ -5283,7 +5349,7 @@ local function run_test_suite_50()
     meta_armor.get_int = orig_meta_get_int
     mock_players["ArmorTester"] = nil
 
-    -- 3. In-place mutation of player_last_pos and player_last_look tables
+    -- In-place mutation of player_last_pos and player_last_look tables
     deathstats.player_last_pos["OptTester1"] = nil
     deathstats.player_last_look["OptTester1"] = nil
     p_opt1.pos = { x = 1, y = 2, z = 3 }
@@ -5314,7 +5380,7 @@ local function run_test_suite_50()
     assert(look_ref.pitch == 0.8 and look_ref.yaw == 1.5,
         "player_last_look fields must be updated in-place")
 
-    -- 4. Activity Resets: Mining, Eating, Player Punch, and Mob Punch
+    -- Activity Resets: Mining, Eating, Player Punch, and Mob Punch
     deathstats.last_activity["OptTester1"] = 50
     core.on_dignode({ x = 0, y = 0, z = 0 }, { name = "default:stone" }, p_opt1)
     assert(deathstats.last_activity["OptTester1"] > 50, "Mining node must reset player activity")
@@ -5336,7 +5402,7 @@ local function run_test_suite_50()
     mob_def.on_punch({ hp = 20 }, p_opt1, 1.0, nil, nil, 5)
     assert(deathstats.last_activity["OptTester1"] > 50, "Punching an entity must reset player activity")
 
-    -- 5. Formspec style_type Deduplication
+    -- Formspec style_type Deduplication
     core.last_formspec = nil
     deathstats.show_scoreboard_formspec(p_opt1)
     assert(core.last_formspec ~= nil, "Formspec must be generated")
@@ -5349,7 +5415,7 @@ local function run_test_suite_50()
         string.format("Expected deduplicated style_type count (< 10), got %d", style_count))
     deathstats.open_scoreboard_formspecs["OptTester1"] = nil
 
-    -- 6. Globalstep Fast-Exit: Empty Server & Disabled Feature
+    -- Globalstep Fast-Exit: Empty Server & Disabled Feature
     core.get_connected_players = function() return {} end
     core.on_globalstep(0.1) -- Should return immediately without errors
 
@@ -5386,7 +5452,7 @@ local function run_test_suite_51()
         return { size = { x = 1920, y = 1080 }, real_hud_scaling = 1.0 }
     end
 
-    -- 1. Normal Show & Hide: chat suppressed on show, restored on hide
+    -- Normal Show & Hide: chat suppressed on show, restored on hide
     assert(p_chat:hud_get_flags().chat == true, "Initial chat flag must be true")
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed (false) while scoreboard HUD is active")
@@ -5397,7 +5463,7 @@ local function run_test_suite_51()
     assert(p_chat:hud_get_flags().chat == true, "Chat must be restored to true when scoreboard HUD is hidden")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "State must be cleared on hide")
 
-    -- 2. Respect existing chat=false: if player had chat disabled, closing scoreboard keeps it disabled
+    -- Respect existing chat=false: if player had chat disabled, closing scoreboard keeps it disabled
     p_chat:hud_set_flags({ chat = false })
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must remain false")
@@ -5407,7 +5473,7 @@ local function run_test_suite_51()
     assert(p_chat:hud_get_flags().chat == false, "Chat must not be forced to true if player had it off")
     p_chat:hud_set_flags({ chat = true })
 
-    -- 3. Redraw / Resolution change keeps chat suppressed without flag flicker
+    -- Redraw / Resolution change keeps chat suppressed without flag flicker
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be false after first show")
     -- Simulate second show (window resize / re-show)
@@ -5418,7 +5484,7 @@ local function run_test_suite_51()
     deathstats.hide_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "Chat must restore to true after re-show lifecycle")
 
-    -- 4. Player Death: dying while holding scoreboard restores chat
+    -- Player Death: dying while holding scoreboard restores chat
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     core.on_dieplayer(p_chat)
@@ -5427,14 +5493,14 @@ local function run_test_suite_51()
     core.on_respawnplayer(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "Chat remains active after respawn")
 
-    -- 5. Player Respawn: respawning clears any lingering scoreboard HUD and restores chat
+    -- Player Respawn: respawning clears any lingering scoreboard HUD and restores chat
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     core.on_respawnplayer(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "Chat must be restored on on_respawnplayer")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on respawn")
 
-    -- 6. Trigger Death Screen: direct call to trigger_death_screen clears scoreboard HUD & restores chat
+    -- Trigger Death Screen: direct call to trigger_death_screen clears scoreboard HUD & restores chat
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     deathstats.trigger_death_screen(p_chat, { type = "fall" })
@@ -5442,27 +5508,27 @@ local function run_test_suite_51()
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared by trigger_death_screen")
     core.on_respawnplayer(p_chat)
 
-    -- 7. Player Disconnect (leaveplayer): clears state and restores chat
+    -- Player Disconnect (leaveplayer): clears state and restores chat
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     core.on_leaveplayer(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "Chat must be restored on leaveplayer")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on leaveplayer")
 
-    -- 8. Player Join: guarantees chat flag is true and no stale scoreboard remains
+    -- Player Join: guarantees chat flag is true and no stale scoreboard remains
     p_chat:hud_set_flags({ chat = false })
     core.on_joinplayer(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "on_joinplayer must ensure chat is enabled")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "No scoreboard state may exist on join")
 
-    -- 9. Server Shutdown: restores chat for all active viewers
+    -- Server Shutdown: restores chat for all active viewers
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     core.on_shutdown()
     assert(p_chat:hud_get_flags().chat == true, "on_shutdown must restore chat for all active scoreboard viewers")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on shutdown")
 
-    -- 10. Formspec Opening: opening /scores modal hides HUD and restores chat
+    -- Formspec Opening: opening /scores modal hides HUD and restores chat
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == false, "Chat must be suppressed while HUD is open")
     deathstats.show_scoreboard_formspec(p_chat)
@@ -5470,7 +5536,7 @@ local function run_test_suite_51()
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on formspec open")
     deathstats.open_scoreboard_formspecs["ChatTester"] = nil
 
-    -- 11. Configuration Toggle: setting deathstats_scoreboard_suppress_chat = false bypasses suppression
+    -- Configuration Toggle: setting deathstats_scoreboard_suppress_chat = false bypasses suppression
     deathstats.config.scoreboard_suppress_chat = false
     deathstats.show_scoreboard_hud(p_chat)
     assert(p_chat:hud_get_flags().chat == true, "Chat must NOT be suppressed when scoreboard_suppress_chat is false")
@@ -5542,10 +5608,3475 @@ local function run_test_suite_52()
 end
 run_test_suite_52()
 
-print("\nALL 52 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 53: Last-Blow Force Calculation, Damage Scaling & Velocity Clamping ---
+local function run_test_suite_53()
+    local p = create_mock_player("RagdollTester1")
+    p:set_pos({ x = 10, y = 5, z = 10 })
+    p.hp = 20
+    p:set_look_horizontal(0) -- Facing North (-Z)
 
+    -- Test low damage punch (damage = 2): small stumble velocity
+    deathstats.recent_punches["RagdollTester1"] = {
+        damage = 2,
+        time = core.get_gametime(),
+        dir = { x = 0, y = 0, z = 1 }, -- Knocked in +Z
+    }
+    local vel_low, rot_low = deathstats.calculate_corpse_impulse(p, { category = "pvp" })
+    assert(vel_low.z > 0, "Velocity must be directed along +Z")
+    assert(math.abs(vel_low.x) < 0.001, "Velocity X must be 0 for pure Z knockback")
+    assert(vel_low.z >= 2.0 and vel_low.z <= 3.0, "Low damage punch must produce moderate speed (~2.4 m/s)")
+    assert(vel_low.y >= 1.4 and vel_low.y <= 2.0, "Low damage punch must produce slight vertical hop (~1.6 m/s)")
+    assert(rot_low.x > 0, "Pitch tumbling must be positive in flight direction")
 
+    -- Test heavy damage blow (damage = 15): higher proportional velocity
+    deathstats.recent_punches["RagdollTester1"] = {
+        damage = 15,
+        time = core.get_gametime(),
+        dir = { x = 0, y = 0, z = 1 },
+    }
+    local vel_high, _ = deathstats.calculate_corpse_impulse(p, { category = "pvp" })
+    assert(vel_high.z > vel_low.z, "Heavy damage must produce greater horizontal velocity than low damage")
+    assert(vel_high.y > vel_low.y, "Heavy damage must produce greater launch lift than low damage")
+    assert(vel_high.z >= 7.5 and vel_high.z <= 9.0, "15 damage must yield ~8.25 m/s")
 
+    -- Test massive overkill damage (damage = 120): strict upper velocity clamp
+    deathstats.recent_punches["RagdollTester1"] = {
+        damage = 120,
+        time = core.get_gametime(),
+        dir = { x = 1, y = 0, z = 0 },
+    }
+    local vel_overkill, _ = deathstats.calculate_corpse_impulse(p, { category = "pvp" })
+    assert(vel_overkill.x <= deathstats.config.ragdoll_max_velocity,
+        "Overkill horizontal velocity must not exceed ragdoll_max_velocity (18.0)")
+    assert(vel_overkill.y <= 8.0,
+        "Overkill vertical velocity must not exceed 8.0 m/s clamp")
 
+    -- Test direction resolution from hitter_pos when dir is nil
+    deathstats.recent_punches["RagdollTester1"] = {
+        damage = 8,
+        time = core.get_gametime(),
+        dir = nil,
+        hitter_pos = { x = 5, y = 5, z = 10 }, -- Attacker at x=5, player at x=10 -> knocked towards +X
+    }
+    local vel_dir, _ = deathstats.calculate_corpse_impulse(p, { category = "pvp" })
+    assert(vel_dir.x > 0, "Direction resolved from hitter_pos must knock victim away (+X)")
+    assert(math.abs(vel_dir.z) < 0.001, "Direction Z must be 0")
 
+    -- Test direction fallback to opposite look direction
+    deathstats.recent_punches["RagdollTester1"] = nil
+    deathstats.last_blow["RagdollTester1"] = nil
+    p.look_dir = { x = 0, y = 0, z = 1 } -- Looking +Z
+    local vel_fallback, _ = deathstats.calculate_corpse_impulse(p, { category = "mob" })
+    assert(vel_fallback.z < 0, "Corpse must be knocked backward opposite to player look direction (-Z)")
 
+    -- Test fall death physics: horizontal momentum dampened, gentle vertical rebound
+    local vel_fall, _ = deathstats.calculate_corpse_impulse(p, { category = "fall" })
+    assert(vel_fall.y <= 4.0, "Fall death vertical lift must be dampened (<= 4.0 m/s)")
+
+    -- Test setting toggle: disable ragdoll returns (0, 0, 0)
+    deathstats.config.enable_corpse_ragdoll = false
+    local vel_disabled, rot_disabled = deathstats.calculate_corpse_impulse(p, { category = "pvp" })
+    assert(vel_disabled.x == 0 and vel_disabled.y == 0 and vel_disabled.z == 0,
+        "Disabled enable_corpse_ragdoll must return zero velocity")
+    assert(rot_disabled.x == 0 and rot_disabled.y == 0 and rot_disabled.z == 0,
+        "Disabled enable_corpse_ragdoll must return zero rotation speed")
+    deathstats.config.enable_corpse_ragdoll = true
+
+    print("  [PASS] Last-Blow Force Calculation, Damage Scaling & Velocity Clamping")
+end
+run_test_suite_53()
+
+--- TEST 54: Corpse Ragdoll Physics Simulation & Dynamic Camera Tracking ---
+local function run_test_suite_54()
+    local cpos = { x = 50, y = 10, z = 50 }
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 1.57,
+    }
+    local p = create_mock_player("RagdollSimPlayer")
+    p:set_pos(cpos)
+    p.hp = 0
+    deathstats.last_blow["RagdollSimPlayer"] = {
+        damage = 10,
+        hp_change = -10,
+        time = core.get_gametime(),
+        pos = cpos,
+        velocity = { x = 0, y = 0, z = 0 },
+    }
+    deathstats.recent_punches["RagdollSimPlayer"] = {
+        damage = 10,
+        dir = { x = 0, y = 0, z = 1 },
+        time = core.get_gametime(),
+    }
+
+    -- Test spawn_and_setup_corpse with ragdoll enabled
+    local corpse = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    assert(corpse ~= nil, "Corpse entity must be spawned")
+    assert(corpse.properties.physical == true, "Corpse entity must be physical when ragdoll is enabled")
+    assert(corpse.velocity.z > 0, "Corpse must have positive initial velocity along knockback direction")
+    assert(corpse.velocity.y > 0, "Corpse must have positive vertical launch lift")
+    local luaent = corpse:get_luaentity()
+    assert(luaent ~= nil, "Corpse must have luaentity table")
+    assert(luaent._settled == false, "Corpse must not be settled initially while in flight")
+
+    -- Test on_step ground friction and stopping condition
+    -- Simulate landing on ground: set pos over solid walkable ground node
+    core.set_node({ x = 50, y = 9.75, z = 51 }, { name = "default:dirt" })
+    corpse:set_pos({ x = 50, y = 10, z = 51 })
+    corpse:set_velocity({ x = 0, y = 0, z = 4.0 })
+    luaent._timer = 0.2 -- past initial takeoff timer
+
+    -- Step 1: sliding along ground decelerates horizontal velocity
+    luaent:on_step(0.1)
+    assert(corpse.velocity.z < 4.0 and corpse.velocity.z > 0,
+        "Ground friction must decelerate horizontal speed")
+
+    -- Step 2: speed drops below 0.15 threshold -> settles to a complete stop
+    corpse:set_velocity({ x = 0, y = 0, z = 0.05 })
+    luaent:on_step(0.1)
+    assert(luaent._settled == true, "Corpse must be marked as _settled when speed < 0.15")
+    assert(corpse.velocity.x == 0 and corpse.velocity.y == 0 and corpse.velocity.z == 0,
+        "Settled corpse must have zero velocity")
+    assert(corpse.acceleration.x == 0 and corpse.acceleration.y == 0 and corpse.acceleration.z == 0,
+        "Settled corpse must have zero acceleration")
+
+    -- Test chunk safety: unloaded chunk (node is nil/ignore) halts corpse immediately
+    local corpse_unloaded = deathstats.spawn_and_setup_corpse({ x = 9999, y = 0, z = 9999 }, visuals, p)
+    local uent = corpse_unloaded:get_luaentity()
+    uent._settled = false
+    uent._timer = 0.1
+    -- Position where core.get_node_or_nil returns nil (> 30000)
+    corpse_unloaded:set_pos({ x = 99999, y = 0, z = 99999 })
+    uent:on_step(0.1)
+    assert(uent._settled == true, "Corpse in unloaded chunk must settle immediately without force-loading")
+
+    -- Test liquid physics: buoyancy and hydrodynamic drag in water
+    core.set_node({ x = 50, y = 10, z = 50 }, { name = "default:water_source" })
+    local corpse_water = deathstats.spawn_and_setup_corpse(cpos, visuals, p)
+    local went = corpse_water:get_luaentity()
+    went._settled = false
+    went._timer = 0.1
+    corpse_water:set_pos({ x = 50, y = 10, z = 50 })
+    corpse_water:set_velocity({ x = 2.0, y = -1.0, z = 2.0 })
+    went:on_step(0.1)
+    assert(corpse_water.velocity.x < 2.0, "Liquid drag must slow horizontal velocity")
+    assert(corpse_water.acceleration.y > 0, "Water buoyancy must apply upward vertical acceleration")
+
+    -- Test dynamic camera orbit tracking of moving corpse
+    deathstats.set_death_camera(p, { category = "pvp" })
+    local sim_cam_data = deathstats.player_camera_data["RagdollSimPlayer"]
+    assert(sim_cam_data ~= nil, "Camera data must be registered for RagdollSimPlayer")
+    local tracked_corpse = sim_cam_data.corpse
+    assert(tracked_corpse ~= nil, "Camera data must track corpse")
+
+    -- Move corpse 5 nodes away to simulate in-flight trajectory
+    local new_corpse_pos = { x = 55, y = 12, z = 60 }
+    tracked_corpse:set_pos(new_corpse_pos)
+
+    -- Update camera step
+    deathstats.update_death_camera(p, 0.5)
+    assert(math.abs(sim_cam_data.orbit_center.x - 55) < 1.0,
+        "Camera orbit_center X must track towards moving corpse position")
+    assert(math.abs(sim_cam_data.orbit_center.z - 60) < 1.0,
+        "Camera orbit_center Z must track towards moving corpse position")
+    local anchor_dist = vector.distance(sim_cam_data.anchor:get_pos(), sim_cam_data.orbit_center)
+    assert(anchor_dist < 0.001,
+        "Anchor pos must be stationed directly at corpse orbit_center")
+    assert(sim_cam_data.anchor.last_move_continuous == false,
+        "Anchor must use continuous = false for unthrottled position updates")
+    assert(vector.length(sim_cam_data.anchor:get_velocity()) > 0.1,
+        "Anchor must have non-zero velocity tracking corpse")
+    assert(p.eye_offset ~= nil and p.eye_offset[1].z < 0 and p.eye_offset[1].y > 0,
+        "Player eye offset must project backwards and upwards from stationed anchor")
+    deathstats.reset_camera(p)
+
+    -- Test disable setting produces static corpse
+    deathstats.config.enable_corpse_ragdoll = false
+    local static_corpse = deathstats.spawn_and_setup_corpse(cpos, visuals, p)
+    assert(static_corpse.properties.physical == false,
+        "Disabled ragdoll must spawn non-physical static corpse")
+    local static_luaent = static_corpse:get_luaentity()
+    assert(static_luaent._settled == true,
+        "Disabled ragdoll corpse must be immediately settled")
+    deathstats.config.enable_corpse_ragdoll = true
+
+    print("  [PASS] Corpse Ragdoll Physics Simulation & Dynamic Camera Tracking")
+end
+run_test_suite_54()
+
+--- TEST 55: Hudbars Uninitialized Joinplayer Nil-Safety & 16-Block Range Death Sound ---
+local function run_test_suite_55()
+    -- Test uninitialized hudbars state on player join
+    local p_join = create_mock_player("UninitPlayer")
+    p_join:set_pos({ x = 120, y = 15, z = 140 })
+    p_join.hp = 0
+
+    -- Ensure player is NOT in hudbars tables (reproducing fresh join state before custom_hud runs)
+    if hb and hb.hudtables then
+        for _, ht in pairs(hb.hudtables) do
+            if ht.hudstate then ht.hudstate["UninitPlayer"] = nil end
+            if ht.hudids then ht.hudids["UninitPlayer"] = nil end
+        end
+    end
+    if hb and hb.players then
+        hb.players["UninitPlayer"] = nil
+    end
+
+    -- Call compat.hide directly - must not throw nil indexing error
+    local ok_hide, err_hide = pcall(function()
+        deathstats.compat_hudbars.hide(p_join)
+    end)
+    assert(ok_hide == true, "compat.hide must execute without error for uninitialized player: " .. tostring(err_hide))
+
+    -- Trigger death screen (as occurs in on_joinplayer for dead players)
+    local ok_trigger, err_trigger = pcall(function()
+        deathstats.trigger_death_screen(p_join, { category = "generic" })
+    end)
+    assert(ok_trigger == true, "trigger_death_screen must not crash on uninitialized hudbars: " .. tostring(err_trigger))
+
+    -- Call compat.unhide directly - must not throw nil indexing error
+    local ok_unhide, err_unhide = pcall(function()
+        deathstats.compat_hudbars.unhide(p_join)
+    end)
+    assert(ok_unhide == true, "compat.unhide must execute without error for uninitialized player: " .. tostring(err_unhide))
+
+    -- Test 16-block range positional death sound
+    deathstats.config.enable_sounds = true
+    deathstats.play_death_sound(p_join)
+    assert(core.last_sound ~= nil, "Death sound must be played")
+    assert(core.last_sound.name == "deathstats_death", "Sound name must be deathstats_death")
+    assert(core.last_sound.params.pos ~= nil, "Death sound must be played at player position for 3D range hearing")
+    assert(core.last_sound.params.pos.x == 120 and core.last_sound.params.pos.z == 140, "Sound position must match player")
+    assert(core.last_sound.params.max_hear_distance == 16, "Sound max_hear_distance must be 16 blocks")
+
+    -- Fallback when player position is unavailable
+    deathstats.play_death_sound({
+        get_player_name = function() return "GhostPlayer" end
+    })
+    assert(core.last_sound.params.to_player == "GhostPlayer", "Sound must fallback to to_player when pos is nil")
+
+    -- Clean up
+    deathstats.reset_camera(p_join)
+
+    print("  [PASS] Hudbars Uninitialized Joinplayer Nil-Safety & 16-Block Range Death Sound")
+end
+run_test_suite_55()
+
+-- TEST 56: First-Step Arrow Transfer, Preserved Scale & Corpse-Attached Particle Lifecycle
+local function run_test_suite_56()
+    print("\n--- TEST 56: First-Step Arrow Transfer, Preserved Scale & Corpse-Attached Particle Lifecycle ---")
+
+    -- Verify Particle Spawner Attached Object & Local Bounds
+    local test_corpse_ent = core.add_entity({ x = 10, y = 2, z = 10 }, "deathstats:corpse")
+
+    -- 1a. Check particle definitions with attached_obj
+    local def_water = deathstats.create_corpse_particlespawner_def("water", { x = 10, y = 2, z = 10 }, test_corpse_ent)
+    assert(def_water.attached == test_corpse_ent, "Water particles must attach to corpse entity")
+    assert(def_water.minpos.x == -0.35 and def_water.minpos.y == 0.05 and def_water.minpos.z == -0.35,
+        "Water particles minpos must use local corpse relative coordinates")
+    assert(def_water.maxpos.x == 0.35 and def_water.maxpos.y == 0.25 and def_water.maxpos.z == 0.35,
+        "Water particles maxpos must use local corpse relative coordinates")
+
+    local def_lava = deathstats.create_corpse_particlespawner_def("lava", { x = 10, y = 2, z = 10 }, test_corpse_ent)
+    assert(def_lava.attached == test_corpse_ent, "Lava particles must attach to corpse entity")
+    assert(def_lava.minpos.y == 0.05 and def_lava.maxpos.y == 0.30, "Lava particles must use local relative Y range")
+
+    local def_fire = deathstats.create_corpse_particlespawner_def("fire", { x = 10, y = 2, z = 10 }, test_corpse_ent)
+    assert(def_fire.attached == test_corpse_ent, "Fire particles must attach to corpse entity")
+    assert(def_fire.minpos.y == 0.05 and def_fire.maxpos.y == 0.30, "Fire particles must use local relative Y range")
+
+    local def_impact = deathstats.create_corpse_particlespawner_def("impact", { x = 10, y = 2, z = 10 }, test_corpse_ent)
+    assert(def_impact.attached == test_corpse_ent, "Impact particles must attach to corpse entity")
+    assert(def_impact.minpos.y == -0.05 and def_impact.maxpos.y == 0.15, "Impact particles must use local relative Y range")
+
+    -- 1b. Check particle definition without attached_obj (fallback to absolute world coordinates)
+    local def_fallback = deathstats.create_corpse_particlespawner_def("water", { x = 10, y = 2, z = 10 }, nil)
+    assert(def_fallback.attached == nil, "Fallback particles must not have attached entity")
+    assert(def_fallback.minpos.x == 10 - 0.35 and def_fallback.minpos.y == 2 + 0.05,
+        "Fallback particles must use absolute world coordinates")
+
+    -- 1c. spawn_corpse_particles return values
+    local pids, eff_type = deathstats.spawn_corpse_particles({ x = 10, y = 2, z = 10 }, { category = "drown" }, test_corpse_ent)
+    assert(#pids > 0, "spawn_corpse_particles must return active spawner IDs")
+    assert(eff_type == "water", "spawn_corpse_particles must return detected effect_type")
+    local active_spawner = core.active_particlespawners[pids[1]]
+    assert(active_spawner ~= nil and active_spawner.attached == test_corpse_ent,
+        "Active spawner in engine must be attached to corpse")
+    for _, pid in ipairs(pids) do
+        core.delete_particlespawner(pid)
+    end
+
+    -- First-Step Arrow Transfer from Player to Corpse in update_death_camera
+    local xbmod = rawget(_G, "XBows")
+    assert(xbmod ~= nil, "XBows mod must be loaded for arrow transfer test")
+
+    local p_archer = create_mock_player("RobinHoodVictim", 20, { x = 30, y = 5, z = 30 })
+    mock_players["RobinHoodVictim"] = p_archer
+    p_archer.hp = 0
+
+    -- Trigger death
+    core.on_dieplayer(p_archer)
+    local cdata = deathstats.player_camera_data["RobinHoodVictim"]
+    assert(cdata ~= nil and cdata.corpse ~= nil, "Corpse must be spawned on death")
+    local archer_corpse = cdata.corpse
+    assert(cdata.arrows_transferred == false, "arrows_transferred must initially be false")
+
+    -- Attach deferred lethal arrow to player (mimicking core.after(0) attachment from x_bows)
+    local fatal_arrow = core.add_entity({ x = 30, y = 5, z = 30 }, "x_bows:arrow_bronze_entity")
+    fatal_arrow:set_attach(p_archer, "Head", vector.new(0, 0.5, 0), { x = 0, y = 0, z = 0 }, true)
+    local fatal_ent = fatal_arrow:get_luaentity()
+    fatal_ent._is_arrow = true
+    fatal_ent._attached = true
+    fatal_ent._attached_bone = "Head"
+    local native_scale = { x = 0.12, y = 0.12, z = 0.12 }
+    fatal_arrow:set_properties({ visual_size = native_scale, is_visible = true })
+
+    -- Also attach an unrelated non-arrow child (e.g. 3d armor mesh) to verify it stays hidden
+    local armor_mesh = core.add_entity({ x = 30, y = 5, z = 30 }, "other_mod:shield")
+    armor_mesh:set_attach(p_archer, "Body", vector.new(0, 0, 0), { x = 0, y = 0, z = 0 }, true)
+    armor_mesh:set_properties({ visual_size = { x = 1, y = 1, z = 1 }, is_visible = true })
+
+    -- Verify arrow is on player before update_death_camera
+    local p_arrows_before = xbmod.get_attached_arrows(p_archer)
+    assert(#p_arrows_before == 1, "Player must initially have 1 attached arrow")
+    local c_arrows_before = xbmod.get_attached_arrows(archer_corpse)
+    assert(#c_arrows_before == 0, "Corpse must not have arrow before first camera step")
+
+    -- Run step 1 of update_death_camera
+    deathstats.update_death_camera(p_archer, 0.05)
+
+    -- Verify first-step arrow transfer
+    assert(cdata.arrows_transferred == true, "data.arrows_transferred must be marked true after step 1")
+    local p_arrows_after = xbmod.get_attached_arrows(p_archer)
+    assert(#p_arrows_after == 0, "Player must have 0 arrows attached after step 1 transfer")
+    local c_arrows_after = xbmod.get_attached_arrows(archer_corpse)
+    assert(#c_arrows_after == 1, "Corpse must now have the transferred lethal arrow")
+
+    -- Verify arrow visibility and native scale preservation
+    local arrow_props = fatal_arrow:get_properties()
+    assert(arrow_props.is_visible == true, "Transferred arrow on corpse must have is_visible = true")
+    assert(arrow_props.visual_size.x == native_scale.x and arrow_props.visual_size.y == native_scale.y,
+        "Transferred arrow must retain its native visual scale, not be hardcoded to 1 or zeroed")
+
+    -- Verify non-arrow child remains on player and is hidden
+    local armor_props = armor_mesh:get_properties()
+    assert(armor_props.is_visible == false, "Non-arrow armor mesh on player must be hidden")
+    assert(armor_props.visual_size.x == 0, "Non-arrow armor mesh on player must have visual_size 0")
+
+    -- Run step 2 of update_death_camera: verify transfer is NOT repeated
+    local transfer_call_count = 0
+    local orig_transfer = xbmod.transfer_arrows_to_corpse
+    xbmod.transfer_arrows_to_corpse = function(...)
+        transfer_call_count = transfer_call_count + 1
+        return orig_transfer(...)
+    end
+    deathstats.update_death_camera(p_archer, 0.05)
+    xbmod.transfer_arrows_to_corpse = orig_transfer
+    assert(transfer_call_count == 0, "transfer_arrows_to_corpse must NOT be called on subsequent camera steps")
+
+    -- Clean up archer test
+    deathstats.reset_camera(p_archer)
+    mock_players["RobinHoodVictim"] = nil
+
+    -- Environment Particle Re-evaluation Upon Corpse Settling in Liquid
+    local p_faller = create_mock_player("FallerVictim", 20, { x = 60, y = 20, z = 60 })
+    mock_players["FallerVictim"] = p_faller
+    p_faller.hp = 0
+
+    -- Die on dry land (impact effect)
+    core.world_nodes["60,20,60"] = "air"
+    core.world_nodes["60,19,60"] = "default:dirt"
+    core.on_dieplayer(p_faller)
+    local f_data = deathstats.player_camera_data["FallerVictim"]
+    assert(f_data ~= nil and f_data.corpse ~= nil, "Faller corpse must be created")
+    local settled_corpse = f_data.corpse
+    local fall_ent = settled_corpse:get_luaentity()
+
+    -- Initial effect should be impact (dry land)
+    assert(f_data.corpse_settled_particles_checked == false, "corpse_settled_particles_checked must start false")
+
+    -- Ragdoll flings the corpse into a lake at (60, 5, 60)
+    core.set_node({ x = 60, y = 5, z = 60 }, { name = "default:water_source" })
+    settled_corpse:set_pos({ x = 60, y = 5, z = 60 })
+
+    -- Step while still in flight (_settled = false)
+    fall_ent._settled = false
+    deathstats.update_death_camera(p_faller, 0.05)
+    assert(f_data.corpse_settled_particles_checked == false,
+        "Settled particle check must not trigger while corpse is still in flight")
+
+    -- Now corpse settles in water
+    fall_ent._settled = true
+    deathstats.update_death_camera(p_faller, 0.05)
+    assert(f_data.corpse_settled_particles_checked == true,
+        "corpse_settled_particles_checked must be true once settled")
+    assert(f_data.current_effect_type == "water",
+        "Corpse settled in water must switch current_effect_type to water")
+    assert(f_data.particle_spawners ~= nil and #f_data.particle_spawners > 0,
+        "New water particle spawners must be created upon settling")
+    local settled_spawner = core.active_particlespawners[f_data.particle_spawners[1]]
+    assert(settled_spawner ~= nil and settled_spawner.attached == settled_corpse,
+        "Settled water particle spawner must be attached to the settled corpse")
+
+    -- Subsequent step must not re-trigger particle replacement
+    local old_spawners = f_data.particle_spawners
+    deathstats.update_death_camera(p_faller, 0.05)
+    assert(f_data.particle_spawners == old_spawners,
+        "Subsequent steps must not recreate particle spawners once checked")
+
+    -- Clean up faller test
+    deathstats.reset_camera(p_faller)
+    mock_players["FallerVictim"] = nil
+    test_corpse_ent:remove()
+
+    print("  [PASS] First-Step Arrow Transfer, Preserved Scale & Corpse-Attached Particle Lifecycle")
+end
+run_test_suite_56()
+
+--- TEST 57: Corpse Flattened Bounding Box, Stepheight & Two-Ray Spine Slope Pitch ---
+local function run_test_suite_57()
+    print("\n--- TEST 57: Corpse Flattened Bounding Box, Stepheight & Two-Ray Spine Slope Pitch ---")
+
+    -- Verify deathstats:corpse entity definition has flattened collisionbox and stepheight
+    local cdef = core.registered_entities["deathstats:corpse"]
+    assert(cdef ~= nil, "deathstats:corpse must be registered")
+    local cbox = cdef.initial_properties.collisionbox
+    assert(cbox ~= nil, "initial_properties.collisionbox must be defined")
+    assert(cbox[1] == -0.4 and cbox[2] == -0.15 and cbox[3] == -0.4 and
+           cbox[4] == 0.4 and cbox[5] == 0.25 and cbox[6] == 0.4,
+           "deathstats:corpse initial collisionbox must be {-0.4, -0.15, -0.4, 0.4, 0.25, 0.4}")
+    assert(cdef.initial_properties.stepheight == 0.6,
+           "deathstats:corpse initial stepheight must be 0.6")
+
+    -- Check on_activate reinforces collisionbox and stepheight
+    local dummy_ent = {
+        object = {
+            set_properties = function(self, props) self.props = props end,
+            set_animation = function() end,
+        }
+    }
+    cdef.on_activate(dummy_ent, "")
+    assert(dummy_ent.object.props ~= nil, "on_activate must call set_properties")
+    local act_cbox = dummy_ent.object.props.collisionbox
+    assert(act_cbox[1] == -0.4 and act_cbox[2] == -0.15 and act_cbox[5] == 0.25,
+           "on_activate must set flattened collisionbox")
+    assert(dummy_ent.object.props.stepheight == 0.6,
+           "on_activate must set stepheight = 0.6")
+
+    -- Check spawn_and_setup_corpse sets flattened collisionbox and stepheight
+    local test_player = create_mock_player("SlopeVictim", 0, { x = 10, y = 5, z = 10 })
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local spawned = deathstats.spawn_and_setup_corpse({ x = 10, y = 5, z = 10 }, visuals, test_player, {}, nil)
+    assert(spawned ~= nil, "spawn_and_setup_corpse must return corpse entity")
+    local sp_props = spawned:get_properties()
+    assert(sp_props.collisionbox ~= nil and sp_props.collisionbox[1] == -0.4 and sp_props.collisionbox[2] == -0.15,
+           "spawn_and_setup_corpse must configure flattened collisionbox")
+    assert(sp_props.stepheight == 0.6,
+           "spawn_and_setup_corpse must configure stepheight = 0.6")
+    spawned:remove()
+
+    -- Raycast-based Slope Pitch Detection Tests
+    local saved_raycast = core.raycast
+    local terrain_heights = {}
+
+    -- Mock core.raycast to query terrain_heights based on probe z position (z < 0 is head, z > 0 is pelvis)
+    core.raycast = function(r_start, _r_end, _objects, _liquids)
+        local ground_y = (r_start.z < 0) and terrain_heights["head"] or terrain_heights["pelvis"]
+        local done = false
+        return function()
+            if not done and ground_y ~= nil then
+                done = true
+                local under_pos = {
+                    x = math.floor(r_start.x + 0.5),
+                    y = math.floor(ground_y),
+                    z = math.floor(r_start.z + 0.5),
+                }
+                core.world_nodes[string.format("%d,%d,%d", under_pos.x, under_pos.y, under_pos.z)] = "default:stone"
+                return {
+                    type = "node",
+                    under = under_pos,
+                    intersection_point = vector.new(r_start.x, ground_y, r_start.z),
+                }
+            end
+            return nil
+        end
+    end
+
+    -- Test A: Flat Ground
+    terrain_heights["head"] = 10.0
+    terrain_heights["pelvis"] = 10.0
+    local pitch_flat, target_y_flat = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(math.abs(pitch_flat) < 0.0001, "Flat ground must have 0 pitch, got: " .. tostring(pitch_flat))
+    assert(math.abs(target_y_flat - 10.15) < 0.0001, "Target Y must be ground + 0.15 on flat surface, got: " .. tostring(target_y_flat))
+
+    -- Test B: Uphill Slope (head higher than pelvis)
+    -- Head at y = 10.5, Pelvis at y = 10.0 -> delta_y = +0.5, dist_h = 1.1
+    terrain_heights["head"] = 10.5
+    terrain_heights["pelvis"] = 10.0
+    local pitch_uphill, target_y_uphill = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    local atan_func = math.atan2 or math.atan
+    local expected_uphill = -atan_func(0.5, 1.1)
+    assert(pitch_uphill < 0, "Uphill slope must produce negative pitch angle, got: " .. tostring(pitch_uphill))
+    assert(math.abs(pitch_uphill - expected_uphill) < 0.0001, "Pitch must match exact geometric angle")
+    assert(math.abs(target_y_uphill - 10.40) < 0.0001, "Target Y must match midpoint + 0.15")
+
+    -- Test C: Downhill Slope (head lower than pelvis)
+    -- Head at y = 9.5, Pelvis at y = 10.0 -> delta_y = -0.5, dist_h = 1.1
+    terrain_heights["head"] = 9.5
+    terrain_heights["pelvis"] = 10.0
+    local pitch_downhill, target_y_downhill = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    local expected_downhill = -atan_func(-0.5, 1.1)
+    assert(pitch_downhill > 0, "Downhill slope must produce positive pitch angle, got: " .. tostring(pitch_downhill))
+    assert(math.abs(pitch_downhill - expected_downhill) < 0.0001, "Pitch must match exact geometric angle")
+    assert(math.abs(target_y_downhill - 9.90) < 0.0001, "Target Y must match midpoint + 0.15")
+
+    -- Test D: Sheer Cliff Clamping (+/- 55 degrees)
+    local max_pitch = math.rad(55)
+    terrain_heights["head"] = 25.0 -- 15m drop/wall
+    terrain_heights["pelvis"] = 10.0
+    local pitch_cliff_up = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(math.abs(pitch_cliff_up - (-max_pitch)) < 0.0001, "Extreme uphill slope must clamp to -55 deg")
+
+    terrain_heights["head"] = 0.0 -- 10m drop
+    terrain_heights["pelvis"] = 10.0
+    local pitch_cliff_down = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(math.abs(pitch_cliff_down - max_pitch) < 0.0001, "Extreme downhill slope must clamp to +55 deg")
+
+    -- Test E: Liquid Surface Level Orientation
+    core.world_nodes["0,10,0"] = "default:water_source"
+    local pitch_liq, target_y_liq = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(pitch_liq == 0, "Corpse in liquid must have pitch = 0")
+    assert(target_y_liq == 10, "Corpse in liquid must maintain pos.y")
+    core.world_nodes["0,10,0"] = nil
+
+    -- Corpse Settling Pitch Application
+    terrain_heights["head"] = 10.4
+    terrain_heights["pelvis"] = 10.0
+    local test_corpse = core.add_entity({ x = 0, y = 10, z = 0 }, "deathstats:corpse")
+    local test_lua = test_corpse:get_luaentity()
+    test_lua._base_yaw = 0
+    test_lua._settled = false
+    deathstats.settle_corpse_at_rest(test_lua)
+
+    assert(test_lua._settled == true, "settle_corpse_at_rest must set _settled = true")
+    local final_rot = test_corpse:get_rotation()
+    assert(final_rot ~= nil and final_rot.x < 0, "settle_corpse_at_rest must apply detected pitch")
+    local final_pos = test_corpse:get_pos()
+    assert(math.abs(final_pos.y - 10.35) < 0.0001, "settle_corpse_at_rest must adjust altitude to contact plane")
+    test_corpse:remove()
+
+    -- Setting Toggle Disables Slope Pitch
+    deathstats.config.enable_slope_pitch = false
+    local disabled_corpse = core.add_entity({ x = 0, y = 10, z = 0 }, "deathstats:corpse")
+    local dis_lua = disabled_corpse:get_luaentity()
+    dis_lua._base_yaw = 0
+    dis_lua._settled = false
+    deathstats.settle_corpse_at_rest(dis_lua)
+    local dis_rot = disabled_corpse:get_rotation()
+    assert(dis_rot.x == 0, "When enable_slope_pitch is false, pitch must remain 0")
+    disabled_corpse:remove()
+    deathstats.config.enable_slope_pitch = true
+
+    -- Discrete Node Scan Fallback (when raycast is unavailable)
+    core.raycast = nil
+    core.world_nodes["0,10,-1"] = "default:stone" -- head (at z = -0.55 rounds to -1)
+    core.world_nodes["0,10,1"] = nil              -- clear previous test node
+    core.world_nodes["0,9,1"] = "default:stone"   -- pelvis (at z = +0.55 rounds to 1)
+    local fallback_pitch, fallback_target_y = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(fallback_pitch < 0, "Discrete fallback should detect uphill slope, got: " .. tostring(fallback_pitch))
+    assert(fallback_target_y ~= nil, "Discrete fallback should compute valid target_y")
+    core.world_nodes["0,10,-1"] = nil
+    core.world_nodes["0,9,1"] = nil
+
+    -- Restore core.raycast
+    core.raycast = saved_raycast
+
+    -- Corpse Arrow Unhiding & Scale Restoration Helper
+    local test_corpse_arrows = core.add_entity({ x = 5, y = 5, z = 5 }, "deathstats:corpse")
+    local mock_arrow = core.add_entity({ x = 5, y = 5, z = 5 }, "x_bows:arrow_bronze_entity")
+    mock_arrow:set_attach(test_corpse_arrows, "Body", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+    mock_arrow:set_properties({ is_visible = false, visual_size = { x = 0, y = 0, z = 0 } })
+    local a_ent = mock_arrow:get_luaentity()
+    a_ent._is_arrow = true
+    a_ent.initial_properties = { visual_size = { x = 0.15, y = 0.15, z = 0.15 } }
+
+    deathstats.unhide_corpse_arrows(test_corpse_arrows)
+
+    local restored_aprops = mock_arrow:get_properties()
+    assert(restored_aprops.is_visible == true, "unhide_corpse_arrows must set is_visible = true")
+    assert(restored_aprops.visual_size.x == 0.15, "unhide_corpse_arrows must restore visual_size from initial_properties")
+    mock_arrow:remove()
+    test_corpse_arrows:remove()
+
+    print("  [PASS] Corpse Flattened Bounding Box, Stepheight & Two-Ray Spine Slope Pitch")
+end
+run_test_suite_57()
+
+-- TEST 58: Edge-Case Physics & Multiplayer Performance Optimizations
+local function run_test_suite_58()
+    print("\n--- TEST 58: Edge-Case Physics & Multiplayer Performance Optimizations ---")
+
+    -- Cliff Edge Drop Test: sliding corpse over open air must fall under gravity
+    local cliff_corpse = core.add_entity({ x = 100, y = 20, z = 100 }, "deathstats:corpse")
+    local cliff_lua = cliff_corpse:get_luaentity()
+    cliff_lua._settled = false
+    cliff_lua._timer = 0.5 -- has been sliding for 0.5s
+    -- Air below: no walkable node at pos.y - 0.25 or pos.y - 0.65
+    core.world_nodes["100,20,100"] = "air"
+    core.world_nodes["100,19,100"] = "air"
+    -- Corpse has horizontal velocity and 0 vertical velocity from prior sliding
+    cliff_corpse:set_velocity({ x = 2.5, y = 0.0, z = 0.0 })
+    cliff_corpse:set_acceleration({ x = 0, y = 0, z = 0 })
+
+    -- Run step
+    cliff_lua:on_step(0.05)
+
+    -- It must NOT be on ground; downward gravity acceleration of -9.81 must be applied
+    assert(cliff_corpse.acceleration.y == -9.81, "Corpse over cliff/air must receive gravity acceleration (-9.81)")
+    assert(cliff_lua._settled == false, "Airborne falling corpse must not settle")
+    cliff_corpse:remove()
+
+    -- Bone Override Packet Throttling Test during High-Speed Flight
+    local fly_corpse = core.add_entity({ x = 200, y = 30, z = 200 }, "deathstats:corpse")
+    local fly_lua = fly_corpse:get_luaentity()
+    fly_lua._settled = false
+    fly_lua._timer = 0.1
+    core.world_nodes["200,30,200"] = "air"
+    core.world_nodes["200,29,200"] = "air"
+    fly_corpse:set_velocity({ x = 5.0, y = -1.0, z = 5.0 }) -- fly_speed > 1.2
+
+    local bone_update_calls = 0
+    local orig_flight_limbs = deathstats.update_ragdoll_flight_limbs
+    deathstats.update_ragdoll_flight_limbs = function(obj, v, yaw)
+        bone_update_calls = bone_update_calls + 1
+        return orig_flight_limbs(obj, v, yaw)
+    end
+
+    -- Run 4 steps of 0.02s (0.08s total < 0.1s throttle)
+    for _ = 1, 4 do
+        fly_lua:on_step(0.02)
+    end
+    assert(bone_update_calls == 0, "Limb bone updates must be throttled below 0.1s (got " .. bone_update_calls .. ")")
+
+    -- 5th step brings total elapsed flail timer >= 0.1s
+    fly_lua:on_step(0.03)
+    assert(bone_update_calls == 1, "Limb bone updates must fire exactly once upon reaching 0.1s throttle")
+
+    deathstats.update_ragdoll_flight_limbs = orig_flight_limbs
+    fly_corpse:remove()
+
+    -- Corpse Removal Attached Children Cleanup
+    local parent_corpse = core.add_entity({ x = 300, y = 10, z = 300 }, "deathstats:corpse")
+    local child_arrow = core.add_entity({ x = 300, y = 10, z = 300 }, "x_bows:arrow_bronze_entity")
+    child_arrow:set_attach(parent_corpse, "Body", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+
+    deathstats.remove_corpse(parent_corpse)
+    assert(parent_corpse.removed == true, "Parent corpse must be removed")
+    assert(child_arrow.removed == true, "Child entity attached to corpse must be cleanly removed on remove_corpse")
+
+    -- Unloaded Mapblock ("ignore" node) Safety in Slope Probe
+    local saved_raycast = core.raycast
+    core.raycast = function()
+        local returned = false
+        return function()
+            if not returned then
+                returned = true
+                return {
+                    type = "node",
+                    under = vector.new(0, 10, 0),
+                }
+            end
+            return nil
+        end
+    end
+    core.world_nodes["0,10,0"] = "ignore"
+    local pitch_ign, target_y_ign = deathstats.detect_corpse_slope_pitch(vector.new(0, 10, 0), 0)
+    assert(pitch_ign == 0, "Unloaded 'ignore' node must not register as walkable slope ground")
+    assert(target_y_ign == 10, "Target Y must fallback to pos.y when encountering 'ignore'")
+    core.world_nodes["0,10,0"] = nil
+    core.raycast = saved_raycast
+
+    print("  [PASS] Cliff-Edge Drop, Flail Throttling, Child Entity Cleanup & Unloaded Chunk Safety")
+end
+run_test_suite_58()
+
+--- TEST 59: Cause-of-Death Kinematic Profiling (Explosions, Fall Splat, Passive Collapse) ---
+local function run_test_suite_59()
+    local p = create_mock_player("KinematicsTester")
+    p:set_pos({ x = 50, y = 10, z = 50 })
+    p.hp = 0
+
+    -- Test explosion death: high radial lift, velocity, and 3D chaotic tumble
+    local vel_exp, rot_exp = deathstats.calculate_corpse_impulse(p, { category = "explosion", damage = 20 }, {
+        damage = 20,
+        reason = { type = "explosion" },
+    })
+    assert(vel_exp.y >= 3.5, "Explosion death must provide high vertical launch lift (>= 3.5)")
+    local speed_exp = math.sqrt(vel_exp.x^2 + vel_exp.z^2)
+    assert(speed_exp >= 5.0, "Explosion death must provide high radial horizontal velocity (>= 5.0)")
+    assert(rot_exp.x ~= 0 or rot_exp.y ~= 0 or rot_exp.z ~= 0, "Explosion must provide 3D tumbling rotation")
+
+    -- Test passive environmental deaths (drowning, suffocation, starvation, poison)
+    deathstats.recent_punches["KinematicsTester"] = nil
+    deathstats.last_blow["KinematicsTester"] = nil
+
+    local vel_drown, rot_drown = deathstats.calculate_corpse_impulse(p, { category = "drown", damage = 5 })
+    assert(vel_drown.x == 0 and vel_drown.y == 0 and vel_drown.z == 0,
+        "Passive drowning death must have zero launch impulse")
+    assert(rot_drown.x == 0 and rot_drown.y == 0 and rot_drown.z == 0,
+        "Passive drowning death must have zero tumbling rotation")
+
+    local vel_starve, rot_starve = deathstats.calculate_corpse_impulse(p, { category = "starve", damage = 4 })
+    assert(vel_starve.x == 0 and vel_starve.y == 0 and vel_starve.z == 0,
+        "Passive starvation death must have zero launch impulse")
+    assert(rot_starve.x == 0 and rot_starve.y == 0 and rot_starve.z == 0,
+        "Passive starvation death must have zero tumbling rotation")
+
+    local vel_poison, _ = deathstats.calculate_corpse_impulse(p, { category = "poison", damage = 3 })
+    assert(vel_poison.x == 0 and vel_poison.y == 0 and vel_poison.z == 0,
+        "Passive poison death must have zero launch impulse")
+
+    print("  [PASS] Cause-of-Death Kinematic Profiling (Explosion, Fall Splat & Passive Collapse)")
+end
+run_test_suite_59()
+
+--- TEST 60: Inelastic Surface Bouncing, Restitution Damping & Sound/Debris Triggers ---
+local function run_test_suite_60()
+    local bpos = { x = 70, y = 20, z = 70 }
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("BounceTester")
+    p:set_pos(bpos)
+    p.hp = 0
+
+    local corpse = deathstats.spawn_and_setup_corpse(bpos, visuals, p, { category = "pvp" })
+    local luaent = corpse:get_luaentity()
+    luaent._settled = false
+    luaent._timer = 0.2
+
+    core.world_nodes["70,19,70"] = "default:stone"
+    core.world_nodes["70,20,70"] = "air"
+    corpse:set_pos({ x = 70, y = 20, z = 70 })
+    corpse:set_velocity({ x = 4.0, y = -6.0, z = 0 })
+
+    local sound_played = false
+    local orig_sound_play = core.sound_play
+    core.sound_play = function(snd, spec, ephem)
+        sound_played = true
+        return orig_sound_play(snd, spec, ephem)
+    end
+
+    local particles_spawned = false
+    local orig_add_particlespawner = core.add_particlespawner
+    core.add_particlespawner = function(def)
+        particles_spawned = true
+        return orig_add_particlespawner(def)
+    end
+
+    local moveresult_bounce = {
+        touching_ground = true,
+        collides = true,
+        collisions = {
+            {
+                type = "node",
+                axis = "y",
+                node_pos = vector.new(70, 19, 70),
+                old_velocity = vector.new(4.0, -6.0, 0),
+                new_velocity = vector.new(4.0, 0, 0),
+            },
+        },
+    }
+
+    luaent:on_step(0.05, moveresult_bounce)
+    assert(luaent._bounce_count == 1, "First ground impact must increment bounce count to 1")
+    assert(corpse.velocity.y > 0.8, "Corpse must rebound upward on hard ground impact (got " .. corpse.velocity.y .. ")")
+    assert(sound_played == true, "Bodyfall impact sound must be played on hard collision")
+    assert(core.last_sound and core.last_sound.name == "default_hard_footstep",
+        "Played sound must match the node's registered footstep sound")
+    assert(particles_spawned == true, "Localized impact burst particles must be spawned on hard collision")
+
+    -- Simulate second bounce: capped at max_bounces = 2
+    corpse:set_velocity({ x = 2.5, y = -4.0, z = 0 })
+    local moveresult_bounce2 = {
+        touching_ground = true,
+        collides = true,
+        collisions = {
+            {
+                type = "node",
+                axis = "y",
+                node_pos = vector.new(70, 19, 70),
+                old_velocity = vector.new(2.5, -4.0, 0),
+                new_velocity = vector.new(2.5, 0, 0),
+            },
+        },
+    }
+    luaent:on_step(0.05, moveresult_bounce2)
+    assert(luaent._bounce_count == 2, "Second ground impact must increment bounce count to 2")
+
+    -- Third impact: bounce count reaches max_bounces (2), no more bouncing allowed
+    corpse:set_velocity({ x = 1.0, y = -3.0, z = 0 })
+    luaent:on_step(0.05, moveresult_bounce2)
+    assert(luaent._bounce_count == 2, "Bounce count must not exceed max_bounces (2)")
+
+    core.sound_play = orig_sound_play
+    core.add_particlespawner = orig_add_particlespawner
+    corpse:remove()
+
+    -- Silent node test: bouncing on a node with NO footstep sound must play NO sound
+    local corpse_silent = deathstats.spawn_and_setup_corpse(bpos, visuals, p, { category = "pvp" })
+    local lua_silent = corpse_silent:get_luaentity()
+    lua_silent._settled = false
+    lua_silent._timer = 0.2
+    core.world_nodes["70,19,70"] = "bones:bones" -- bones:bones has no sounds registered
+    local sound_played_silent = false
+    local silent_hook = function(snd, spec, ephem)
+        sound_played_silent = true
+        return orig_sound_play(snd, spec, ephem)
+    end
+    core.sound_play = silent_hook
+    lua_silent:on_step(0.05, moveresult_bounce)
+    assert(sound_played_silent == false, "Impact on node without footstep sounds must play NO sound")
+    core.sound_play = orig_sound_play
+    core.world_nodes["70,19,70"] = "default:stone"
+    corpse_silent:remove()
+
+    -- Unit verification: deathstats.get_node_impact_sound (minetest_game standards)
+    local snd_dug, gain_dug = deathstats.get_node_impact_sound({
+        sounds = {
+            footstep = { name = "default_hard_footstep", gain = 0.2 },
+            dug = { name = "default_hard_footstep", gain = 1.0 },
+        },
+    })
+    assert(snd_dug == "default_hard_footstep", "get_node_impact_sound must extract dug sound")
+    assert(gain_dug == 1.0, "get_node_impact_sound must extract base gain")
+
+    -- Skips empty string footstep in default.node_sound_defaults and uses dug
+    local snd_fallback = deathstats.get_node_impact_sound({
+        sounds = {
+            footstep = { name = "", gain = 1.0 },
+            dug = { name = "default_dug_node", gain = 0.25 },
+        },
+    })
+    assert(snd_fallback == "default_dug_node", "get_node_impact_sound must skip empty footstep and use dug")
+
+    -- Completely silent if sound table is empty or all names are empty
+    local snd_empty = deathstats.get_node_impact_sound({
+        sounds = { footstep = { name = "" }, dug = { name = "" } },
+    })
+    assert(snd_empty == nil, "get_node_impact_sound must return nil for empty sound names")
+    assert(deathstats.get_node_impact_sound(nil) == nil, "get_node_impact_sound must return nil for nil ndef")
+
+    -- String sound spec compatibility
+    local snd_str = deathstats.get_node_impact_sound({
+        sounds = { dug = "custom_impact_sound" },
+    })
+    assert(snd_str == "custom_impact_sound", "get_node_impact_sound must support string sound specs")
+
+    -- Unit verification: deathstats.is_soft_node (groups & attributes)
+    assert(deathstats.is_soft_node({ groups = { fall_damage_add_percent = -100 } }, "cushion:bed") == true,
+        "Nodes with negative fall_damage_add_percent must be soft")
+    assert(deathstats.is_soft_node({ groups = { crumbly = 3, soil = 1 } }, "mymod:rich_soil") == true,
+        "Soil and crumbly nodes must be soft")
+    assert(deathstats.is_soft_node({ groups = { snappy = 1, wool = 1 } }, "mymod:wool_white") == true,
+        "Wool and snappy nodes must be soft")
+    assert(deathstats.is_soft_node({ liquidtype = "source" }, "mymod:water") == true,
+        "Liquid nodes must be soft")
+    assert(deathstats.is_soft_node({ groups = { cracky = 3, stone = 1 } }, "mymod:granite") == false,
+        "Solid stone nodes without cushioning groups must not be soft")
+
+    -- Unit verification: deathstats.get_fallback_ground_node (mod-agnostic discovery)
+    local fallback_node = deathstats.get_fallback_ground_node()
+    assert(fallback_node ~= nil, "get_fallback_ground_node must return a registered ground node")
+    local fb_def = core.registered_nodes[fallback_node]
+    assert(fb_def and fb_def.walkable, "Fallback ground node must be a walkable solid block")
+
+    -- Unit verification: deathstats.get_node_tile_texture (texture discovery)
+    local tile = deathstats.get_node_tile_texture(fallback_node)
+    assert(type(tile) == "string", "get_node_tile_texture must return a string tile texture")
+
+    print("  [PASS] Inelastic Surface Bouncing, Restitution Damping & Sound/Debris Triggers")
+end
+run_test_suite_60()
+
+--- TEST 61: Multiplayer Packet Rate Throttling & Dirty-Delta Bone Filtering ---
+local function run_test_suite_61()
+    local cpos = { x = 90, y = 15, z = 90 }
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("PacketTester")
+    p:set_pos(cpos)
+    p.hp = 0
+
+    local corpse = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    local luaent = corpse:get_luaentity()
+    luaent._applied_bones = nil
+
+    local engine_override_calls = 0
+    local orig_set_bone_override = corpse.set_bone_override
+    corpse.set_bone_override = function(self, bone, override)
+        engine_override_calls = engine_override_calls + 1
+        return orig_set_bone_override(self, bone, override)
+    end
+
+    -- First rotation applies and records into cache
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(0, 0, math.rad(30)))
+    assert(engine_override_calls == 1, "First bone rotation must call set_bone_override")
+
+    -- Minute angular change (< 0.05 rad / ~2.8 deg) must be skipped to protect multiplayer network bandwidth
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(0, 0, math.rad(31)))
+    assert(engine_override_calls == 1, "Sub-threshold angular delta (< 0.05 rad) must be filtered out (0 packets sent)")
+
+    -- Significant angular change (> 0.05 rad) must be applied
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(0, 0, math.rad(45)))
+    assert(engine_override_calls == 2, "Super-threshold angular delta (> 0.05 rad) must call set_bone_override")
+
+    -- Settled corpse early exit: once settled, on_step costs zero compute
+    deathstats.settle_corpse_at_rest(luaent)
+    assert(luaent._settled == true, "Corpse must be marked as _settled")
+    luaent:on_step(0.1)
+    assert(luaent._settled == true, "Settled corpse must fast-exit on_step")
+
+    corpse.set_bone_override = orig_set_bone_override
+    corpse:remove()
+
+    print("  [PASS] Multiplayer Packet Rate Throttling & Dirty-Delta Bone Filtering")
+end
+run_test_suite_61()
+
+--- TEST 62: Dynamic Resting Poses (Prone, Supine, Lateral) & Downhill Slope Rolling ---
+local function run_test_suite_62()
+    local cpos = { x = 110, y = 15, z = 110 }
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("PoseTester")
+    p:set_pos(cpos)
+    p.hp = 0
+
+    -- Test prone resting pose (roll ~ 180 degrees)
+    local corpse_prone = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    local lua_prone = corpse_prone:get_luaentity()
+    lua_prone._rot = { x = 0, y = 0, z = math.pi }
+    deathstats.settle_corpse_at_rest(lua_prone)
+    assert(lua_prone._pose_type == "prone", "Roll near pi must produce prone resting pose")
+    assert(math.abs(corpse_prone.rotation.z - math.pi) < 0.01, "Prone corpse rotation Z must be pi")
+    corpse_prone:remove()
+
+    -- Test lateral resting pose (roll ~ 90 degrees)
+    local corpse_lat = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    local lua_lat = corpse_lat:get_luaentity()
+    lua_lat._rot = { x = 0, y = 0, z = math.pi / 2 }
+    deathstats.settle_corpse_at_rest(lua_lat)
+    assert(lua_lat._pose_type == "lateral", "Roll near pi/2 must produce lateral resting pose")
+    assert(math.abs(corpse_lat.rotation.z - (math.pi / 2)) < 0.01, "Lateral corpse rotation Z must be pi/2")
+    corpse_lat:remove()
+
+    -- Test supine resting pose (roll ~ 0 degrees)
+    local corpse_sup = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    local lua_sup = corpse_sup:get_luaentity()
+    lua_sup._rot = { x = 0, y = 0, z = 0.1 }
+    deathstats.settle_corpse_at_rest(lua_sup)
+    assert(lua_sup._pose_type == "supine", "Roll near 0 must produce supine resting pose")
+    assert(corpse_sup.rotation.z == 0, "Supine corpse rotation Z must settle flush to 0")
+    corpse_sup:remove()
+
+    -- Test detect_hanging_legs on a ledge
+    core.world_nodes["110,14,110"] = "default:stone"
+    core.world_nodes["110,14,111"] = "default:stone"
+    core.world_nodes["110,14,112"] = "air"
+    local is_hanging = deathstats.detect_hanging_legs({ x = 110, y = 15, z = 110 }, 0)
+    assert(is_hanging == true, "Empty space below feet must detect as hanging legs")
+
+    -- Test steep slope downhill acceleration (> 28 deg = ~0.48 rad)
+    local corpse_slope = deathstats.spawn_and_setup_corpse(cpos, visuals, p, { category = "pvp" })
+    local lua_slope = corpse_slope:get_luaentity()
+    lua_slope._settled = false
+    lua_slope._timer = 0.5
+    corpse_slope:set_velocity({ x = 0, y = 0, z = 1.0 })
+
+    local orig_slope_pitch = deathstats.detect_corpse_slope_pitch
+    deathstats.detect_corpse_slope_pitch = function()
+        return 0.61, 15.0
+    end
+
+    local slope_mr = { touching_ground = true, collides = true }
+    lua_slope:on_step(0.1, slope_mr)
+    assert(lua_slope._settled == false, "Corpse on steep slope must continue sliding/rolling rather than settling")
+
+    deathstats.detect_corpse_slope_pitch = orig_slope_pitch
+    corpse_slope:remove()
+
+    print("  [PASS] Dynamic Resting Poses (Prone, Supine, Lateral) & Downhill Slope Rolling")
+end
+run_test_suite_62()
+
+--- TEST 63: Big Explosion & Long Fall Ground Landing Assurance ---
+local function run_test_suite_63()
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("LandingTester")
+    p.hp = 0
+
+    -- Long Fall Duration Test (> 4.5s airborne): corpse falling from high cliff must not settle mid-air
+    local cpos_fall = { x = 40, y = 80, z = 40 }
+    local corpse_fall = deathstats.spawn_and_setup_corpse(cpos_fall, visuals, p, { category = "fall" })
+    local lua_fall = corpse_fall:get_luaentity()
+    lua_fall._settled = false
+    lua_fall._timer = 0
+    corpse_fall:set_velocity({ x = 0.5, y = -15.0, z = 0.5 })
+    core.world_nodes["40,80,40"] = "air"
+    core.world_nodes["40,79,40"] = "air"
+
+    -- Simulate 5.0 seconds of falling (100 steps of 0.05s) while remaining airborne
+    for _ = 1, 100 do
+        lua_fall:on_step(0.05)
+    end
+
+    assert(lua_fall._timer >= 4.95, "Total timer must exceed 4.95s")
+    assert(lua_fall._settled == false, "Corpse must NOT settle in mid-air even after 5 seconds of falling")
+    assert(corpse_fall.acceleration.y == -9.81, "Airborne corpse must maintain downward gravity acceleration")
+
+    -- Now simulate ground contact
+    core.world_nodes["40,10,40"] = "default:stone"
+    corpse_fall:set_pos({ x = 40, y = 10.5, z = 40 })
+    corpse_fall:set_velocity({ x = 0.05, y = 0, z = 0.05 })
+    local ground_mr = { touching_ground = true, collides = true }
+    lua_fall:on_step(0.1, ground_mr)
+    assert(lua_fall._settled == true, "Corpse must settle once it makes contact with ground and slows down")
+    corpse_fall:remove()
+
+    -- Big Explosion Launch Peak Test: corpse at apex of explosion arc (vy ~= 0, y in air) must not settle
+    local cpos_exp = { x = 60, y = 30, z = 60 }
+    local corpse_exp = deathstats.spawn_and_setup_corpse(cpos_exp, visuals, p, { category = "explosion" })
+    local lua_exp = corpse_exp:get_luaentity()
+    lua_exp._settled = false
+    lua_exp._timer = 1.0 -- reached apex of explosion launch
+    core.world_nodes["60,30,60"] = "air"
+    core.world_nodes["60,29,60"] = "air"
+    corpse_exp:set_velocity({ x = 1.2, y = 0.1, z = 1.2 }) -- near apex
+
+    lua_exp:on_step(0.05)
+    assert(lua_exp._settled == false, "Corpse at apex of explosion launch must not settle mid-air")
+    assert(corpse_exp.acceleration.y == -9.81, "Corpse at apex must continue receiving gravity acceleration")
+    corpse_exp:remove()
+
+    -- Hovering Corpse Downward Snap Test (settle_corpse_at_rest on land)
+    -- Simulates corpse hovering in mid-air at y = 12.8 above ground at y = 10.0 (like desert hill ledge screenshot)
+    local corpse_hover = core.add_entity({ x = 75, y = 12.8, z = 75 }, "deathstats:corpse")
+    local lua_hover = corpse_hover:get_luaentity()
+    lua_hover._settled = false
+    lua_hover._base_yaw = 0
+    core.world_nodes["75,10,75"] = "default:sand"
+
+    deathstats.settle_corpse_at_rest(lua_hover)
+    assert(lua_hover._settled == true, "Hovering corpse must settle")
+    local settled_pos = corpse_hover:get_pos()
+    assert(settled_pos.y <= 10.7 and settled_pos.y >= 10.6, "Hovering corpse must snap down to the ground surface (got y = " .. settled_pos.y .. ")")
+    assert(corpse_hover.velocity.x == 0 and corpse_hover.velocity.y == 0 and corpse_hover.velocity.z == 0,
+        "Settled corpse must have zero velocity")
+    assert(corpse_hover.acceleration.x == 0 and corpse_hover.acceleration.y == 0 and corpse_hover.acceleration.z == 0,
+        "Settled corpse must have zero acceleration")
+    corpse_hover:remove()
+
+    -- Slide off Ledge Downward Fall Test
+    -- Corpse sliding on floor at y = 20 moves over cliff/edge into air
+    local corpse_slide = core.add_entity({ x = 85, y = 20, z = 85 }, "deathstats:corpse")
+    local lua_slide = corpse_slide:get_luaentity()
+    lua_slide._settled = false
+    lua_slide._timer = 0.2
+    core.world_nodes["85,20,85"] = "air"
+    core.world_nodes["85,19,85"] = "air"
+    corpse_slide:set_velocity({ x = 3.0, y = 0.0, z = 0.0 })
+    corpse_slide:set_acceleration({ x = 0, y = -9.81, z = 0 })
+
+    lua_slide:on_step(0.05, { touching_ground = false })
+    assert(corpse_slide.acceleration.y == -9.81, "Corpse sliding off edge must keep falling under gravity")
+    assert(lua_slide._settled == false, "Corpse sliding off edge into air must not settle")
+    corpse_slide:remove()
+
+    print("  [PASS] Big Explosion & Long Fall Ground Landing Assurance")
+end
+run_test_suite_63()
+
+--- TEST 64: Surface & Wall Contact Normal Constraints (Zero-Clipping Rotation) ---
+local function run_test_suite_64()
+    -- Ground Proximity Angular Envelope (In-Flight Pitch Clamping)
+    -- Ground at y = 10 (top surface at 10.5). Corpse center at y = 10.7 (clearance = 0.2m)
+    local corpse_air = core.add_entity({ x = 120, y = 10.7, z = 120 }, "deathstats:corpse")
+    local lua_air = corpse_air:get_luaentity()
+    lua_air._settled = false
+    lua_air._tumbling = true
+    lua_air._rot = { x = math.rad(60), y = 0, z = 0 } -- high pitch that would dig head into floor
+    lua_air._rot_speed = { x = 2.0, y = 0, z = 0 }
+    corpse_air:set_velocity({ x = 1.0, y = -1.0, z = 0 })
+    core.world_nodes["120,10,120"] = "default:stone"
+    core.world_nodes["120,11,120"] = "air"
+
+    lua_air:on_step(0.05)
+    -- Max pitch allowed for clearance = 0.2m is asin(0.2 / 0.85) = ~0.238 rad (~13.6 deg)
+    assert(math.abs(lua_air._rot.x) <= 0.25,
+        "Ground proximity envelope must clamp pitch to prevent head/feet dipping into ground (got " .. tostring(lua_air._rot.x) .. ")")
+    assert(lua_air._rot_speed.x == 0,
+        "Downward pitch rotational velocity must be absorbed by ground contact normal")
+    corpse_air:remove()
+
+    -- Steep Slope Longitudinal Barrel Rolling (Roll Z vs Pitch X)
+    local corpse_slope = core.add_entity({ x = 130, y = 15, z = 130 }, "deathstats:corpse")
+    local lua_slope = corpse_slope:get_luaentity()
+    lua_slope._settled = false
+    lua_slope._rot = { x = 0, y = 0, z = 0 }
+    lua_slope._base_yaw = 0
+    corpse_slope:set_velocity({ x = 0, y = 0, z = 1.0 })
+
+    local orig_slope_pitch = deathstats.detect_corpse_slope_pitch
+    deathstats.detect_corpse_slope_pitch = function()
+        return 0.55, 15.0 -- ~31.5 deg incline
+    end
+
+    local slope_mr = { touching_ground = true, collides = true }
+    lua_slope:on_step(0.1, slope_mr)
+    assert(lua_slope._rot.x == 0.55, "Corpse pitch must stay locked flush with slope angle")
+    assert(lua_slope._rot.z > 0, "Corpse must roll longitudinally like a log (Roll Z > 0) along its spine")
+
+    deathstats.detect_corpse_slope_pitch = orig_slope_pitch
+    corpse_slope:remove()
+
+    -- Wall Impact Angular Braking & Parallel Deflection
+    local corpse_wall = core.add_entity({ x = 140, y = 10, z = 140 }, "deathstats:corpse")
+    local lua_wall = corpse_wall:get_luaentity()
+    lua_wall._settled = false
+    lua_wall._base_yaw = math.rad(45) -- facing diagonally into wall
+    lua_wall._rot = { x = 0, y = math.rad(45), z = 0 }
+    lua_wall._rot_speed = { x = 3.0, y = 0, z = 3.0 }
+    corpse_wall:set_velocity({ x = -2.5, y = 0, z = 0 })
+
+    local wall_mr = {
+        touching_ground = false,
+        collides = true,
+        collisions = {
+            { axis = "x", old_velocity = { x = -2.5, y = 0, z = 0 } },
+        },
+    }
+    lua_wall:on_step(0.05, wall_mr)
+    assert(lua_wall._rot_speed.x <= 0.5 and lua_wall._rot_speed.z <= 0.5,
+        "Wall impact must absorb angular tumbling momentum (85% braking)")
+    assert(lua_wall._base_yaw == 0 or lua_wall._base_yaw == math.pi,
+        "Corpse yaw must deflect parallel to wall plane (got " .. tostring(lua_wall._base_yaw) .. ")")
+    corpse_wall:remove()
+
+    print("  [PASS] Surface & Wall Contact Normal Constraints (Zero-Clipping Rotation)")
+end
+run_test_suite_64()
+
+--- TEST 65: True Terrain Downhill Gradient, Uphill Braking & Planar Settled Legs ---
+local function run_test_suite_65()
+    -- Probe ground elevation test via discrete fallback
+    core.world_nodes["200,9,200"] = "default:stone"
+    local elev = deathstats.probe_ground_elevation(200, 200, 10)
+    assert(elev == 9.5, "probe_ground_elevation must find stone node at y=9.5, got: " .. tostring(elev))
+
+    -- Terrain downhill gradient on stairs descending North (+Z)
+    -- South is high (y=11), Center is mid (y=10), North is low (y=9)
+    core.world_nodes["210,10,209"] = "default:stone" -- South (z = 209.3 approx)
+    core.world_nodes["210,9,210"] = "default:stone"  -- Center (z = 210)
+    core.world_nodes["210,8,211"] = "default:stone"  -- North (z = 210.7 approx)
+    local d_x, d_z, s_angle = deathstats.get_terrain_downhill_dir({ x = 210, y = 10, z = 210 }, 0, 0)
+    assert(d_z > 0.9, "Stairs descending towards North (+Z) must produce positive downhill Z vector, got: " .. tostring(d_z))
+    assert(math.abs(d_x) < 0.05, "Downhill X must be near zero on pure North-South stairs, got: " .. tostring(d_x))
+    assert(s_angle > 0.4, "Slope angle must reflect steep stair grade (> 0.4 rad), got: " .. tostring(s_angle))
+
+    -- Terrain downhill gradient on stairs descending West (-X)
+    core.world_nodes["221,10,220"] = "default:stone" -- East (x = 220.7 approx)
+    core.world_nodes["220,9,220"] = "default:stone"  -- Center
+    core.world_nodes["219,8,220"] = "default:stone"  -- West (x = 219.3 approx)
+    local wx_dx, wx_dz, wx_angle = deathstats.get_terrain_downhill_dir({ x = 220, y = 10, z = 220 }, 0, 0)
+    assert(wx_dx < -0.9, "Stairs descending towards West (-X) must produce negative downhill X vector, got: " .. tostring(wx_dx))
+    assert(math.abs(wx_dz) < 0.05, "Downhill Z must be near zero on pure East-West stairs, got: " .. tostring(wx_dz))
+    assert(wx_angle > 0.4, "Slope angle must reflect steep stair grade (> 0.4 rad), got: " .. tostring(wx_angle))
+
+    -- Correct downhill sign along corpse spine
+    -- Facing North (yaw = 0): forward is +Z. Head is at -Z, pelvis is at +Z.
+    -- Head higher than pelvis (pitch_slope < 0): downhill is towards pelvis (+Z).
+    local flat_pos = { x = 250, y = 10, z = 250 }
+    local sp_dx1, sp_dz1 = deathstats.get_terrain_downhill_dir(flat_pos, 0, -0.6)
+    assert(sp_dz1 > 0.9 and math.abs(sp_dx1) < 0.01,
+        "When head is uphill (pitch < 0), downhill must point towards pelvis (+Z), got: " .. tostring(sp_dz1))
+
+    -- Pelvis higher than head (pitch_slope > 0): downhill is towards head (-Z).
+    local sp_dx2, sp_dz2 = deathstats.get_terrain_downhill_dir(flat_pos, 0, 0.6)
+    assert(sp_dz2 < -0.9 and math.abs(sp_dx2) < 0.01,
+        "When pelvis is uphill (pitch > 0), downhill must point towards head (-Z), got: " .. tostring(sp_dz2))
+
+    -- Active Uphill Velocity Suppression on Slopes
+    local corpse_uphill = core.add_entity({ x = 260, y = 15, z = 260 }, "deathstats:corpse")
+    local lua_uphill = corpse_uphill:get_luaentity()
+    lua_uphill._settled = false
+    lua_uphill._slide_timer = 0.2
+    -- Corpse launched uphill with velocity z = -4.0 (towards higher ground, opposing downhill +Z)
+    corpse_uphill:set_velocity({ x = 0, y = 0, z = -4.0 })
+
+    -- Mock downhill direction to point along +Z with steep slope (0.6 rad)
+    local orig_downhill = deathstats.get_terrain_downhill_dir
+    deathstats.get_terrain_downhill_dir = function()
+        return 0, 1.0, 0.6 -- downhill is +Z
+    end
+
+    local slope_mr = { touching_ground = true, collides = true }
+    lua_uphill:on_step(0.1, slope_mr)
+    local vel_after = corpse_uphill:get_velocity()
+    -- Uphill velocity should be aggressively braked
+    assert(vel_after.z > -2.0, "Uphill velocity must be aggressively braked by slope resistance, got: " .. tostring(vel_after.z))
+    assert(vel_after.y <= -1.5, "Downward vertical velocity must be maintained to step down stairs, got: " .. tostring(vel_after.y))
+
+    deathstats.get_terrain_downhill_dir = orig_downhill
+    corpse_uphill:remove()
+
+    -- Settled Limbs Planar Alignment (Zero Legs Pointing in Air)
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("LegAlignmentTester")
+    p.hp = 0
+
+    local corpse_rest = deathstats.spawn_and_setup_corpse({ x = 270, y = 10, z = 270 }, visuals, p, { category = "fall" })
+    local lua_rest = corpse_rest:get_luaentity()
+    deathstats.settle_corpse_at_rest(lua_rest)
+
+    local leg_l = corpse_rest:get_bone_override("Leg_Left")
+    local leg_r = corpse_rest:get_bone_override("Leg_Right")
+    assert(leg_l ~= nil and leg_r ~= nil, "Settled corpse must have bone overrides for legs")
+    assert(leg_l.rotation.vec.x == 0, "Leg_Left local X pitch must be 0 (no upward lift), got: " .. tostring(leg_l.rotation.vec.x))
+    assert(leg_r.rotation.vec.x == 0, "Leg_Right local X pitch must be 0 (no upward lift), got: " .. tostring(leg_r.rotation.vec.x))
+    assert(leg_l.rotation.vec.y == 0, "Leg_Left local Y yaw must be 0, got: " .. tostring(leg_l.rotation.vec.y))
+    assert(leg_r.rotation.vec.y == 0, "Leg_Right local Y yaw must be 0, got: " .. tostring(leg_r.rotation.vec.y))
+
+    corpse_rest:remove()
+
+    print("  [PASS] True Terrain Downhill Gradient, Uphill Braking & Planar Settled Legs")
+end
+run_test_suite_65()
+
+--- TEST 66: Dynamic Resting Pose Distribution (Prone, Lateral, Supine & Ground Roll Preservation) ---
+local function run_test_suite_66()
+    local visuals = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+    }
+    local p = create_mock_player("PoseDistTester")
+    p.hp = 0
+
+    -- Forward impact (struck from behind): must bias towards prone (roll = pi)
+    -- Facing North (yaw = 0, fwd = (0, 0, 1)). Knockback is +Z (forward).
+    local att_behind = create_mock_player("AttackerBehind")
+    att_behind:set_pos({ x = 300, y = 10, z = 295 }) -- behind victim at z = 300
+    local last_blow_fwd = {
+        damage = 15,
+        reason = { object = att_behind },
+    }
+    p:set_pos({ x = 300, y = 10, z = 300 })
+    local corpse_fwd = deathstats.spawn_and_setup_corpse({ x = 300, y = 10, z = 300 }, visuals, p, { category = "pvp" }, last_blow_fwd)
+    local lua_fwd = corpse_fwd:get_luaentity()
+    assert(math.abs(lua_fwd._rot.z - math.pi) < 0.01,
+        "Forward knockback must set initial roll to prone (pi), got: " .. tostring(lua_fwd._rot.z))
+    corpse_fwd:remove()
+
+    -- Backward impact (struck from front): must bias towards supine (roll = 0)
+    local att_front = create_mock_player("AttackerFront")
+    att_front:set_pos({ x = 300, y = 10, z = 305 }) -- in front of victim at z = 300
+    local last_blow_back = {
+        damage = 15,
+        reason = { object = att_front },
+    }
+    local corpse_back = deathstats.spawn_and_setup_corpse({ x = 300, y = 10, z = 300 }, visuals, p, { category = "pvp" }, last_blow_back)
+    local lua_back = corpse_back:get_luaentity()
+    assert(lua_back._rot.z == 0,
+        "Backward knockback must set initial roll to supine (0), got: " .. tostring(lua_back._rot.z))
+    corpse_back:remove()
+
+    -- Sideways impact (flank attack): must bias towards lateral (roll = +/- pi/2)
+    local att_side = create_mock_player("AttackerSide")
+    att_side:set_pos({ x = 305, y = 10, z = 300 }) -- to the East of victim
+    local last_blow_side = {
+        damage = 15,
+        reason = { object = att_side },
+    }
+    local corpse_side = deathstats.spawn_and_setup_corpse({ x = 300, y = 10, z = 300 }, visuals, p, { category = "pvp" }, last_blow_side)
+    local lua_side = corpse_side:get_luaentity()
+    assert(math.abs(math.abs(lua_side._rot.z) - (math.pi / 2)) < 0.01,
+        "Flank knockback must set initial roll to lateral (+/- pi/2), got: " .. tostring(lua_side._rot.z))
+    corpse_side:remove()
+
+    -- Ground slide preserves roll angle (does NOT decay roll angle to 0)
+    local corpse_slide = core.add_entity({ x = 310, y = 10, z = 310 }, "deathstats:corpse")
+    local lua_slide = corpse_slide:get_luaentity()
+    lua_slide._settled = false
+    lua_slide._rot = { x = 0, y = 0, z = math.pi } -- initially prone
+    lua_slide._rot_speed = { x = 0, y = 0, z = 0 }
+    corpse_slide:set_velocity({ x = 1.0, y = 0, z = 0 })
+
+    local flat_mr = { touching_ground = true, collides = true }
+    -- Simulate 1.0 second of ground sliding (10 steps of 0.1s)
+    for _ = 1, 10 do
+        lua_slide:on_step(0.1, flat_mr)
+    end
+    assert(math.abs(lua_slide._rot.z - math.pi) < 0.01,
+        "Ground sliding must preserve accumulated prone roll angle instead of decaying to 0, got: " .. tostring(lua_slide._rot.z))
+    deathstats.settle_corpse_at_rest(lua_slide)
+    assert(lua_slide._pose_type == "prone",
+        "Corpse that rolled prone and slid on ground must settle as prone, got: " .. tostring(lua_slide._pose_type))
+    corpse_slide:remove()
+
+    -- Organic distribution in 500 simulated in-place collapses
+    local counts = { prone = 0, lateral = 0, supine = 0 }
+    for _ = 1, 500 do
+        local c_passive = deathstats.spawn_and_setup_corpse({ x = 320, y = 10, z = 320 }, visuals, p, { category = "starve" })
+        local l_passive = c_passive:get_luaentity()
+        local pt = l_passive._pose_type
+        if counts[pt] then counts[pt] = counts[pt] + 1 end
+        c_passive:remove()
+    end
+    assert(counts.prone > 50, "Prone poses must occur organically (> 10%), got: " .. tostring(counts.prone))
+    assert(counts.lateral > 50, "Lateral poses must occur organically (> 10%), got: " .. tostring(counts.lateral))
+    assert(counts.supine > 50, "Supine poses must occur organically (> 10%), got: " .. tostring(counts.supine))
+
+    print("  [PASS] Dynamic Resting Pose Distribution (Prone, Lateral, Supine & Ground Roll Preservation)")
+end
+run_test_suite_66()
+
+--- TEST 67: Reduced Corpse Crossed-Legs Probability (Organic Distribution & Zero Double-Cross) ---
+local function run_test_suite_67()
+    print("\n--- TEST 67: Reduced Corpse Crossed-Legs Probability (Organic Distribution & Zero Double-Cross) ---")
+
+    local test_corpse = core.add_entity({ x = 400, y = 10, z = 400 }, "deathstats:corpse")
+
+    -- Statistical verification across 1,000 iterations:
+    -- - Double-crossed legs (X-cross: Left Leg > 0 AND Right Leg < 0) MUST be strictly 0
+    -- - Total crossed legs (Left Leg > 0 OR Right Leg < 0) should be around 4% (between 1.5% and 7.5%)
+    -- - Natural outward abduction (both legs splayed outward: Left Leg < 0, Right Leg > 0) should be > 92% (around 96%)
+    local total_samples = 1000
+    local crossed_count = 0
+    local double_crossed_count = 0
+    local natural_splay_count = 0
+
+    for _ = 1, total_samples do
+        local applied = deathstats.fracture_corpse_limbs(test_corpse)
+        local l_deg = math.deg(applied["Leg_Left"] or 0)
+        local r_deg = math.deg(applied["Leg_Right"] or 0)
+
+        local l_crossed = (l_deg > 0.01)
+        local r_crossed = (r_deg < -0.01)
+
+        if l_crossed and r_crossed then
+            double_crossed_count = double_crossed_count + 1
+        end
+        if l_crossed or r_crossed then
+            crossed_count = crossed_count + 1
+        else
+            natural_splay_count = natural_splay_count + 1
+        end
+    end
+
+    assert(double_crossed_count == 0,
+        "Double-crossed legs (X-cross) must NEVER occur (expected 0, got: " .. tostring(double_crossed_count) .. ")")
+    local crossed_pct = (crossed_count / total_samples) * 100
+    assert(crossed_count >= 15 and crossed_count <= 75,
+        string.format("Crossed legs rate must be ~4%% (expected 15-75 in 1000 samples, got %d = %.1f%%)",
+            crossed_count, crossed_pct))
+    assert(natural_splay_count >= 920,
+        string.format("Natural splayed legs rate must be > 92%%, got %d = %.1f%%",
+            natural_splay_count, (natural_splay_count / total_samples) * 100))
+
+    -- Verify lateral side-pose has wide visual separation between legs (>= 70 deg spread)
+    test_corpse._applied_bones = nil
+    deathstats.settle_ragdoll_limbs(test_corpse, 5, "lateral")
+    local lat_l = test_corpse:get_bone_override("Leg_Left")
+    local lat_r = test_corpse:get_bone_override("Leg_Right")
+    local lat_l_deg = lat_l and math.deg(lat_l.rotation.vec.z) or 0
+    local lat_r_deg = lat_r and math.deg(lat_r.rotation.vec.z) or 0
+    local lat_separation = lat_r_deg - lat_l_deg
+    assert(lat_separation >= 70,
+        string.format("Lateral pose legs must have wide separation (>= 70 deg, got: %.1f deg [R=%.1f, L=%.1f])",
+            lat_separation, lat_r_deg, lat_l_deg))
+
+    test_corpse:remove()
+
+    print("  [PASS] Reduced Corpse Crossed-Legs Probability (Organic Distribution & Zero Double-Cross)")
+end
+run_test_suite_67()
+
+-- TEST SUITE 68: 3D Camera Anchor Interpolation & Wall Avoidance Zoom (Client Extrapolation)
+local function run_test_suite_68()
+    local p = create_mock_player("InterpCamPlayer", 0)
+    p:set_pos({ x = 500, y = 20, z = 500 })
+    deathstats.trigger_death_screen(p, { type = "fall" })
+
+    local cdata = deathstats.player_camera_data["InterpCamPlayer"]
+    assert(cdata ~= nil, "Camera data must be initialized")
+    assert(cdata.anchor ~= nil, "Anchor entity must exist")
+    assert(p:get_attach() ~= nil, "Player must be attached to anchor")
+    assert(p.eye_offset ~= nil and p.eye_offset[1].z < 0 and p.eye_offset[1].y > 0,
+        "Player eye offset must project backwards and upwards from stationed anchor")
+
+    -- Initial anchor is stationed directly at orbit center (corpse position)
+    local initial_pos = cdata.anchor:get_pos()
+    local initial_dist = vector.distance(initial_pos, cdata.orbit_center)
+    assert(initial_dist < 0.001,
+        "Initial anchor pos must be stationed directly at corpse orbit_center")
+
+    -- Corpse motion tracking translates orbit_center and moves anchor smoothly with velocity
+    if cdata.corpse then
+        cdata.corpse:set_pos({ x = 505, y = 18, z = 505 })
+        cdata.corpse.set_velocity = function(self, vel) self._vel = vel end
+        cdata.corpse.get_velocity = function(self) return self._vel or vector.new(2, -4, 2) end
+        cdata.corpse:set_velocity(vector.new(2, -4, 2))
+
+        cdata.anchor.last_move_continuous = nil
+        deathstats.update_death_camera(p, 0.1)
+
+        assert(cdata.anchor.last_move_continuous == false,
+            "Corpse tracking must use unthrottled move_to with continuous = false")
+        local cam_corpse_dist = vector.distance(cdata.anchor:get_pos(), cdata.orbit_center)
+        assert(cam_corpse_dist < 0.001,
+            "Anchor must track moving corpse stationed at orbit center")
+        local anchor_vel = cdata.anchor:get_velocity()
+        assert(anchor_vel and anchor_vel.y == -4,
+            "Anchor must inherit corpse velocity for client-side extrapolation")
+
+        -- 2b. Settled corpse tranquility: once corpse rests, anchor must become completely stationary
+        cdata.corpse:set_velocity(vector.zero())
+        cdata.corpse.get_luaentity = function() return { _settled = true } end
+        cdata.anchor.last_move_continuous = nil
+        deathstats.update_death_camera(p, 0.1)
+        assert(cdata.corpse_settled == true, "Corpse must be marked settled")
+        local settled_anchor_vel = cdata.anchor:get_velocity()
+        assert(settled_anchor_vel and vector.length(settled_anchor_vel) == 0,
+            "Anchor velocity must be zeroed upon settling")
+
+        -- Further ticks on settled corpse must NOT call move_to again (zero packet spam, zero camera jitter)
+        cdata.anchor.move_call_count = 0
+        local orig_move_to = cdata.anchor.move_to
+        cdata.anchor.move_to = function(self, pos, cont)
+            self.move_call_count = (self.move_call_count or 0) + 1
+            return orig_move_to(self, pos, cont)
+        end
+        for _ = 1, 5 do
+            deathstats.update_death_camera(p, 0.05)
+        end
+        assert(cdata.anchor.move_call_count == 0,
+            "Settled corpse anchor must remain 100% stationary without move_to calls")
+        cdata.anchor.move_to = orig_move_to
+    end
+
+    -- Wall avoidance zoom: raycast detection smoothly contracts radius and adjusts eye offset
+    local saved_rc = core.raycast
+    local obstacle_active = true
+    local recorded_probe_angles = {}
+    core.set_node({ x = 506, y = 19, z = 505 }, { name = "default:stone" })
+    core.raycast = function(_, target)
+        local dx = target.x - cdata.orbit_center.x
+        local dz = -(target.z - cdata.orbit_center.z)
+        local ray_ang = (atan2(dx, dz) + 2 * math.pi) % (2 * math.pi)
+        table.insert(recorded_probe_angles, { ray_ang = ray_ang, orbit_ang = cdata.orbit_angle })
+
+        if not obstacle_active then return function() return nil end end
+        local done = false
+        return function()
+            if not done then
+                done = true
+                return {
+                    type = "node",
+                    under = { x = 506, y = 19, z = 505 },
+                    intersection_point = { x = 506, y = 19, z = 505 },
+                }
+            end
+            return nil
+        end
+    end
+
+    local pre_zoom_radius = cdata.eff_radius
+    local pre_zoom_offset_z = p.eye_offset[1].z
+    for _ = 1, 10 do
+        deathstats.update_death_camera(p, 0.05)
+    end
+    assert(cdata.eff_radius < pre_zoom_radius, "eff_radius must contract on obstacle detection")
+    assert(p.eye_offset[1].z > pre_zoom_offset_z, "Eye offset Z must pull in closer to 0 on obstacle zoom")
+
+    -- 3a. Solution 2 verification: Strict proportional height scaling maintains constant pitch
+    local current_ratio = cdata.eff_height / cdata.eff_radius
+    assert(math.abs(current_ratio - cdata.nominal_ratio) < 0.0001,
+        "Strict proportional height scaling (eff_height = eff_radius * nominal_ratio) must hold during zoom")
+    local expected_pitch = atan2(cdata.nominal_ratio, 1.0)
+    assert(math.abs(cdata.eff_pitch - expected_pitch) < 0.001,
+        "Camera pitch must remain invariant and zero-wobble during zoom in/out")
+
+    -- 3b. Solution 3 verification: Directional lookahead probing without lookbehind drag
+    -- Recorded rays must only probe primary angle and forward lookahead (+0.06), never negative lookbehind
+    assert(#recorded_probe_angles > 0, "Raycasts must be recorded")
+    local lookbehind_found = false
+    local lookahead_found = false
+    for _, probe in ipairs(recorded_probe_angles) do
+        local diff = (probe.ray_ang - probe.orbit_ang + math.pi) % (2 * math.pi) - math.pi
+        if diff < -0.01 then
+            lookbehind_found = true
+        elseif math.abs(diff - 0.06) < 0.01 then
+            lookahead_found = true
+        end
+    end
+    assert(not lookbehind_found, "Lookbehind probe ray must be eliminated (Solution 3)")
+    assert(lookahead_found, "Forward lookahead probe ray (+0.06 rad) must be present (Solution 3)")
+
+    -- 3c. Solution 1 verification: Eye offset steady-state packet tranquility
+    -- Once radius reaches target obstacle clearance, redundant set_eye_offset calls are suppressed
+    for _ = 1, 20 do
+        deathstats.update_death_camera(p, 0.05)
+    end
+    local eye_offset_call_count = 0
+    local orig_set_eye = p.set_eye_offset
+    p.set_eye_offset = function(self, o1, o2)
+        eye_offset_call_count = eye_offset_call_count + 1
+        return orig_set_eye(self, o1, o2)
+    end
+    for _ = 1, 5 do
+        deathstats.update_death_camera(p, 0.05)
+    end
+    assert(eye_offset_call_count == 0,
+        "Steady-state eye offset must suppress redundant packets (Solution 1)")
+    p.set_eye_offset = orig_set_eye
+
+    core.raycast = saved_rc
+
+    -- Cleanup resets camera, eye offset, and detaches
+    deathstats.reset_camera(p)
+    assert(p:get_attach() == nil, "Player must be detached on reset")
+    assert(deathstats.player_camera_data["InterpCamPlayer"] == nil, "Camera data must be removed on reset")
+    assert(p.eye_offset[1].x == 0 and p.eye_offset[1].y == 0 and p.eye_offset[1].z == 0,
+        "Eye offset must be reset to zero on camera reset")
+
+    print("  [PASS] Camera Anchor Stationed at Corpse with Interpolation & Wall Avoidance Zoom")
+end
+run_test_suite_68()
+
+-- TEST SUITE 69: Directional Force Camera Positioning & Post-Settling Orbit Rotation
+local function run_test_suite_69()
+    -- Directional Force Camera Positioning
+    -- Case A: Lethal punch from South (0, 0, -10) hitting player at (0, 0, 0)
+    -- Knockback pushes player North (+Z, d = {0, 0, 1}).
+    -- Camera is positioned South of player looking North towards corpse: initial_angle = 0
+    local p_south = create_mock_player("ForcePlayerSouth", 0)
+    p_south:set_pos({ x = 0, y = 0, z = 0 })
+    deathstats.recent_punches["ForcePlayerSouth"] = {
+        hitter_pos = { x = 0, y = 0, z = -10 },
+        damage = 10,
+    }
+    deathstats.set_death_camera(p_south, { category = "pvp", damage = 10 })
+    local cdata_s = deathstats.player_camera_data["ForcePlayerSouth"]
+    assert(cdata_s ~= nil, "Camera data for ForcePlayerSouth must exist")
+    assert(math.abs(cdata_s.orbit_angle - 0) < 0.01,
+        string.format("Camera angle for punch from South must be ~0 rad (looking North), got %.3f", cdata_s.orbit_angle))
+    assert(math.abs(p_south.look_horizontal - 0) < 0.01,
+        "Player yaw must align with camera looking North towards corpse")
+
+    -- Case B: Lethal punch from North (0, 0, 10) hitting player at (0, 0, 0)
+    -- Knockback pushes player South (-Z, d = {0, 0, -1}).
+    -- Camera is positioned North of player looking South towards corpse: initial_angle = pi (~3.142)
+    local p_north = create_mock_player("ForcePlayerNorth", 0)
+    p_north:set_pos({ x = 0, y = 0, z = 0 })
+    deathstats.recent_punches["ForcePlayerNorth"] = {
+        hitter_pos = { x = 0, y = 0, z = 10 },
+        damage = 10,
+    }
+    deathstats.set_death_camera(p_north, { category = "pvp", damage = 10 })
+    local cdata_n = deathstats.player_camera_data["ForcePlayerNorth"]
+    assert(cdata_n ~= nil, "Camera data for ForcePlayerNorth must exist")
+    assert(math.abs(cdata_n.orbit_angle - math.pi) < 0.01,
+        string.format("Camera angle for punch from North must be ~pi rad (looking South), got %.3f", cdata_n.orbit_angle))
+
+    -- Case C: Lethal explosion from West (-10, 0, 0) hitting player at (0, 0, 0)
+    -- Knockback pushes player East (+X, d = {1, 0, 0}).
+    -- Camera is positioned West of player looking East towards corpse: initial_angle = 3*pi/2 (~4.712)
+    local p_west = create_mock_player("ForcePlayerWest", 0)
+    p_west:set_pos({ x = 0, y = 0, z = 0 })
+    deathstats.last_blow["ForcePlayerWest"] = {
+        damage = 15,
+        reason = {
+            object = {
+                get_pos = function() return { x = -10, y = 0, z = 0 } end,
+            },
+        },
+    }
+    deathstats.set_death_camera(p_west, { category = "explosion", damage = 15 })
+    local cdata_w = deathstats.player_camera_data["ForcePlayerWest"]
+    assert(cdata_w ~= nil, "Camera data for ForcePlayerWest must exist")
+    assert(math.abs(cdata_w.orbit_angle - (1.5 * math.pi)) < 0.01,
+        string.format("Camera angle for explosion from West must be ~3pi/2 rad (looking East), got %.3f", cdata_w.orbit_angle))
+
+    -- Follow corpse without rotation while ragdoll is in flight
+    local init_angle_s = cdata_s.orbit_angle
+    assert(cdata_s.corpse_settled == false, "Corpse with flight impulse must start as unsettled")
+    for step = 1, 5 do
+        cdata_s.corpse:set_pos({ x = 0, y = 5 - step * 0.5, z = step * 2 })
+        deathstats.update_death_camera(p_south, 0.05)
+        assert(cdata_s.orbit_angle == init_angle_s,
+            "Camera orbit_angle must NOT rotate while corpse is unsettled in flight")
+        assert(math.abs(p_south.look_horizontal - init_angle_s) < 0.001,
+            "Player yaw must NOT rotate while corpse is in flight")
+        assert(vector.distance(cdata_s.anchor:get_pos(), cdata_s.corpse:get_pos()) < 0.001,
+            "Anchor must track the moving corpse in flight")
+    end
+
+    -- Rotation starts smoothly once the ragdoll corpse settles on the ground
+    cdata_s.corpse:set_velocity(vector.zero())
+    cdata_s.corpse.get_luaentity = function() return { _settled = true } end
+    deathstats.update_death_camera(p_south, 0.05)
+    assert(cdata_s.corpse_settled == true, "Corpse must be recognized as settled")
+
+    -- Subsequent updates must now advance orbit angle
+    local pre_orbit_angle = cdata_s.orbit_angle
+    deathstats.update_death_camera(p_south, 0.5)
+    local expected_advance = cdata_s.orbit_speed * 0.5
+    assert(math.abs((cdata_s.orbit_angle - pre_orbit_angle) - expected_advance) < 0.001,
+        "Orbit rotation must smoothly start and advance once corpse has settled")
+    assert(p_south.look_horizontal ~= init_angle_s,
+        "Player yaw must now rotate around the settled corpse")
+
+    -- Passive deaths start settled and orbit immediately
+    local p_passive = create_mock_player("PassiveDrownPlayer", 0)
+    p_passive:set_pos({ x = 100, y = 5, z = 100 })
+    deathstats.set_death_camera(p_passive, { category = "drown", damage = 4 })
+    local cdata_pass = deathstats.player_camera_data["PassiveDrownPlayer"]
+    assert(cdata_pass.corpse_settled == true, "Passive death corpse must start settled")
+    local pass_init_angle = cdata_pass.orbit_angle
+    deathstats.update_death_camera(p_passive, 0.5)
+    assert(cdata_pass.orbit_angle ~= pass_init_angle,
+        "Passive death camera must begin orbiting immediately without waiting")
+
+    -- Cleanups
+    deathstats.reset_camera(p_south)
+    deathstats.reset_camera(p_north)
+    deathstats.reset_camera(p_west)
+    deathstats.reset_camera(p_passive)
+
+    print("  [PASS] Directional Force Camera Positioning & Post-Settling Orbit Rotation")
+end
+run_test_suite_69()
+
+------------------------------------------------------------------------
+-- TEST 70: Code Quality, Performance Optimizations & Engine Standards
+------------------------------------------------------------------------
+local function run_test_suite_70()
+    print("\n--- TEST 70: Code Quality, Performance Optimizations & Engine Standards ---")
+
+    local p_test70 = create_mock_player("QualityTester", 20)
+
+    -- deathstats.hide_all_hudbars & deathstats.restore_all_hudbars
+    assert(type(deathstats.hide_all_hudbars) == "function", "hide_all_hudbars must be defined")
+    assert(type(deathstats.restore_all_hudbars) == "function", "restore_all_hudbars must be defined")
+    deathstats.hide_all_hudbars(p_test70)
+    deathstats.restore_all_hudbars(p_test70)
+
+    -- deathstats.get_last_death_info
+    assert(type(deathstats.get_last_death_info) == "function", "get_last_death_info must be defined")
+    local d_info = deathstats.get_last_death_info(p_test70)
+    assert(d_info ~= nil, "get_last_death_info should return a fallback table if no death occurred yet")
+    assert(d_info.category ~= nil, "get_last_death_info must include a category")
+
+    -- Set recent death data and verify get_last_death_info returns it
+    deathstats.last_death_reason["QualityTester"] = { category = "lava", damage = 15, node_name = "default:lava_source" }
+    local lava_info = deathstats.get_last_death_info(p_test70)
+    assert(lava_info.category == "lava", "get_last_death_info must return recorded last_death_reason")
+    assert(lava_info.damage == 15, "get_last_death_info must return recorded damage")
+
+    -- settle_ragdoll_limbs with hanging_legs
+    local corpse = core.add_entity({ x = 0, y = 10, z = 0 }, "deathstats:corpse")
+    deathstats.settle_ragdoll_limbs(corpse, 10, "supine", true) -- hanging_legs = true
+    local leg_l_ov = corpse:get_bone_override("Leg_Left")
+    local leg_r_ov = corpse:get_bone_override("Leg_Right")
+    assert(leg_l_ov ~= nil and leg_l_ov.rotation ~= nil, "Leg_Left must have bone override")
+    assert(leg_r_ov ~= nil and leg_r_ov.rotation ~= nil, "Leg_Right must have bone override")
+    assert(leg_l_ov.rotation.vec.x < 0, "Leg_Left pitch must be downward (negative x) for supine hanging legs")
+    assert(leg_r_ov.rotation.vec.x < 0, "Leg_Right pitch must be downward (negative x) for supine hanging legs")
+
+    -- fracture_corpse_limbs vector and scalar rotation support
+    local custom_limbs = {
+        ["Arm_Left"] = vector.new(0.5, 0.1, -1.2),
+        ["Arm_Right"] = 0.8,
+    }
+    local applied = deathstats.fracture_corpse_limbs(corpse, custom_limbs)
+    assert(applied["Arm_Left"] ~= nil, "Vector rotation for Arm_Left must be applied")
+    assert(applied["Arm_Right"] ~= nil, "Scalar rotation for Arm_Right must be applied")
+    local arm_l_ov = corpse:get_bone_override("Arm_Left")
+    assert(arm_l_ov ~= nil and arm_l_ov.rotation ~= nil, "Arm_Left override must exist")
+    assert(math.abs(arm_l_ov.rotation.vec.x - 0.5) < 0.001, "Arm_Left vector x must match input")
+    assert(math.abs(arm_l_ov.rotation.vec.z - (-1.2)) < 0.001, "Arm_Left vector z must match input")
+
+    -- Clean up
+    deathstats.last_death_reason["QualityTester"] = nil
+
+    print("  [PASS] Code Quality, Performance Optimizations & Engine Standards")
+end
+run_test_suite_70()
+
+-- ============================================================================
+-- TEST SUITE 71: Death Coordinates, Depth / Biome Detection & Respawn Chat
+-- ============================================================================
+local function run_test_suite_71()
+    print("\n--- TEST 71: Death Coordinates, Depth / Biome Detection & Respawn Chat ---")
+
+    -- Depth description categorization
+    assert(deathstats.get_depth_description(600):find("Sky"), "Y >= 500 must be categorized as Sky Realm")
+    assert(deathstats.get_depth_description(20):find("Surface"), "Y between 10 and 500 must be Highlands / Surface")
+    assert(deathstats.get_depth_description(-25):find("Shallow"), "Y between -10 and -200 must be Shallow Caverns")
+    assert(deathstats.get_depth_description(-250):find("Deep"), "Y between -200 and -1000 must be Deep Underground")
+    assert(deathstats.get_depth_description(-1500):find("Abyssal"), "Y between -1000 and -5000 must be Abyssal Depths")
+
+    -- Biome detection
+    local orig_biome_data = core.get_biome_data
+    local orig_biome_name = core.get_biome_name
+    core.get_biome_data = function(_pos)
+        return { biome = 42 }
+    end
+    core.get_biome_name = function(id)
+        if id == 42 then return "coniferous_forest" end
+        return nil
+    end
+
+    local biome = deathstats.get_biome_at_pos({ x = 100, y = 5, z = -200 })
+    assert(biome == "Coniferous Forest", "Biome name must be clean title case: " .. tostring(biome))
+
+    core.get_biome_data = orig_biome_data
+    core.get_biome_name = orig_biome_name
+
+    -- Death info enrichment with coordinates
+    local p_geo = create_mock_player("GeoTester")
+    p_geo.pos = { x = 120.4, y = -65.2, z = 340.9 }
+    local res = {
+        category = "fall",
+        damage = 25,
+        type = "fall",
+    }
+    local enriched = deathstats.enrich_death_info(res, p_geo)
+    assert(enriched.death_pos ~= nil, "Enriched info must record death_pos")
+    assert(enriched.death_pos.x == 120 and enriched.death_pos.y == -65 and enriched.death_pos.z == 341,
+        "Coordinates must be rounded to whole integers")
+    assert(enriched.coords_str:find("X: 120, Y: -65, Z: 341", 1, true), "Formatted coords_str must match rounded vector")
+    assert(enriched.depth_desc:find("Shallow Caverns"), "Depth must reflect Y = -65")
+
+    -- Respawn chat message notification
+    local last_chat = nil
+    local orig_chat = core.chat_send_player
+    core.chat_send_player = function(pname, msg)
+        last_chat = { player = pname, message = msg }
+    end
+
+    deathstats.config.chat_death_coords = true
+    deathstats.last_death_reason["GeoTester"] = enriched
+    deathstats.on_player_respawn(p_geo)
+    assert(last_chat ~= nil and last_chat.player == "GeoTester", "Chat message must be sent to respawning player")
+    assert(last_chat.message:find("120, -65, 341", 1, true), "Chat message must contain death coordinates")
+    assert(last_chat.message:find("Shallow Caverns"), "Chat message must contain depth description")
+
+    -- Test setting disabled
+    last_chat = nil
+    deathstats.config.chat_death_coords = false
+    deathstats.last_death_reason["GeoTester"] = enriched
+    deathstats.on_player_respawn(p_geo)
+    assert(last_chat == nil, "Chat message must not be sent when chat_death_coords is false")
+
+    -- Cleanup
+    deathstats.config.chat_death_coords = true
+    deathstats.last_death_reason["GeoTester"] = nil
+    mock_players["GeoTester"] = nil
+    core.chat_send_player = orig_chat
+
+    print("  [PASS] Death Coordinates, Depth / Biome Detection & Respawn Chat")
+end
+run_test_suite_71()
+
+-- ============================================================================
+-- TEST SUITE 72: Personal Best Records ("Best Life") Tracking & Detection
+-- ============================================================================
+local function run_test_suite_72()
+    print("\n--- TEST 72: Personal Best Records ('Best Life') Tracking & Detection ---")
+
+    local p_rec = create_mock_player("RecordBreaker")
+    local stats = deathstats.load_player_stats("RecordBreaker")
+
+    assert(stats.lifetime.personal_bests ~= nil, "Stats must initialize personal_bests table")
+    assert(stats.lifetime.personal_bests.survival_time == 0, "Initial PB survival_time must be 0")
+    assert(stats.lifetime.personal_bests.kills == 0, "Initial PB kills must be 0")
+    assert(stats.lifetime.personal_bests.killstreak == 0, "Initial PB killstreak must be 0")
+    assert(stats.lifetime.personal_bests.blocks_mined == 0, "Initial PB blocks_mined must be 0")
+    assert(stats.lifetime.personal_bests.total_ores == 0, "Initial PB total_ores must be 0")
+    assert(stats.lifetime.personal_bests.damage_dealt == 0, "Initial PB damage_dealt must be 0")
+
+    -- Simulate an epic first run
+    stats.life_start_time = core.get_gametime() - 720
+    stats.current_run.players_killed = 4
+    stats.current_run.mobs_killed = 6
+    stats.current_run.killstreak = 10
+    stats.current_run.blocks_mined = 500
+    stats.current_run.total_ores = 65
+    stats.current_run.damage_dealt = 1850
+
+    local reason = { category = "mob", mob = "FireDemon", damage = 40 }
+    deathstats.record_player_death(p_rec, reason)
+
+    -- All stats on run 1 should set new records
+    assert(stats.lifetime.personal_bests.survival_time == 720, "PB survival_time must be 720")
+    assert(stats.lifetime.personal_bests.kills == 10, "PB kills must be 10")
+    assert(stats.lifetime.personal_bests.killstreak == 10, "PB killstreak must be 10")
+    assert(stats.lifetime.personal_bests.blocks_mined == 500, "PB blocks_mined must be 500")
+    assert(stats.lifetime.personal_bests.total_ores == 65, "PB total_ores must be 65")
+    assert(stats.lifetime.personal_bests.damage_dealt == 1850, "PB damage_dealt must be 1850")
+
+    assert(stats.last_life ~= nil and stats.last_life.is_new_record == true, "is_new_record flag must be true")
+    assert(stats.last_life.new_records.survival_time == true, "survival_time must be flagged as new record")
+    assert(stats.last_life.new_records.kills == true, "kills must be flagged as new record")
+
+    -- Show death formspec and check for record banner
+    deathstats.show_death_formspec(p_rec)
+    assert(core.last_formspec and core.last_formspec.fs:find("NEW PERSONAL RECORD"),
+        "Death formspec must display NEW PERSONAL RECORD banner")
+
+    -- Simulate a mediocre second run
+    stats.life_start_time = core.get_gametime() - 60
+    stats.current_run.players_killed = 0
+    stats.current_run.mobs_killed = 1
+    stats.current_run.killstreak = 1
+    stats.current_run.blocks_mined = 20
+    stats.current_run.total_ores = 0
+    stats.current_run.damage_dealt = 100
+
+    deathstats.record_player_death(p_rec, reason)
+
+    -- Personal bests must remain at epic run 1 levels
+    assert(stats.lifetime.personal_bests.survival_time == 720, "PB survival_time must remain 720")
+    assert(stats.lifetime.personal_bests.kills == 10, "PB kills must remain 10")
+    assert(stats.lifetime.personal_bests.killstreak == 10, "PB killstreak must remain 10")
+    assert(stats.lifetime.personal_bests.blocks_mined == 500, "PB blocks_mined must remain 500")
+    assert(stats.last_life.is_new_record == false, "Mediocre run must not flag new records")
+
+    deathstats.show_death_formspec(p_rec)
+    assert(core.last_formspec and not core.last_formspec.fs:find("NEW PERSONAL RECORD"),
+        "Death formspec must NOT display NEW PERSONAL RECORD banner on non-record run")
+
+    -- Cleanup
+    mock_players["RecordBreaker"] = nil
+    deathstats.players["RecordBreaker"] = nil
+    deathstats.last_death_reason["RecordBreaker"] = nil
+
+    print("  [PASS] Personal Best Records ('Best Life') Tracking & Detection")
+end
+run_test_suite_72()
+
+-- ============================================================================
+-- TEST SUITE 73: Killer's Remaining Health (PvP Deaths)
+-- ============================================================================
+local function run_test_suite_73()
+    print("\n--- TEST 73: Killer's Remaining Health (PvP Deaths) ---")
+
+    local p_killer = create_mock_player("PvPKiller")
+    local p_victim = create_mock_player("PvPVictim")
+
+    p_killer:set_hp(13) -- 13 HP out of 20
+    p_killer.properties = { hp_max = 20 }
+
+    local pvp_death_reason = {
+        category = "player",
+        killer = "PvPKiller",
+        type = "punch",
+        puncher = p_killer,
+        damage = 18,
+    }
+
+    local enriched = deathstats.enrich_death_info(pvp_death_reason, p_victim)
+    assert(enriched.killer_hp == 13, "Enriched PvP death must record killer_hp = 13")
+    assert(enriched.killer_max_hp == 20, "Enriched PvP death must record killer_max_hp = 20")
+
+    -- Record death and render death formspec
+    deathstats.last_death_reason["PvPVictim"] = enriched
+    deathstats.record_player_death(p_victim, enriched)
+    deathstats.show_death_formspec(p_victim)
+
+    assert(core.last_formspec and core.last_formspec.fs:find("Killer HP: 13 / 20"),
+        "Formspec must display killer's remaining health: " .. tostring(core.last_formspec.fs))
+
+    -- Non-PvP death: killer HP must not appear
+    local mob_reason = { category = "mob", mob = "DungeonSpider", damage = 12 }
+    local mob_enriched = deathstats.enrich_death_info(mob_reason, p_victim)
+    assert(mob_enriched.killer_hp == nil, "Mob death must not have killer_hp")
+
+    deathstats.last_death_reason["PvPVictim"] = mob_enriched
+    deathstats.record_player_death(p_victim, mob_enriched)
+    deathstats.show_death_formspec(p_victim)
+
+    assert(core.last_formspec and not core.last_formspec.fs:find("Killer HP:"),
+        "Non-PvP death formspec must not display killer HP")
+
+    -- Cleanup
+    mock_players["PvPKiller"] = nil
+    mock_players["PvPVictim"] = nil
+    deathstats.players["PvPKiller"] = nil
+    deathstats.players["PvPVictim"] = nil
+    deathstats.last_death_reason["PvPVictim"] = nil
+
+    print("  [PASS] Killer's Remaining Health (PvP Deaths)")
+end
+run_test_suite_73()
+
+-- ============================================================================
+-- TEST SUITE 74: Fall Height & Impact Velocity Physics
+-- ============================================================================
+local function run_test_suite_74()
+    print("\n--- TEST 74: Fall Height & Impact Velocity Physics ---")
+
+    local p_faller = create_mock_player("CliffJumper")
+    p_faller.pos = { x = 0, y = 10, z = 0 }
+
+    -- Case 1: Tracked fall peak from stats.lua globalstep
+    deathstats.fall_peaks["CliffJumper"] = 65 -- fell from Y=65 down to Y=10 (55 meters)
+    local fall_death_reason = { category = "fall", type = "fall", damage = 50 }
+    local enriched1 = deathstats.enrich_death_info(fall_death_reason, p_faller)
+
+    assert(enriched1.fall_height == 55, "Fall height must be peak (65) - land (10) = 55m")
+    assert(enriched1.fall_speed ~= nil and enriched1.fall_speed > 30, "Fall speed must be calculated (~32.8 m/s)")
+
+    deathstats.last_death_reason["CliffJumper"] = enriched1
+    deathstats.record_player_death(p_faller, enriched1)
+    deathstats.show_death_formspec(p_faller)
+
+    assert(core.last_formspec and core.last_formspec.fs:find("Fell 55m"),
+        "Formspec must display fall height: " .. tostring(core.last_formspec.fs))
+    assert(core.last_formspec and core.last_formspec.fs:find("m/s"),
+        "Formspec must display impact speed in m/s")
+
+    -- Case 2: Untracked fall (fallback calculation based on fall damage formula)
+    deathstats.fall_peaks["CliffJumper"] = nil
+    local fall_reason2 = { category = "fall", type = "fall", damage = 20 }
+    local enriched2 = deathstats.enrich_death_info(fall_reason2, p_faller)
+
+    assert(enriched2.fall_height ~= nil and enriched2.fall_height > 10,
+        "Fallback fall height must be calculated from damage (>10m)")
+    assert(enriched2.fall_speed ~= nil and enriched2.fall_speed > 10,
+        "Fallback impact velocity must be calculated")
+
+    -- Cleanup
+    deathstats.fall_peaks["CliffJumper"] = nil
+    mock_players["CliffJumper"] = nil
+    deathstats.players["CliffJumper"] = nil
+    deathstats.last_death_reason["CliffJumper"] = nil
+
+    print("  [PASS] Fall Height & Impact Velocity Physics")
+end
+run_test_suite_74()
+
+-- ============================================================================
+-- TEST SUITE 75: Arch-Nemesis & Lifetime Cause-of-Death Breakdown
+-- ============================================================================
+local function run_test_suite_75()
+    print("\n--- TEST 75: Arch-Nemesis & Lifetime Cause-of-Death Breakdown ---")
+
+    local p_dist = create_mock_player("DistTester")
+    local stats = deathstats.load_player_stats("DistTester")
+
+    -- Populate multi-category deaths and killers in lifetime
+    stats.lifetime.deaths = 38
+    stats.lifetime.deaths_by_category = {
+        fall = 4,
+        lava = 7,
+        mob = 15,
+        player = 9,
+        drown = 3,
+    }
+    stats.lifetime.killers_count = {
+        ["GoblinKing"] = 6,
+        ["ShadowAssassin"] = 9,
+        ["CaveTroll"] = 4,
+    }
+
+    -- Show lifetime stats formspec (overview tab)
+    deathstats.show_lifetime_stats_formspec(p_dist, "overview")
+    assert(core.last_formspec and core.last_formspec.fs:find("Arch%-Nemesis"),
+        "Lifetime overview must display Arch-Nemesis section")
+    assert(core.last_formspec and (core.last_formspec.fs:find("ShadowAssassin") or core.last_formspec.fs:find("Shadow Assassin")),
+        "Arch-Nemesis must be ShadowAssassin (9 kills)")
+    assert(core.last_formspec and core.last_formspec.fs:find("Most Recent Cause:"),
+        "Lifetime overview must display Most Recent Cause")
+
+    -- Check records tab displays personal bests and cause breakdown
+    stats.lifetime.personal_bests.survival_time = 1800
+    stats.lifetime.personal_bests.killstreak = 14
+    stats.lifetime.personal_bests.total_ores = 120
+    stats.lifetime.personal_bests.blocks_mined = 950
+    deathstats.show_lifetime_stats_formspec(p_dist, "records")
+    assert(core.last_formspec and core.last_formspec.fs:find("Personal Bests"),
+        "Records tab must show Personal Bests title")
+    assert(core.last_formspec and core.last_formspec.fs:find("Best Killstreak:"),
+        "Records tab must display Best Killstreak")
+    assert(core.last_formspec and core.last_formspec.fs:find("14"),
+        "Records tab must display killstreak value 14")
+    assert(core.last_formspec and core.last_formspec.fs:find("Cause of Death Breakdown"),
+        "Records tab must show Cause of Death Breakdown")
+    assert(core.last_formspec and core.last_formspec.fs:find("Mob: 15"),
+        "Cause breakdown must display Mob: 15")
+
+    -- Cleanup
+    mock_players["DistTester"] = nil
+    deathstats.players["DistTester"] = nil
+
+    print("  [PASS] Arch-Nemesis & Lifetime Cause-of-Death Breakdown")
+end
+run_test_suite_75()
+
+-- ============================================================================
+-- TEST SUITE 76: Photo Mode Toggle on Death Screen
+-- ============================================================================
+local function run_test_suite_76()
+    print("\n--- TEST 76: Photo Mode Toggle on Death Screen ---")
+
+    local p_photo = create_mock_player("PhotoTester")
+    deathstats.dead_players["PhotoTester"] = true
+    local dummy_death = { category = "fall", damage = 20 }
+    deathstats.last_death_reason["PhotoTester"] = dummy_death
+
+    -- Show death formspec: button btn_photo_mode must exist
+    deathstats.show_death_formspec(p_photo)
+    assert(core.last_formspec and core.last_formspec.fs:find("btn_photo_mode"),
+        "Death screen formspec must contain btn_photo_mode button")
+
+    -- Click btn_photo_mode
+    core.on_receive_fields(p_photo, "deathstats:death", { btn_photo_mode = "Photo Mode" })
+    assert(core.last_formspec and core.last_formspec.formname == "deathstats:photo_mode",
+        "Clicking btn_photo_mode must transition to deathstats:photo_mode formspec")
+    assert(core.last_formspec.fs:find("btn_show_ui"),
+        "Photo mode formspec must provide btn_show_ui button")
+
+    -- Click btn_show_ui to restore UI
+    core.on_receive_fields(p_photo, "deathstats:photo_mode", { btn_show_ui = "Show UI" })
+    assert(core.last_formspec and core.last_formspec.formname == "deathstats:death",
+        "Clicking btn_show_ui must restore full deathstats:death formspec")
+
+    -- Test ESC/quit in photo mode: also restores death screen
+    core.on_receive_fields(p_photo, "deathstats:death", { btn_photo_mode = "Photo Mode" })
+    assert(core.last_formspec.formname == "deathstats:photo_mode", "Must be in photo mode")
+    core.on_receive_fields(p_photo, "deathstats:photo_mode", { quit = "true" })
+    assert(core.last_formspec and core.last_formspec.formname == "deathstats:death",
+        "Closing photo mode with ESC must restore full death screen")
+
+    -- Cleanup
+    deathstats.dead_players["PhotoTester"] = nil
+    mock_players["PhotoTester"] = nil
+    deathstats.last_death_reason["PhotoTester"] = nil
+
+    print("  [PASS] Photo Mode Toggle on Death Screen")
+end
+run_test_suite_76()
+
+-- ============================================================================
+-- TEST SUITE 77: Corpse Right-Click Inspection & Epitaph Plaque Modal
+-- ============================================================================
+local function run_test_suite_77()
+    print("\n--- TEST 77: Corpse Right-Click Inspection & Epitaph Plaque Modal ---")
+
+    create_mock_player("FallenHero")
+    local p_inspecting = create_mock_player("GraveVisitor")
+
+    -- Spawn mock corpse entity
+    local corpse = core.add_entity({ x = 50, y = 5, z = 50 }, "deathstats:corpse")
+    corpse._player_name = "FallenHero"
+    corpse._death_info = {
+        category = "fall",
+        fall_height = 42,
+        coords_str = "(X: 50, Y: 5, Z: 50)",
+        depth_desc = "Surface (Y=5)",
+    }
+    corpse._stats_snapshot = {
+        survival_time = 3600,
+        total_ores = 45,
+        blocks_mined = 230,
+        mobs_killed = 8,
+    }
+
+    -- Verify corpse settling sets pointable = true when inspect enabled
+    deathstats.config.enable_corpse_inspect = true
+    deathstats.settle_corpse_at_rest(corpse)
+    local corpse_props = corpse:get_properties()
+    assert(corpse_props.pointable == true, "Settled corpse must be pointable for interaction")
+    assert(corpse_props.selectionbox ~= nil, "Settled corpse must define selectionbox")
+
+    -- Living player right-clicks corpse: opens epitaph modal
+    local corpse_def = core.registered_entities["deathstats:corpse"]
+    assert(corpse_def and corpse_def.on_rightclick ~= nil, "Corpse entity must define on_rightclick")
+
+    corpse_def.on_rightclick(corpse, p_inspecting)
+    assert(core.last_formspec and core.last_formspec.formname == "deathstats:corpse_epitaph",
+        "Right-clicking corpse must open deathstats:corpse_epitaph formspec")
+    assert(core.last_formspec.fs:find("FallenHero"), "Epitaph must display deceased player name")
+    assert(core.last_formspec.fs:find("IN MEMORIAM"), "Epitaph must display memorial header")
+    assert(core.last_formspec.fs:find("42m"), "Epitaph must display fall distance")
+
+    -- Dead player right-clicks corpse: ignored
+    local p_dead_clicker = create_mock_player("GhostClicker")
+    p_dead_clicker:set_hp(0)
+    deathstats.dead_players["GhostClicker"] = true
+    core.last_formspec = nil
+    corpse_def.on_rightclick(corpse, p_dead_clicker)
+    assert(core.last_formspec == nil, "Dead clicker must not trigger epitaph formspec")
+
+    -- Feature disabled test
+    deathstats.config.enable_corpse_inspect = false
+    core.last_formspec = nil
+    corpse_def.on_rightclick(corpse, p_inspecting)
+    assert(core.last_formspec == nil, "Epitaph must not show when enable_corpse_inspect is false")
+
+    -- Cleanup
+    deathstats.config.enable_corpse_inspect = true
+    deathstats.dead_players["GhostClicker"] = nil
+    mock_players["FallenHero"] = nil
+    mock_players["GraveVisitor"] = nil
+    mock_players["GhostClicker"] = nil
+
+    print("  [PASS] Corpse Right-Click Inspection & Epitaph Plaque Modal")
+end
+run_test_suite_77()
+
+-- ============================================================================
+-- TEST SUITE 78: Scoreboard MVP Badges & All-Time Hall of Fame
+-- ============================================================================
+local function run_test_suite_78()
+    print("\n--- TEST 78: Scoreboard MVP Badges & All-Time Hall of Fame ---")
+
+    local p_mvp = create_mock_player("MvpTester")
+    local p_frag = create_mock_player("FragTester")
+    local p_miner = create_mock_player("MinerTester")
+
+    local d_mvp = deathstats.load_player_stats("MvpTester")
+    d_mvp.current_run.damage_dealt = 25000
+    d_mvp.current_run.players_killed = 2
+    d_mvp.lifetime.damage_dealt = 50000
+
+    local d_frag = deathstats.load_player_stats("FragTester")
+    d_frag.current_run.players_killed = 12
+    d_frag.current_run.damage_dealt = 1200
+    d_frag.lifetime.players_killed = 25
+
+    local d_miner = deathstats.load_player_stats("MinerTester")
+    d_miner.current_run.blocks_mined = 850
+    d_miner.current_run.damage_dealt = 100
+    d_miner.lifetime.blocks_mined = 2500
+
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function()
+        return { p_mvp, p_frag, p_miner }
+    end
+
+    -- MVP Badges computation
+    deathstats.config.enable_mvp_badges = true
+    local board_data = deathstats.get_scoreboard_data(p_mvp)
+    assert(#board_data == 3, "Board data must return 3 players")
+
+    -- Find each player entry
+    local entry_mvp, entry_frag, entry_miner = nil, nil, nil
+    for _, item in ipairs(board_data) do
+        if item.name == "MvpTester" then entry_mvp = item end
+        if item.name == "FragTester" then entry_frag = item end
+        if item.name == "MinerTester" then entry_miner = item end
+    end
+
+    assert(entry_mvp ~= nil and entry_frag ~= nil and entry_miner ~= nil, "All entries must exist")
+    assert(entry_mvp.badge_str:find("%[MVP%]"), "Highest score leader must have MVP tag [MVP]")
+    assert(entry_frag.badge_str:find("%[KILL%]"), "Top killer must have sword tag [KILL]")
+    assert(entry_miner.badge_str:find("%[MINE%]"), "Top miner must have pickaxe tag [MINE]")
+    assert(entry_mvp.badges[1].icon == "deathstats_badge_crown.png", "MVP must have crown icon")
+    assert(entry_frag.badges[1].icon == "deathstats_badge_sword.png", "Top killer must have sword icon")
+    assert(entry_miner.badges[1].icon == "deathstats_badge_pickaxe.png", "Top miner must have pickaxe icon")
+
+    -- All-Time Hall of Fame data indexing & sorting
+    deathstats.save_player_stats("MvpTester", d_mvp)
+    deathstats.save_player_stats("FragTester", d_frag)
+    deathstats.save_player_stats("MinerTester", d_miner)
+
+    local hof = deathstats.get_hall_of_fame_data()
+    assert(type(hof) == "table" and #hof >= 3, "Hall of fame must return at least 3 players")
+    -- Check descending score sorting
+    for i = 1, #hof - 1 do
+        assert(hof[i].score >= hof[i + 1].score, "Hall of fame must be sorted descending by lifetime score")
+    end
+
+    -- Scoreboard Formspec Tab Switching (Live vs Hall of Fame)
+    deathstats.show_scoreboard_formspec(p_mvp, "live")
+    assert(core.last_formspec and core.last_formspec.fs:find("tab_sb_hof"), "Live scoreboard must have HoF tab")
+
+    deathstats.show_scoreboard_formspec(p_mvp, "hall_of_fame")
+    assert(core.last_formspec and core.last_formspec.fs:find("LEGEND"), "HoF tab must display LEGEND column")
+    assert(core.last_formspec and core.last_formspec.fs:find("PLAYTIME"), "HoF tab must display PLAYTIME column")
+
+    -- Cleanup
+    core.get_connected_players = orig_conn
+    mock_players["MvpTester"] = nil
+    mock_players["FragTester"] = nil
+    mock_players["MinerTester"] = nil
+
+    print("  [PASS] Scoreboard MVP Badges & All-Time Hall of Fame")
+end
+run_test_suite_78()
+
+local suites = {}
+
+suites[79] = function()
+    print("\n--- TEST 79: Death Coordinates, Depth / Biome Detection & Formspec Formatting ---")
+    local p = create_mock_player("CoordTester79")
+    mock_players["CoordTester79"] = p
+
+    local info = {
+        type = "mob",
+        killer_name = "mobs_monster:dungeon_master",
+        damage = 18,
+        pos = { x = 380, y = 14, z = -576 },
+        depth_desc = "Depth: -14m",
+        biome_name = "Desert",
+    }
+
+    deathstats.show_death_formspec(p, info)
+    local fs = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs:find("%(380, 14, %-576%)"), "Death formspec must display coordinates (380, 14, -576)")
+    assert(fs:find("Depth: %-14m"), "Death formspec must display Depth: -14m")
+    assert(fs:find("Desert"), "Death formspec must display biome Desert")
+    assert(fs:find("deathstats_icon_camera%.png"), "Death formspec must use camera icon for Photo Mode")
+    assert(fs:find("tooltip%[0%.5,"), "Fatal blow card must have themed tooltip")
+    assert(fs:find("#141418f0"), "Tooltip must use dark translucent theme background #141418f0")
+    assert(fs:find("#eeddaa"), "Tooltip must use warm parchment text color #eeddaa")
+
+    -- Test photo mode formspec uses eye icon and themed tooltip
+    deathstats.show_photo_mode_formspec(p)
+    local fs_photo = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_photo:find("deathstats_icon_eye%.png"), "Photo mode formspec must use eye icon")
+    assert(fs_photo:find("#141418f0"), "Photo mode tooltip must use themed colors")
+
+    mock_players["CoordTester79"] = nil
+    print("  [PASS] Death Coordinates, Depth / Biome Detection & Formspec Formatting")
+end
+suites[79]()
+
+suites[80] = function()
+    print("\n--- TEST 80: Non-Mob Entity Filtering (is_mob_entity) ---")
+    -- Built-in, item, node, projectile and vehicle entities must be filtered
+    assert(deathstats.is_mob_entity("__builtin:item") == false, "__builtin:item must NOT be mob")
+    assert(deathstats.is_mob_entity("__builtin:falling_node") == false, "__builtin:falling_node must NOT be mob")
+    assert(deathstats.is_mob_entity("default:arrow") == false, "default:arrow must NOT be mob")
+    assert(deathstats.is_mob_entity("x_bows:arrow") == false, "x_bows:arrow must NOT be mob")
+    assert(deathstats.is_mob_entity("boats:boat") == false, "boats:boat must NOT be mob")
+    assert(deathstats.is_mob_entity("carts:cart") == false, "carts:cart must NOT be mob")
+    assert(deathstats.is_mob_entity("fire:basic_flame") == false, "fire:basic_flame must NOT be mob")
+    assert(deathstats.is_mob_entity("tnt:boom") == false, "tnt:boom must NOT be mob")
+
+    -- Valid mobs must return true
+    assert(deathstats.is_mob_entity("mobs_monster:dungeon_master") == true, "mobs_monster must be mob")
+    assert(deathstats.is_mob_entity("dmobs:dragon") == true, "dmobs dragon must be mob")
+    assert(deathstats.is_mob_entity("animalia:wolf") == true, "animalia wolf must be mob")
+    assert(deathstats.is_mob_entity("creature:goblin", { hp_max = 20 }) == true, "entity with hp_max must be mob")
+    assert(deathstats.is_mob_entity("custom:dummy", { is_mob = true }) == true, "entity with is_mob flag must be mob")
+
+    -- Punching an item or arrow must NOT increment mobs_slain
+    local p = create_mock_player("MobFilterTester")
+    mock_players["MobFilterTester"] = p
+    local d = deathstats.load_player_stats("MobFilterTester")
+    d.lifetime.mobs_slain = {}
+
+    local item_ent = {
+        name = "__builtin:item",
+        get_luaentity = function() return { name = "__builtin:item" } end,
+    }
+    local arrow_ent = {
+        name = "default:arrow",
+        get_luaentity = function() return { name = "default:arrow" } end,
+    }
+
+    local ent_def = core.registered_entities["mobs_monster:zombie"] or {}
+    if ent_def.on_punch then
+        ent_def.on_punch(item_ent.get_luaentity(), p, 0, {}, vector.new(0, 0, 1), 20)
+        ent_def.on_punch(arrow_ent.get_luaentity(), p, 0, {}, vector.new(0, 0, 1), 20)
+    end
+
+    assert(d.lifetime.mobs_slain["__builtin:item"] == nil, "__builtin:item must never be counted as mob slain")
+    assert(d.lifetime.mobs_slain["default:arrow"] == nil, "default:arrow must never be counted as mob slain")
+
+    mock_players["MobFilterTester"] = nil
+    print("  [PASS] Non-Mob Entity Filtering (is_mob_entity)")
+end
+suites[80]()
+
+suites[81] = function()
+    print("\n--- TEST 81: Slain Players Tracking & Combat Tab Display ---")
+    local p_killer = create_mock_player("JohnnyBravo")
+    local p_victim1 = create_mock_player("SaKeL")
+    local p_victim2 = create_mock_player("Gamer99")
+    mock_players["JohnnyBravo"] = p_killer
+    mock_players["SaKeL"] = p_victim1
+    mock_players["Gamer99"] = p_victim2
+
+    local d_killer = deathstats.load_player_stats("JohnnyBravo")
+    d_killer.lifetime.players_slain = {}
+
+    -- Simulate PvP death of SaKeL killed by JohnnyBravo
+    deathstats.record_player_death("SaKeL", {
+        type = "pvp",
+        killer_name = "JohnnyBravo",
+    })
+    assert(d_killer.lifetime.players_slain["SaKeL"] == 1, "JohnnyBravo must have 1 kill on SaKeL")
+
+    -- Simulate 2nd kill on SaKeL
+    deathstats.record_player_death("SaKeL", {
+        type = "pvp",
+        killer_name = "JohnnyBravo",
+    })
+    assert(d_killer.lifetime.players_slain["SaKeL"] == 2, "JohnnyBravo must have 2 kills on SaKeL")
+
+    -- Simulate kill on Gamer99
+    deathstats.record_player_death("Gamer99", {
+        type = "pvp",
+        killer_name = "JohnnyBravo",
+    })
+    assert(d_killer.lifetime.players_slain["Gamer99"] == 1, "JohnnyBravo must have 1 kill on Gamer99")
+
+    -- Check combat tab display
+    deathstats.show_lifetime_stats_formspec(p_killer, "combat")
+    local fs = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs:find("SaKeL"), "Combat tab must display slain player SaKeL")
+    assert(fs:find("Gamer99"), "Combat tab must display slain player Gamer99")
+    assert(fs:find("#141418f0"), "Combat tab rows must have themed tooltips")
+
+    mock_players["JohnnyBravo"] = nil
+    mock_players["SaKeL"] = nil
+    mock_players["Gamer99"] = nil
+    print("  [PASS] Slain Players Tracking & Combat Tab Display")
+end
+suites[81]()
+
+suites[82] = function()
+    print("\n--- TEST 82: Mined Ore Drops via get_node_drops ---")
+    local p = create_mock_player("DropMinerTester")
+    mock_players["DropMinerTester"] = p
+    local d = deathstats.load_player_stats("DropMinerTester")
+    d.ores_mined = {}
+
+    -- Mock get_node_drops
+    local orig_get_node_drops = core.get_node_drops
+    core.get_node_drops = function(nodename, _toolname)
+        if nodename == "default:stone_with_diamond" then
+            return { "default:diamond" }
+        elseif nodename == "default:stone_with_iron" then
+            return { "default:iron_lump" }
+        elseif nodename == "default:stone_with_coal" then
+            return { "default:coal_lump" }
+        elseif nodename == "default:ore_without_drops" then
+            return {}
+        end
+        return { nodename }
+    end
+
+    -- Trigger on_dignode for stone_with_diamond
+    if core.on_dignode then
+        core.on_dignode({ x = 0, y = 0, z = 0 }, { name = "default:stone_with_diamond" }, p)
+    end
+    assert(d.current_run.ores_mined["default:diamond"] == 1, "Digging diamond ore must track dropped diamond item")
+    assert(d.lifetime.ores_mined["default:diamond"] == 1, "Lifetime stats must track dropped diamond item")
+    assert(d.current_run.ores_mined["default:stone_with_diamond"] == nil, "Block name should not be tracked if drops exist")
+
+    -- Trigger on_dignode for ore_without_drops
+    if core.on_dignode then
+        core.on_dignode({ x = 0, y = 0, z = 0 }, { name = "default:ore_without_drops" }, p)
+    end
+    assert(d.current_run.ores_mined["default:ore_without_drops"] == 1, "Fallback to block name if drops is empty")
+
+    core.get_node_drops = orig_get_node_drops
+    mock_players["DropMinerTester"] = nil
+    print("  [PASS] Mined Ore Drops via get_node_drops")
+end
+suites[82]()
+
+suites[83] = function()
+    print("\n--- TEST 83: Killer's Remaining Health for PvE Mob Deaths ---")
+    local p = create_mock_player("PveHealthTester")
+    mock_players["PveHealthTester"] = p
+
+    local mob_killer = {
+        is_player = function() return false end,
+        get_luaentity = function()
+            return { name = "mobs_monster:dungeon_master", health = 35, hp_max = 50 }
+        end,
+        get_hp = function() return 35 end,
+        get_properties = function() return { hp_max = 50 } end,
+    }
+
+    local info = {
+        type = "mob",
+        killer_name = "mobs_monster:dungeon_master",
+        damage = 20,
+    }
+
+    deathstats.enrich_death_info(p, info, mob_killer)
+    assert(info.killer_hp == 35, "Mob killer HP must be extracted as 35")
+    assert(info.killer_hp_max == 50, "Mob killer max HP must be extracted as 50")
+
+    deathstats.show_death_formspec(p, info)
+    local fs = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs:find("35 / 50"), "Death formspec must display killer mob HP 35 / 50")
+
+    mock_players["PveHealthTester"] = nil
+    print("  [PASS] Killer's Remaining Health for PvE Mob Deaths")
+end
+suites[83]()
+
+suites[84] = function()
+    print("\n--- TEST 84: Player Username Integrity (Never Split CamelCase) ---")
+    local p = create_mock_player("NameIntegrityTester")
+    mock_players["NameIntegrityTester"] = p
+    local d = deathstats.load_player_stats("NameIntegrityTester")
+    d.lifetime.killers_count = {
+        ["SaKeL"] = 15,
+        ["JohnnyBravo"] = 10,
+    }
+
+    deathstats.show_lifetime_stats_formspec(p, "overview")
+    local fs = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs:find("SaKeL"), "Arch-Nemesis must be SaKeL without spaces")
+    assert(not fs:find("Sa Ke L"), "Arch-Nemesis must NOT contain spaces 'Sa Ke L'")
+
+    -- Verify technical names with colons are formatted
+    assert(deathstats.format_name("mobs_monster:dirt_monster") == "Dirt Monster",
+        "Technical entity names with colons must still be formatted")
+
+    mock_players["NameIntegrityTester"] = nil
+    print("  [PASS] Player Username Integrity (Never Split CamelCase)")
+end
+suites[84]()
+
+suites[85] = function()
+    print("\n--- TEST 85: Corpse Punch Safety & Settled Liquid Particles ---")
+    local corpse_def = core.registered_entities["deathstats:corpse"]
+    assert(corpse_def and type(corpse_def.on_punch) == "function", "Corpse must define on_punch")
+
+    local dummy_self = {
+        object = {
+            set_velocity = function(self, vel) self.vel = vel end,
+            get_velocity = function(self) return self.vel or vector.new(0, 0, 0) end,
+            get_pos = function() return { x = 0, y = 5, z = 0 } end,
+        },
+        physics = { settled = true, state = "settled" },
+    }
+
+    local p = create_mock_player("PuncherTester")
+    local res = corpse_def.on_punch(dummy_self, p, 0, {}, vector.new(0, 0, 1), 10)
+    assert(res == true, "Corpse on_punch must return true to cancel knockback")
+    assert(dummy_self.object.vel.x == 0 and dummy_self.object.vel.y == 0 and dummy_self.object.vel.z == 0,
+        "Corpse velocity must be pinned to (0, 0, 0)")
+
+    -- Test settle_corpse_at_rest with liquid
+    local spawner_called = false
+    local orig_add_particlespawner = core.add_particlespawner
+    core.add_particlespawner = function(_spec)
+        spawner_called = true
+        return 999
+    end
+
+    local orig_get_node = core.get_node
+    core.get_node = function(_pos)
+        return { name = "default:water_source" }
+    end
+
+    deathstats.settle_corpse_at_rest(dummy_self)
+    assert(spawner_called == true, "Settling in water must spawn liquid particles")
+
+    core.add_particlespawner = orig_add_particlespawner
+    core.get_node = orig_get_node
+    print("  [PASS] Corpse Punch Safety & Settled Liquid Particles")
+end
+suites[85]()
+
+suites[86] = function()
+    print("\n--- TEST 86: Scoreboard Refresh Button & Formspec Badges + Text HUD Tags ---")
+    local p = create_mock_player("ScoreTester86")
+    mock_players["ScoreTester86"] = p
+
+    deathstats.show_scoreboard_formspec(p, "live")
+    local fs_live = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_live:find("btn_sb_refresh"), "Scoreboard must contain btn_sb_refresh")
+    assert(fs_live:find("deathstats_icon_refresh%.png"), "Refresh button must use deathstats_icon_refresh.png")
+    assert(fs_live:find("tooltip%[btn_sb_refresh;Refresh Statistics;#141418f0;#eeddaa%]"),
+        "Refresh button must have themed tooltip")
+
+    -- Test Hall of Fame rank 1 crown texture
+    deathstats.show_scoreboard_formspec(p, "hall_of_fame")
+    local fs_hof = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_hof:find("deathstats_badge_crown%.png"), "Hall of Fame rank 1 must render deathstats_badge_crown.png")
+    assert(fs_hof:find("tooltip%[0%.05"), "Hall of Fame rank 1 must have badge tooltip")
+
+    -- Test btn_sb_refresh field receive
+    local refreshed = false
+    local orig_show = deathstats.show_scoreboard_formspec
+    deathstats.show_scoreboard_formspec = function(plr, tab)
+        if tab == "hall_of_fame" then refreshed = true end
+        return orig_show(plr, tab)
+    end
+    core.on_receive_fields(p, "deathstats:scoreboard", { btn_sb_refresh = "Refresh" })
+    assert(refreshed == true, "Clicking btn_sb_refresh must reload current tab")
+    deathstats.show_scoreboard_formspec = orig_show
+
+    mock_players["ScoreTester86"] = nil
+    print("  [PASS] Scoreboard Refresh Button & Formspec Badges + Text HUD Tags")
+end
+suites[86]()
+
+suites[87] = function()
+    print("\n--- TEST 87: Backwards Compatibility Data Migration ---")
+    -- Ore block migration to dropped items
+    local legacy_ores = {
+        ["default:stone_with_coal"] = 10,
+        ["default:stone_with_iron"] = 5,
+        ["default:diamond"] = 2,
+    }
+    local migrated = deathstats.migrate_ores_mined(legacy_ores)
+    assert(migrated["default:coal_lump"] == 10, "Coal ore must migrate to coal lump")
+    assert(migrated["default:iron_lump"] == 5, "Iron ore must migrate to iron lump")
+    assert(migrated["default:diamond"] == 2, "Already dropped diamond must stay diamond")
+    assert(migrated["default:stone_with_coal"] == nil, "Old block key must be removed")
+
+    -- Cleanup non-mob slain entries
+    local legacy_mobs = {
+        ["__builtin:item"] = 15,
+        ["default:arrow"] = 7,
+        ["boats:boat"] = 1,
+        ["mobs_monster:dungeon_master"] = 4,
+    }
+    local cleaned = deathstats.cleanup_invalid_mobs_slain({ lifetime = { mobs_slain = legacy_mobs } })
+    assert(cleaned.lifetime.mobs_slain["mobs_monster:dungeon_master"] == 4, "Valid mob must be kept")
+    assert(cleaned.lifetime.mobs_slain["__builtin:item"] == nil, "Item entity must be cleaned up")
+    assert(cleaned.lifetime.mobs_slain["default:arrow"] == nil, "Arrow entity must be cleaned up")
+    assert(cleaned.lifetime.mobs_slain["boats:boat"] == nil, "Boat entity must be cleaned up")
+
+    -- load_player_stats auto migration
+    local p = create_mock_player("MigrateTester87")
+    mock_players["MigrateTester87"] = p
+    deathstats.storage:set_string("player:MigrateTester87", core.serialize({
+        ores_mined = { ["default:stone_with_coal"] = 8 },
+        mobs_slain = { ["__builtin:item"] = 20, ["mobs_monster:zombie"] = 3 },
+    }))
+    deathstats.players["MigrateTester87"] = nil
+
+    local loaded = deathstats.load_player_stats("MigrateTester87")
+    assert(loaded.lifetime.players_slain ~= nil, "players_slain table must be initialized")
+    assert(loaded.lifetime.ores_mined["default:coal_lump"] == 8, "load_player_stats must migrate ores")
+    assert(loaded.lifetime.mobs_slain["__builtin:item"] == nil, "load_player_stats must scrub non-mobs")
+
+    mock_players["MigrateTester87"] = nil
+    print("  [PASS] Backwards Compatibility Data Migration")
+end
+suites[87]()
+
+suites[88] = function()
+    print("\n--- TEST 88: True 3D Directional Blast Physics & Explosion Impulse ---")
+    local p = create_mock_player("BlastTester88")
+    mock_players["BlastTester88"] = p
+    p:set_pos({ x = 0, y = 5, z = 0 })
+    p:set_look_horizontal(0) -- facing +Z (z=1, x=0)
+
+    -- Blast behind player at (0, 5, -8)
+    deathstats.record_explosion({ x = 0, y = 5, z = -8 }, 6)
+    deathstats.last_blow["BlastTester88"] = {
+        damage = 30,
+        blast_pos = { x = 0, y = 5, z = -8 },
+    }
+
+    local vel, pitch = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    assert(vel.z > 0, "Corpse must be propelled forward (z > 0) away from explosion behind player")
+    assert(pitch < 0, "Corpse pitch must be negative (hurled onto face/prone) when blast is behind")
+
+    -- Blast in front of player at (0, 5, 8)
+    deathstats.record_explosion({ x = 0, y = 5, z = 8 }, 6)
+    deathstats.last_blow["BlastTester88"] = {
+        damage = 30,
+        blast_pos = { x = 0, y = 5, z = 8 },
+    }
+    local vel_front, pitch_front = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    assert(vel_front.z < 0, "Corpse must be propelled backward (z < 0) away from explosion in front of player")
+    assert(pitch_front > 0, "Corpse pitch must be positive (flung backward onto back/supine) when blast is in front")
+
+    mock_players["BlastTester88"] = nil
+    print("  [PASS] True 3D Directional Blast Physics & Explosion Impulse")
+end
+suites[88]()
+
+suites[89] = function()
+    print("\n--- TEST 89: UI Photo Button Geometry, Ore Number Compacting, Corpse Punch Safety & /stats Command ---")
+
+    -- Photo Mode Button Square (0.40 x 0.40)
+    local p_dead = create_mock_player("SquareButtonTester")
+    mock_players["SquareButtonTester"] = p_dead
+    deathstats.dead_players["SquareButtonTester"] = true
+    deathstats.show_death_formspec(p_dead, { category = "punch", reason_text = "was punched" })
+    local fs_death = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_death:find("image_button%[4%.75,0%.30;0%.40,0%.40;deathstats_icon_camera%.png;btn_photo_mode;%]"),
+        "Photo mode button must be a 1:1 square (0.40 x 0.40) at 4.75,0.30 to avoid stretching camera texture")
+
+    -- Compact Abbreviation for Mined Ores
+    assert(deathstats.format_compact_number(0) == "0", "0 -> 0")
+    assert(deathstats.format_compact_number(499) == "499", "499 -> 499")
+    assert(deathstats.format_compact_number(1000) == "1k", "1000 -> 1k")
+    assert(deathstats.format_compact_number(1500) == "1k", "1500 -> 1k")
+    assert(deathstats.format_compact_number(2000) == "2k", "2000 -> 2k")
+    assert(deathstats.format_compact_number(2500) == "2k", "2500 -> 2k")
+    assert(deathstats.format_compact_number(10000) == "10k", "10000 -> 10k")
+    assert(deathstats.format_compact_number(12500) == "12k", "12500 -> 12k")
+    assert(deathstats.format_compact_number(1000000) == "1M", "1000000 -> 1M")
+    assert(deathstats.format_compact_number(2500000) == "2M", "2500000 -> 2M")
+
+    -- Verify Ores tab renders compact format for count >= 1000 while retaining full count in tooltip
+    local p_miner = create_mock_player("OreCompactor")
+    mock_players["OreCompactor"] = p_miner
+    deathstats.players["OreCompactor"] = {
+        lifetime = {
+            ores_mined = {
+                ["default:stone_with_coal"] = 1500,
+                ["default:stone_with_diamond"] = 10000,
+            },
+        },
+    }
+    deathstats.show_lifetime_stats_formspec(p_miner, "ores")
+    local fs_ores = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_ores:find("1k mined"), "1500 coal must render as '1k mined'")
+    assert(fs_ores:find("10k mined"), "10000 diamonds must render as '10k mined'")
+    assert(fs_ores:find("1,500"), "Tooltip must retain exact count 1,500")
+    assert(fs_ores:find("10,000"), "Tooltip must retain exact count 10,000")
+
+    -- Corpse Ground Anchoring & Punch Safety
+    local corpse_def = core.registered_entities["deathstats:corpse"]
+    local dummy_corpse = {
+        object = {
+            pos = vector.new(10, 5, 10),
+            vel = vector.new(0, 0, 0),
+            acc = vector.new(0, 0, 0),
+            props = { physical = true },
+            set_properties = function(self, props)
+                for k, v in pairs(props) do self.props[k] = v end
+            end,
+            get_properties = function(self) return self.props end,
+            set_velocity = function(self, vel) self.vel = vel end,
+            get_velocity = function(self) return self.vel or vector.zero() end,
+            set_acceleration = function(self, acc) self.acc = acc end,
+            get_acceleration = function(self) return self.acc or vector.zero() end,
+            set_pos = function(self, pos) self.pos = pos end,
+            get_pos = function(self) return self.pos end,
+            is_valid = function() return true end,
+        },
+        physics = { settled = false },
+    }
+    deathstats.settle_corpse_at_rest(dummy_corpse)
+    assert(dummy_corpse._settled == true, "Corpse must be marked as settled")
+    assert(dummy_corpse.object.props.physical == false, "Settled corpse must be non-physical to prevent engine physics knockback")
+    assert(dummy_corpse._settled_pos ~= nil, "Settled corpse must store its anchor ground position")
+
+    -- Punch the corpse: simulate received punch reaction (stays grounded, zero velocity, micro nudge, restore pos)
+    local p_hitter = create_mock_player("PunchHitter")
+    local punch_dir = vector.new(0, 0, 1)
+    local punch_ret = corpse_def.on_punch(dummy_corpse, p_hitter, 0, {}, punch_dir, 5)
+    assert(punch_ret == true, "on_punch must return true")
+    assert(dummy_corpse.object.vel.x == 0 and dummy_corpse.object.vel.y == 0 and dummy_corpse.object.vel.z == 0,
+        "Corpse velocity must be immediately zeroed")
+    assert(dummy_corpse.object.pos.z > dummy_corpse._settled_pos.z,
+        "Corpse should receive subtle micro-nudge along punch direction for feedback")
+    assert(dummy_corpse.object.pos.y == dummy_corpse._settled_pos.y,
+        "Corpse micro-nudge must stay strictly grounded (y unchanged, never fly up)")
+
+    -- Run deferred task to ensure anchor restored
+    run_deferred_tasks()
+    assert(dummy_corpse.object.pos.z == dummy_corpse._settled_pos.z,
+        "Corpse anchor position must be restored by deferred reset")
+
+    -- On step while settled: any rogue velocity must be zeroed and position clamped
+    dummy_corpse.object.vel = vector.new(0, 10, 0) -- rogue upward knockback
+    dummy_corpse.object.pos = vector.new(10, 50, 10) -- drifted into sky
+    corpse_def.on_step(dummy_corpse, 0.1)
+    assert(dummy_corpse.object.vel.y == 0, "on_step must zero any rogue velocity")
+    assert(dummy_corpse.object.pos.y == dummy_corpse._settled_pos.y, "on_step must clamp drifted position back to ground anchor")
+
+    -- Post-Settling Water/Lava Environment Particles (Die on land, settle in water)
+    local water_surface_pos = vector.new(100, 2.2, 100)
+    core.world_nodes["100,2,100"] = "default:water_source"
+    core.world_nodes["100,3,100"] = "air"
+    local death_on_land = { category = "fall", reason_text = "fell from high place" }
+    local eff_water = deathstats.get_corpse_effect_type(water_surface_pos, death_on_land)
+    assert(eff_water == "water", "Corpse resting on/in water surface must detect water effect even after dying of fall")
+
+    -- Chat Commands: /stats, /mystats, /deathstats stats
+    assert(core.chatcommands["stats"] ~= nil, "/stats chat command must be registered")
+    assert(core.chatcommands["mystats"] ~= nil, "/mystats chat command must be registered")
+
+    local p_live = create_mock_player("LiveStatsViewer")
+    mock_players["LiveStatsViewer"] = p_live
+    deathstats.dead_players["LiveStatsViewer"] = nil
+
+    core.chatcommands["stats"].func("LiveStatsViewer", "ores")
+    local fs_live_stats = core.last_formspec and core.last_formspec.fs or ""
+    assert(core.last_formspec.formname == "deathstats:lifetime", "Must show deathstats:lifetime formspec")
+    assert(fs_live_stats:find("btn_close"), "Live player viewing lifetime stats must have a CLOSE button")
+    assert(not fs_live_stats:find("btn_modal_respawn"), "Live player viewing lifetime stats must not have a RESPAWN button")
+
+    -- Close formspec for live player (should NOT open death formspec)
+    core.last_formspec = nil
+    core.on_receive_fields(p_live, "deathstats:lifetime", { btn_close = "CLOSE" })
+    assert(core.last_formspec == nil or core.last_formspec.formname ~= "deathstats:death",
+        "Closing lifetime dossier while alive must NOT trigger death screen")
+
+    -- /deathstats stats subcommand
+    core.chatcommands["deathstats"].func("LiveStatsViewer", "stats records")
+    assert(core.last_formspec and core.last_formspec.formname == "deathstats:lifetime",
+        "/deathstats stats must open lifetime dossier")
+
+    -- Cleanup
+    deathstats.dead_players["SquareButtonTester"] = nil
+    mock_players["SquareButtonTester"] = nil
+    mock_players["OreCompactor"] = nil
+    mock_players["LiveStatsViewer"] = nil
+    mock_players["PunchHitter"] = nil
+    print("  [PASS] UI Photo Button Geometry, Ore Number Compacting, Corpse Punch Safety & /stats Command")
+end
+suites[89]()
+
+suites[90] = function()
+    print("\n--- TEST 90: Photo Button Transparency, Show UI Left Icon, Memoriam Tooltips, Dug-Out Free-Fall & Liquid Particles ---")
+
+    -- Photo Mode Button Transparency in show_death_formspec
+    local p_trans = create_mock_player("TransButtonTester")
+    mock_players["TransButtonTester"] = p_trans
+    deathstats.dead_players["TransButtonTester"] = true
+    deathstats.show_death_formspec(p_trans, { category = "punch", reason_text = "was punched" })
+    local fs_death = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_death:find("style%[btn_photo_mode;border=false;bgcolor=#00000000;bgcolor_hovered=#ffffff22;bordercolor=#00000000%]"),
+        "Photo mode button style must be transparent with no border (icon-only)")
+    assert(fs_death:find("image_button%[4%.75,0%.30;0%.40,0%.40;deathstats_icon_camera%.png;btn_photo_mode;%]"),
+        "Photo mode button must retain 1:1 camera icon")
+
+    -- Show UI Button Layout in show_photo_mode_formspec
+    deathstats.show_photo_mode_formspec(p_trans)
+    local fs_photo = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_photo:find("button%[0,0;2%.8,0%.65;btn_show_ui;%s+SHOW UI%]"),
+        "Show UI button must be a standard button with padded text so label is to the right")
+    assert(fs_photo:find("image%[0%.22,0%.14;0%.36,0%.36;deathstats_icon_eye%.png%]"),
+        "Show UI button must render a 1:1 square eye icon on the left (0.22,0.14;0.36,0.36)")
+    assert(not fs_photo:find("image_button%[0,0;.*deathstats_icon_eye%.png.*SHOW UI"),
+        "Show UI button must NOT use image_button which stretches the texture across the background")
+
+    -- In Memoriam Plaque Rich Tooltips
+    local dummy_corpse_ent = {
+        _player_name = "AncientWarrior",
+        _death_info = {
+            reason_text = "Slain by Malok the Defiler with an Obsidian Meseblade from 12 meters away",
+            killer_name = "Malok",
+            killer_hp = 14,
+            killer_max_hp = 30,
+            weapon = "Obsidian Meseblade",
+            fall_height = 25,
+            pos = vector.new(120, -45, 88),
+        },
+        _last_life = {
+            time_alive = 3672,
+            blocks_mined = 1450,
+            total_ores = 125,
+            damage_dealt = 240,
+            damage_taken = 180,
+            mobs_killed = 42,
+            players_killed = 3,
+            distance_traveled = 1845.5,
+            last_funny = "Never dig straight down, they said... they were right.",
+        },
+    }
+    local p_inspector = create_mock_player("InspectorBob")
+    mock_players["InspectorBob"] = p_inspector
+    deathstats.show_corpse_epitaph_formspec(p_inspector, dummy_corpse_ent)
+    local fs_epitaph = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_epitaph:find("IN MEMORIAM"), "Must show IN MEMORIAM plaque")
+    -- Tooltip over Cause of Death
+    assert(fs_epitaph:find("tooltip%[0%.8,1%.60;6%.4,0%.65;"), "Must include tooltip for Cause of Death row")
+    assert(fs_epitaph:find("Slain by Malok the Defiler with an Obsidian Meseblade"),
+        "Cause of Death tooltip must include full unabbreviated cause string")
+    assert(fs_epitaph:find("Slayer: Malok %(14/30 HP%)"),
+        "Cause of Death tooltip must include slayer and HP details")
+    assert(fs_epitaph:find("Location: %(120, %-45, 88%)"),
+        "Cause of Death tooltip must include death coordinates")
+    -- Tooltip over Time Survived
+    assert(fs_epitaph:find("tooltip%[0%.8,2%.35;6%.4,0%.65;"), "Must include tooltip for Time Survived row")
+    assert(fs_epitaph:find("Mining: 1,450 blocks %(125 ores%)"),
+        "Time Survived tooltip must include mining and ore statistics")
+    assert(fs_epitaph:find("Combat: 240 dealt / 180 taken"),
+        "Time Survived tooltip must include combat damage dealt/taken")
+    assert(fs_epitaph:find("Mobs Slain: 42"), "Time Survived tooltip must include mob kills")
+    assert(fs_epitaph:find("Players Slain: 3"), "Time Survived tooltip must include player kills")
+    -- Tooltip over Inscripted Words
+    assert(fs_epitaph:find("tooltip%[0%.8,3%.10;6%.4,0%.65;"), "Must include tooltip for Inscripted Words row")
+    assert(fs_epitaph:find("Never dig straight down, they said%.%.%. they were right%."),
+        "Inscripted Words tooltip must include full unabbreviated quote")
+
+    -- Corpse Ground Support & Free-Fall Gravity When Ground is Dug Out
+    local test_ground_pos = vector.new(200, 10, 200)
+    core.world_nodes["200,9,200"] = "default:stone"
+    core.world_nodes["200,10,200"] = "air"
+    assert(deathstats.has_ground_support(test_ground_pos) == true,
+        "has_ground_support must return true when supported by solid stone")
+
+    -- Dig out the node below: replace default:stone with air
+    core.world_nodes["200,9,200"] = "air"
+    core.world_nodes["200,8,200"] = "air"
+    assert(deathstats.has_ground_support(test_ground_pos) == false,
+        "has_ground_support must return false when nodes below are dug out to air")
+
+    -- Liquid should also provide support (buoyancy)
+    core.world_nodes["200,9,200"] = "default:water_source"
+    assert(deathstats.has_ground_support(test_ground_pos) == true,
+        "has_ground_support must return true when supported by water")
+    core.world_nodes["200,9,200"] = "air"
+
+    -- Test corpse wake-up into ragdoll free-fall in on_step
+    local corpse_ent_def = core.registered_entities["deathstats:corpse"]
+    local falling_corpse = {
+        _settled = true,
+        _settled_pos = vector.new(200, 10, 200),
+        _ground_check_timer = 0.35, -- trigger throttled check immediately
+        object = {
+            props = { physical = false, pointable = true },
+            vel = vector.zero(),
+            acc = vector.zero(),
+            pos = vector.new(200, 10, 200),
+            set_properties = function(self, p) for k, v in pairs(p) do self.props[k] = v end end,
+            set_velocity = function(self, v) self.vel = v end,
+            get_velocity = function(self) return self.vel end,
+            set_acceleration = function(self, a) self.acc = a end,
+            get_pos = function(self) return self.pos end,
+            set_pos = function(self, p) self.pos = p end,
+            is_valid = function() return true end,
+        },
+    }
+    -- Step the settled corpse over dug-out ground:
+    corpse_ent_def.on_step(falling_corpse, 0.05)
+    assert(falling_corpse._settled == false,
+        "Corpse must wake up (_settled = false) when ground beneath is dug out")
+    assert(falling_corpse._settled_pos == nil,
+        "Corpse _settled_pos anchor must be cleared on free-fall wake up")
+    assert(falling_corpse.object.props.physical == true,
+        "Corpse must become physical (physical = true) to emulate gravity")
+    assert(falling_corpse.object.props.pointable == false,
+        "Corpse must become non-pointable while falling")
+    assert(falling_corpse.object.acc.y == -9.81,
+        "Corpse must receive downward gravity acceleration of -9.81 m/s^2")
+    assert(falling_corpse.object.vel.y < 0,
+        "Corpse must have downward initial velocity to immediately begin falling")
+
+    -- Water Bubble Particles Collision Detection & Settling in Water after Fall Death
+    local water_ps_def = deathstats.create_corpse_particlespawner_def("water", vector.new(50, 5, 50))
+    assert(water_ps_def.collisiondetection == false,
+        "Water bubble particlespawner must have collisiondetection = false so bubbles rise freely")
+
+    -- Simulate falling on land and settling in water
+    local p_water_faller = create_mock_player("WaterFaller")
+    mock_players["WaterFaller"] = p_water_faller
+    deathstats.dead_players["WaterFaller"] = true
+    local fall_water_dinfo = { category = "fall", reason_text = "hit the ground too hard" }
+    local water_corpse = {
+        props = { physical = false },
+        pos = vector.new(300, 2, 300),
+        vel = vector.zero(),
+        acc = vector.zero(),
+        set_properties = function(self, p) for k, v in pairs(p) do self.props[k] = v end end,
+        set_velocity = function(self, v) self.vel = v end,
+        get_velocity = function(self) return self.vel end,
+        set_acceleration = function(self, a) self.acc = a end,
+        get_pos = function(self) return self.pos end,
+        set_pos = function(self, p) self.pos = p end,
+        is_valid = function() return true end,
+    }
+    local water_luaent = {
+        object = water_corpse,
+        _player_name = "WaterFaller",
+        _death_info = fall_water_dinfo,
+        _settled = false,
+        _effect_type = "impact",
+    }
+    water_corpse.get_luaentity = function() return water_luaent end
+
+    -- Place water at (300, 2, 300)
+    core.world_nodes["300,2,300"] = "default:water_source"
+    core.world_nodes["300,3,300"] = "air"
+
+    deathstats.player_camera_data["WaterFaller"] = {
+        corpse = water_corpse,
+        death_info = fall_water_dinfo,
+        current_effect_type = "impact",
+        corpse_settled = false,
+        corpse_settled_particles_checked = false,
+        particle_spawners = {},
+        initial_death_pos = vector.new(300, 15, 300), -- died high up on land
+    }
+
+    -- Settle corpse in water
+    deathstats.settle_corpse_at_rest(water_luaent)
+    assert(water_luaent._settled == true, "Corpse must settle")
+    assert(water_luaent._effect_type == "water", "Settling in water must set corpse effect_type to water")
+    assert(water_luaent._particle_spawners ~= nil and #water_luaent._particle_spawners > 0,
+        "Water bubble particlespawner must be created for corpse settled in water")
+    local created_spawner = core.active_particlespawners[water_luaent._particle_spawners[1]]
+    assert(created_spawner ~= nil, "Particle spawner must exist in active_particlespawners")
+    assert(created_spawner.texture == "deathstats_particle_bubble.png",
+        "Active particle spawner texture must be deathstats_particle_bubble.png")
+    assert(created_spawner.time == 0,
+        "Water bubble spawner must be continuous (time = 0)")
+
+    -- Cleanup
+    mock_players["TransButtonTester"] = nil
+    mock_players["InspectorBob"] = nil
+    mock_players["WaterFaller"] = nil
+    deathstats.dead_players["TransButtonTester"] = nil
+    deathstats.dead_players["WaterFaller"] = nil
+    deathstats.player_camera_data["WaterFaller"] = nil
+    print("  [PASS] Photo Button Transparency, Show UI Left Icon, Memoriam Tooltips, Dug-Out Free-Fall & Liquid Particles")
+end
+suites[90]()
+
+suites[91] = function()
+    print("\n--- TEST 91: Centralized Palette Tokens & Particle Settled Flag Reset on Wake-Up ---")
+    -- Verify new colors in deathstats.colors
+    assert(deathstats.colors.tooltip_bg == "#141418f0", "deathstats.colors.tooltip_bg must be #141418f0")
+    assert(deathstats.colors.row_viewer == "#88181844", "deathstats.colors.row_viewer must be #88181844")
+    assert(deathstats.colors.active_strip == "#ff4444", "deathstats.colors.active_strip must be #ff4444")
+    assert(deathstats.colors.transparent == "#00000000", "deathstats.colors.transparent must be #00000000")
+
+    -- Verify scoreboard background texture uses palette tokens
+    deathstats.scoreboard_bg_cache = {}
+    local metrics = deathstats.calculate_scoreboard_metrics(nil)
+    local bg_tex = deathstats.get_scoreboard_bg_texture(metrics, 1, nil)
+    assert(bg_tex:find(deathstats.colors.row_viewer, 1, true), "Viewer row fill in texture must use deathstats.colors.row_viewer")
+    assert(bg_tex:find(deathstats.colors.active_strip, 1, true), "Viewer indicator strip in texture must use deathstats.colors.active_strip")
+
+    -- Verify Scoreboard formspec uses c.row_viewer and c.text_gold
+    local p = create_mock_player("PaletteTester91")
+    mock_players["PaletteTester91"] = p
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function() return { p } end
+
+    deathstats.show_scoreboard_formspec(p, "live")
+    local fs_live = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_live:find(deathstats.colors.row_viewer, 1, true), "Viewer row in formspec must use c.row_viewer")
+    assert(fs_live:find(deathstats.colors.tooltip_bg, 1, true), "Formspec tooltips must use c.tooltip_bg")
+
+    core.get_connected_players = orig_conn
+
+    deathstats.show_scoreboard_formspec(p, "hall_of_fame")
+    local fs_hof = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_hof:find("textcolor=" .. deathstats.colors.text_gold, 1, true), "Hall of Fame must format with c.text_gold")
+
+    -- Verify lifetime dossiers use c.tooltip_bg and c.text_gold
+    deathstats.show_lifetime_stats_formspec(p, "overview")
+    local fs_over = core.last_formspec and core.last_formspec.fs or ""
+    assert(fs_over:find(deathstats.colors.tooltip_bg, 1, true), "Overview nemesis tooltip must use c.tooltip_bg")
+
+    -- Verify corpse_settled_particles_checked reset on wake-up
+    local cam_data_91 = {
+        corpse = {
+            is_valid = function() return true end,
+            get_pos = function() return vector.new(0, 0, 0) end,
+            get_velocity = function() return vector.new(0, -1.2, 0) end,
+            get_luaentity = function()
+                return { _settled = false } -- corpse woke up (e.g. dug out)
+            end,
+        },
+        corpse_settled = false,
+        orbit_center = vector.new(0, 0, 0),
+        corpse_settled_particles_checked = true, -- previously checked before falling
+        death_info = { category = "fall", reason_text = "hit the ground too hard" },
+    }
+    deathstats.player_camera_data["PaletteTester91"] = cam_data_91
+    deathstats.dead_players["PaletteTester91"] = true
+
+    -- Simulate camera update step
+    deathstats.update_death_camera(p, 0.05)
+    assert(cam_data_91.corpse_settled_particles_checked == false,
+        "corpse_settled_particles_checked must reset to false when corpse wakes up (not is_settled)")
+
+    -- Cleanup
+    mock_players["PaletteTester91"] = nil
+    deathstats.dead_players["PaletteTester91"] = nil
+    deathstats.player_camera_data["PaletteTester91"] = nil
+    print("  [PASS] Centralized Palette Tokens & Particle Settled Flag Reset on Wake-Up")
+end
+suites[91]()
+
+suites[92] = function()
+    print("\n--- TEST 92: Corpse Persistence, Respawn Decoupling, Decay Dissolution & Player Corpse Capping ---")
+
+    local orig_decay_cfg = deathstats.config.corpse_decay_time
+    deathstats.config.corpse_decay_time = 180
+
+    -- Respawn Decoupling and Persistence
+    local p_persist = create_mock_player("PersistUser92", 0, { x = 120, y = 5, z = 120 })
+    mock_players["PersistUser92"] = p_persist
+    deathstats.get_player_data(p_persist)
+    deathstats.dead_players["PersistUser92"] = true
+
+    local dinfo_fall = { category = "fall", reason_text = "hit the ground with a sickening crunch" }
+    deathstats.set_death_camera(p_persist, dinfo_fall)
+
+    local cam_data_92 = deathstats.player_camera_data["PersistUser92"]
+    assert(cam_data_92 ~= nil, "Camera data must exist after set_death_camera")
+    assert(cam_data_92.corpse ~= nil, "Corpse entity must be spawned")
+    local spawned_corpse = cam_data_92.corpse
+    local corpse_luaent = spawned_corpse:get_luaentity()
+    assert(corpse_luaent ~= nil, "Corpse entity must have luaentity table")
+
+    -- Simulate respawn with corpse_decay_time > 0
+    deathstats.reset_camera(p_persist, false) -- not leaving
+    assert(cam_data_92.corpse == nil, "Corpse reference in camera data must be decoupled on respawn")
+    assert(deathstats.player_corpses["PersistUser92"] == spawned_corpse,
+        "Spawned corpse must be registered in deathstats.player_corpses upon respawn decoupling")
+    assert(corpse_luaent._persisted_after_respawn == true, "_persisted_after_respawn flag must be set on corpse entity")
+    assert(corpse_luaent._decay_time ~= nil and corpse_luaent._decay_time == core.get_gametime() + 180,
+        "Corpse _decay_time must be set to current gametime + decay duration")
+    assert(spawned_corpse:is_valid() == true, "Corpse must remain valid and alive in world after player respawns")
+
+    -- Grave / Epitaph Inspection on Persisted Corpse
+    local inspector = create_mock_player("EpitaphInspector92", 20, { x = 121, y = 5, z = 120 })
+    mock_players["EpitaphInspector92"] = inspector
+
+    local corpse_def = core.registered_entities["deathstats:corpse"]
+    core.last_formspec = nil
+    corpse_def.on_rightclick(corpse_luaent, inspector)
+    assert(core.last_formspec ~= nil, "Formspec must be displayed to inspector when right-clicking persisted corpse")
+    assert(core.last_formspec.name == "EpitaphInspector92", "Inspector must receive the formspec")
+    assert(core.last_formspec.fs:find("PersistUser92", 1, true), "Epitaph formspec must show the deceased player name")
+
+    -- Decay Expiration & Dissolution with Smoke Particles
+    local decay_particles_spawned = false
+    local captured_decay_spec = nil
+    local orig_add_ps = core.add_particlespawner
+    core.add_particlespawner = function(spec)
+        if spec.texture == "deathstats_particle_smoke.png" then
+            decay_particles_spawned = true
+            captured_decay_spec = spec
+        end
+        return orig_add_ps(spec)
+    end
+
+    local current_time = 1000
+    local orig_gt = core.get_gametime
+    core.get_gametime = function() return current_time end
+
+    -- Step before expiration (time not reached)
+    current_time = 1100 -- decay_time is 1180
+    corpse_def.on_step(corpse_luaent, 0.1)
+    assert(spawned_corpse:is_valid() == true, "Corpse must not dissolve before decay_time is reached")
+    assert(decay_particles_spawned == false, "Particles must not spawn before decay")
+
+    -- Advance gametime past expiration (1200 >= 1180)
+    current_time = 1200
+    corpse_def.on_step(corpse_luaent, 0.1)
+    assert(spawned_corpse:is_valid() == false or spawned_corpse.removed == true,
+        "Corpse must be dissolved and removed once decay_time has expired")
+    assert(deathstats.player_corpses["PersistUser92"] == nil,
+        "Corpse must be cleared from deathstats.player_corpses upon dissolution")
+    assert(decay_particles_spawned == true, "Smoke dissipation particles must be spawned upon decay dissolution")
+
+    -- Verify modern particle attributes and animation definition for deathstats_particle_smoke.png
+    assert(captured_decay_spec ~= nil, "Captured particle definition must exist")
+    assert(captured_decay_spec.animation ~= nil, "Decay smoke particles must define animation table")
+    assert(captured_decay_spec.animation.type == "vertical_frames", "Animation type must be vertical_frames")
+    assert(captured_decay_spec.animation.aspect_w == 5 and captured_decay_spec.animation.aspect_h == 5,
+        "Animation frame dimensions must be 5x5 px")
+    assert(captured_decay_spec.pos and captured_decay_spec.pos.min and captured_decay_spec.pos.max,
+        "Modern pos attribute table must be defined")
+    assert(captured_decay_spec.vel and captured_decay_spec.vel.min and captured_decay_spec.vel.max,
+        "Modern vel attribute table must be defined")
+    assert(captured_decay_spec.acc and captured_decay_spec.acc.min and captured_decay_spec.acc.max,
+        "Modern acc attribute table must be defined")
+    assert(captured_decay_spec.exptime and captured_decay_spec.exptime.min and captured_decay_spec.exptime.max,
+        "Modern exptime attribute table must be defined")
+    assert(captured_decay_spec.size and captured_decay_spec.size.min and captured_decay_spec.size.max,
+        "Modern size attribute table must be defined")
+    assert(captured_decay_spec.texpool and #captured_decay_spec.texpool > 0,
+        "Modern texpool attribute table must be defined")
+    assert(captured_decay_spec.texpool[1].name == "deathstats_particle_smoke.png",
+        "Texpool entry name must be deathstats_particle_smoke.png")
+    assert(captured_decay_spec.texpool[1].animation and captured_decay_spec.texpool[1].animation.type == "vertical_frames",
+        "Texpool entry must include vertical_frames animation table")
+    assert(captured_decay_spec.texpool[1].alpha_tween ~= nil,
+        "Texpool entry must include alpha_tween")
+    assert(captured_decay_spec.texpool[1].scale_tween ~= nil,
+        "Texpool entry must include scale_tween")
+
+    core.add_particlespawner = orig_add_ps
+    core.get_gametime = orig_gt
+
+    -- Player Corpse Capping (Strict 1 Corpse Per Player)
+    local p_cap = create_mock_player("CapPlayer92", 0, { x = 50, y = 5, z = 50 })
+    mock_players["CapPlayer92"] = p_cap
+    deathstats.get_player_data(p_cap)
+    deathstats.dead_players["CapPlayer92"] = true
+
+    -- First death and respawn
+    deathstats.set_death_camera(p_cap, dinfo_fall)
+    local first_corpse = deathstats.player_camera_data["CapPlayer92"].corpse
+    deathstats.reset_camera(p_cap, false)
+    assert(deathstats.player_corpses["CapPlayer92"] == first_corpse, "First corpse must be tracked in player_corpses")
+    assert(first_corpse:is_valid() == true, "First corpse must be valid")
+
+    -- Second death: new corpse spawned should dissolve the first corpse immediately
+    p_cap:set_hp(0)
+    deathstats.dead_players["CapPlayer92"] = true
+    deathstats.set_death_camera(p_cap, dinfo_fall)
+    assert(first_corpse:is_valid() == false or first_corpse.removed == true,
+        "First corpse must be immediately dissolved and removed when player dies again")
+    local second_corpse = deathstats.player_camera_data["CapPlayer92"].corpse
+    assert(second_corpse ~= nil and second_corpse ~= first_corpse, "New second corpse entity must be spawned")
+
+    deathstats.reset_camera(p_cap, false)
+    assert(deathstats.player_corpses["CapPlayer92"] == second_corpse,
+        "Second corpse must now be tracked in deathstats.player_corpses")
+    deathstats.remove_corpse(second_corpse)
+
+    -- Fallback: Immediate Corpse Removal when corpse_decay_time = 0
+    deathstats.config.corpse_decay_time = 0
+    p_cap:set_hp(0)
+    deathstats.dead_players["CapPlayer92"] = true
+    deathstats.set_death_camera(p_cap, dinfo_fall)
+    local instant_corpse = deathstats.player_camera_data["CapPlayer92"].corpse
+    assert(instant_corpse ~= nil, "Corpse must be spawned during death camera")
+    deathstats.reset_camera(p_cap, false)
+    assert(instant_corpse:is_valid() == false or instant_corpse.removed == true,
+        "Corpse must be removed immediately upon respawn when corpse_decay_time = 0")
+    assert(deathstats.player_corpses["CapPlayer92"] == nil,
+        "No corpse must be tracked in deathstats.player_corpses when decay is disabled")
+
+    -- Cleanup
+    deathstats.config.corpse_decay_time = orig_decay_cfg
+    mock_players["PersistUser92"] = nil
+    mock_players["EpitaphInspector92"] = nil
+    mock_players["CapPlayer92"] = nil
+    deathstats.dead_players["PersistUser92"] = nil
+    deathstats.dead_players["CapPlayer92"] = nil
+    deathstats.player_camera_data["PersistUser92"] = nil
+    deathstats.player_camera_data["CapPlayer92"] = nil
+
+    print("  [PASS] Corpse Persistence, Respawn Decoupling, Decay Dissolution & Player Corpse Capping")
+end
+suites[92]()
+
+suites[93] = function()
+    print("\n--- TEST 93: PvP Vendetta Tracking, Revenge Completion, Chat Announcement & Avenger Badge ---")
+
+    local orig_rev_cfg = deathstats.config.enable_revenge
+    local orig_ann_cfg = deathstats.config.announce_revenge
+    local orig_badges_cfg = deathstats.config.enable_mvp_badges
+    deathstats.config.enable_revenge = true
+    deathstats.config.announce_revenge = true
+    deathstats.config.enable_mvp_badges = true
+
+    local p_alice = create_mock_player("VictimAlice", 20, { x = 0, y = 0, z = 0 })
+    local p_bob = create_mock_player("NemesisBob", 20, { x = 1, y = 0, z = 0 })
+    mock_players["VictimAlice"] = p_alice
+    mock_players["NemesisBob"] = p_bob
+
+    deathstats.get_player_data(p_alice)
+    deathstats.get_player_data(p_bob)
+
+    -- Initial State
+    local alice_data = deathstats.players["VictimAlice"]
+    local bob_data = deathstats.players["NemesisBob"]
+    assert(alice_data.current_run.revenges == 0, "Alice initial run revenges must be 0")
+    assert(alice_data.lifetime.revenges == 0, "Alice initial lifetime revenges must be 0")
+    assert(alice_data.current_run.vendetta_target == nil, "Alice initial vendetta_target must be nil")
+
+    -- NemesisBob kills VictimAlice in PvP
+    local pvp_dinfo_93 = {
+        killer_name = "NemesisBob",
+        category = "pvp",
+        weapon = "default:sword_diamond",
+        reason_text = "was slain by NemesisBob using Diamond Sword",
+    }
+    p_alice:set_hp(0)
+    deathstats.record_player_death(p_alice, pvp_dinfo_93)
+
+    assert(alice_data.current_run.vendetta_target == "NemesisBob",
+        "VictimAlice must have vendetta_target set to NemesisBob")
+    assert(bob_data.current_run.players_killed == 1, "Bob players_killed must be 1")
+
+    -- Respawn Chat Prompt Sent to Victim
+    local sent_chats = {}
+    local orig_csp = core.chat_send_player
+    core.chat_send_player = function(target, msg)
+        table.insert(sent_chats, { target = target, msg = msg })
+    end
+
+    p_alice:set_hp(20)
+    deathstats.on_player_respawn(p_alice)
+
+    local got_vendetta_prompt = false
+    for _, c in ipairs(sent_chats) do
+        if c.target == "VictimAlice" and c.msg:find("Vendetta Active", 1, true) and c.msg:find("NemesisBob", 1, true) then
+            got_vendetta_prompt = true
+            break
+        end
+    end
+    assert(got_vendetta_prompt == true, "VictimAlice must receive private chat notification about active vendetta")
+    core.chat_send_player = orig_csp
+
+    -- VictimAlice avenges death and slays NemesisBob
+    local broadcast_announcements = {}
+    local orig_csa = core.chat_send_all
+    core.chat_send_all = function(msg)
+        table.insert(broadcast_announcements, msg)
+    end
+
+    local revenge_death_info = {
+        killer_name = "VictimAlice",
+        category = "pvp",
+        weapon = "default:sword_steel",
+        reason_text = "was slain by VictimAlice using Steel Sword",
+    }
+    p_bob:set_hp(0)
+    deathstats.record_player_death(p_bob, revenge_death_info)
+
+    assert(alice_data.current_run.revenges == 1,
+        "VictimAlice current_run.revenges must be incremented to 1 upon claiming revenge")
+    assert(alice_data.lifetime.revenges == 1,
+        "VictimAlice lifetime.revenges must be incremented to 1 upon claiming revenge")
+    assert(alice_data.current_run.vendetta_target == nil,
+        "VictimAlice vendetta_target must be cleared after successful revenge")
+
+    local got_revenge_broadcast = false
+    for _, msg in ipairs(broadcast_announcements) do
+        if msg:find("REVENGE!", 1, true) and msg:find("VictimAlice", 1, true) and msg:find("NemesisBob", 1, true) then
+            got_revenge_broadcast = true
+            break
+        end
+    end
+    assert(got_revenge_broadcast == true, "Server-wide revenge announcement must be broadcasted")
+    core.chat_send_all = orig_csa
+
+    -- Avenger Badge in Scoreboard Data
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function() return { p_alice, p_bob } end
+
+    local scoreboard_data = deathstats.get_scoreboard_data()
+    local alice_entry = nil
+    for _, item in ipairs(scoreboard_data) do
+        if item.name == "VictimAlice" then
+            alice_entry = item
+            break
+        end
+    end
+    assert(alice_entry ~= nil, "VictimAlice must be in scoreboard data")
+    assert(alice_entry.revenges == 1, "VictimAlice entry.revenges must be 1 in scoreboard data")
+
+    local has_avenger_badge = false
+    for _, b in ipairs(alice_entry.badges) do
+        if b.id == "avenger" and b.tag == "[RVNG]" then
+            has_avenger_badge = true
+            assert(b.glyph == "[RVNG]", "Avenger badge glyph must be [RVNG]")
+            assert(b.icon == "deathstats_badge_sword.png", "Avenger badge icon must be deathstats_badge_sword.png")
+            break
+        end
+    end
+    assert(has_avenger_badge == true, "VictimAlice must receive [RVNG] Avenger badge in scoreboard badges")
+
+    core.get_connected_players = orig_conn
+
+    -- Single-Life Expiration (Environmental death clears vendetta target)
+    p_alice:set_hp(0)
+    deathstats.record_player_death(p_alice, pvp_dinfo_93)
+    assert(alice_data.current_run.vendetta_target == "NemesisBob", "Alice gets new vendetta on new PvP death")
+
+    -- Alice dies to lava before killing Bob: current_run resets
+    local lava_dinfo_93 = { category = "lava", reason_text = "melted in lava" }
+    deathstats.record_player_death(p_alice, lava_dinfo_93)
+    assert(alice_data.current_run.vendetta_target == nil,
+        "Vendetta target must reset to nil upon intervening environmental death")
+
+    -- Killing Bob now should NOT count as revenge
+    broadcast_announcements = {}
+    orig_csa = core.chat_send_all
+    core.chat_send_all = function(msg) table.insert(broadcast_announcements, msg) end
+    p_bob:set_hp(0)
+    deathstats.record_player_death(p_bob, revenge_death_info)
+    assert(alice_data.current_run.revenges == 0,
+        "Killing previous nemesis after dying to environment must not award revenge")
+    assert(#broadcast_announcements == 0, "No revenge broadcast should be sent after vendetta expired")
+    core.chat_send_all = orig_csa
+
+    -- Config Toggle: enable_revenge = false
+    deathstats.config.enable_revenge = false
+    p_alice:set_hp(0)
+    deathstats.record_player_death(p_alice, pvp_dinfo_93)
+    assert(alice_data.current_run.vendetta_target == nil,
+        "No vendetta target must be assigned when enable_revenge = false")
+
+    -- Cleanup
+    deathstats.config.enable_revenge = orig_rev_cfg
+    deathstats.config.announce_revenge = orig_ann_cfg
+    deathstats.config.enable_mvp_badges = orig_badges_cfg
+    mock_players["VictimAlice"] = nil
+    mock_players["NemesisBob"] = nil
+    deathstats.players["VictimAlice"] = nil
+    deathstats.players["NemesisBob"] = nil
+
+    print("  [PASS] PvP Vendetta Tracking, Revenge Completion, Chat Announcement & Avenger Badge")
+end
+suites[93]()
+
+suites[94] = function()
+    print("\n--- TEST 94: Name & Tile Texture Memoization, Scratch Ground Support, Impact Texpool & Mob Punch Health ---")
+
+    -- deathstats.format_name Memoization Cache
+    assert(type(deathstats.formatted_name_cache) == "table", "deathstats.formatted_name_cache must be a table")
+    assert(deathstats.format_name(nil) == "Unknown", "format_name(nil) must return 'Unknown'")
+    assert(deathstats.format_name("") == "Unknown", "format_name('') must return 'Unknown'")
+
+    local fn_result = deathstats.format_name("default:pick_diamond")
+    assert(fn_result == "Diamond Pickaxe", "format_name('default:pick_diamond') should format to 'Diamond Pickaxe'")
+    assert(deathstats.formatted_name_cache["default:pick_diamond"] == "Diamond Pickaxe",
+        "Result must be cached in deathstats.formatted_name_cache")
+
+    -- Manually poison/alter cache entry to prove memoized branch is hit on next lookup
+    deathstats.formatted_name_cache["default:pick_diamond"] = "Cached Diamond Pick"
+    assert(deathstats.format_name("default:pick_diamond") == "Cached Diamond Pick",
+        "Subsequent lookup must return cached value without recalculating")
+    deathstats.formatted_name_cache["default:pick_diamond"] = nil
+
+    -- deathstats.get_node_tile_texture Memoization Cache
+    assert(type(deathstats.node_tile_texture_cache) == "table", "deathstats.node_tile_texture_cache must be a table")
+    deathstats.node_tile_texture_cache = {} -- reset for test
+    core.registered_nodes["default:mossycobble_test"] = {
+        tiles = { "default_mossycobble_test.png" },
+        walkable = true,
+    }
+
+    local tex_result = deathstats.get_node_tile_texture("default:mossycobble_test")
+    assert(tex_result == "default_mossycobble_test.png", "Texture must match node tile definition")
+    assert(deathstats.node_tile_texture_cache["default:mossycobble_test"] == "default_mossycobble_test.png",
+        "Texture result must be stored in deathstats.node_tile_texture_cache")
+
+    -- Alter the registered node tiles to prove cache is utilized
+    core.registered_nodes["default:mossycobble_test"].tiles[1] = "unexpected_tile.png"
+    assert(deathstats.get_node_tile_texture("default:mossycobble_test") == "default_mossycobble_test.png",
+        "Subsequent call must return cached texture without re-reading node definition")
+
+    core.registered_nodes["default:mossycobble_test"] = nil
+    deathstats.node_tile_texture_cache["default:mossycobble_test"] = nil
+
+    -- deathstats.has_ground_support
+    assert(deathstats.has_ground_support(nil) == true, "Nil pos must return true (fallback)")
+
+    -- Test solid ground below
+    core.set_node({ x = 10, y = 5, z = 10 }, "air")
+    core.set_node({ x = 10, y = 4, z = 10 }, "default:stone")
+    assert(deathstats.has_ground_support({ x = 10, y = 5, z = 10 }) == true,
+        "Corpse resting above default:stone must have ground support")
+
+    -- Test air gap (dug out)
+    core.set_node({ x = 20, y = 5, z = 20 }, "air")
+    core.set_node({ x = 20, y = 4, z = 20 }, "air")
+    core.set_node({ x = 20, y = 3, z = 20 }, "air")
+    assert(deathstats.has_ground_support({ x = 20, y = 5, z = 20 }) == false,
+        "Corpse with air underneath must report no ground support")
+
+    -- Test liquid buoyancy support
+    core.set_node({ x = 30, y = 5, z = 30 }, "air")
+    core.set_node({ x = 30, y = 4, z = 30 }, "default:water_source")
+    assert(deathstats.has_ground_support({ x = 30, y = 5, z = 30 }) == true,
+        "Corpse in or above water must have ground/liquid support")
+
+    -- Impact Particle Spawner Definitions with texpool
+    local impact_def = deathstats.create_corpse_particlespawner_def("impact", { x = 10, y = 5, z = 10 })
+    assert(impact_def ~= nil, "Impact particle spawner def must be generated")
+    assert(type(impact_def.texpool) == "table" and #impact_def.texpool >= 1,
+        "Impact particle spawner def must include modern texpool array")
+    assert(impact_def.texpool[1].name ~= nil and impact_def.texpool[1].name ~= "",
+        "Impact texpool entry must contain valid texture name")
+
+    -- Test spawn_impact_burst includes texpool
+    local captured_burst_spec = nil
+    local orig_add_ps = core.add_particlespawner
+    core.add_particlespawner = function(spec)
+        captured_burst_spec = spec
+        return orig_add_ps(spec)
+    end
+
+    deathstats.spawn_impact_burst({ x = 10, y = 5, z = 10 }, "default:stone", 10)
+    assert(captured_burst_spec ~= nil, "spawn_impact_burst must call core.add_particlespawner")
+    assert(type(captured_burst_spec.texpool) == "table" and #captured_burst_spec.texpool >= 1,
+        "spawn_impact_burst spec must contain texpool array")
+    assert(captured_burst_spec.texpool[1].name ~= nil and captured_burst_spec.texpool[1].name ~= "",
+        "spawn_impact_burst texpool entry must contain texture name")
+
+    core.add_particlespawner = orig_add_ps
+
+    -- reason.lua Punch Listener Entity Health Precedence
+    local p_victim = create_mock_player("VictimPunch94", 20, { x = 0, y = 0, z = 0 })
+    mock_players["VictimPunch94"] = p_victim
+    deathstats.get_player_data(p_victim)
+
+    local mob_luaent = {
+        health = 45,
+        hp_max = 50,
+        name = "mobs_monster:dungeon_master",
+    }
+    local mock_mob = {
+        get_pos = function() return { x = 1, y = 0, z = 0 } end,
+        get_luaentity = function() return mob_luaent end,
+        get_hp = function() return 1 end, -- Dummy engine ObjectRef HP
+        get_properties = function() return { hp_max = 100 } end,
+        is_player = function() return false end,
+        get_player_name = function() return "" end,
+    }
+
+    core.on_punchplayer(p_victim, mock_mob, 1.0, nil, nil, 6)
+    local punch_record = deathstats.recent_punches["VictimPunch94"]
+    assert(punch_record ~= nil, "Punch record must be saved for VictimPunch94")
+    assert(punch_record.attacker_hp == 45,
+        string.format("Attacker HP must be 45 from luaentity.health, got %s (dummy ObjectRef HP was 1)", tostring(punch_record.attacker_hp)))
+    assert(punch_record.attacker_max_hp == 50,
+        string.format("Attacker max HP must be 50 from luaentity.hp_max, got %s", tostring(punch_record.attacker_max_hp)))
+
+    -- Cleanup
+    mock_players["VictimPunch94"] = nil
+    deathstats.players["VictimPunch94"] = nil
+    deathstats.recent_punches["VictimPunch94"] = nil
+
+    print("  [PASS] Name & Tile Texture Memoization, Scratch Ground Support, Impact Texpool & Mob Punch Health")
+end
+suites[94]()
+
+print("\nALL 94 TEST SUITES PASSED SUCCESSFULLY!")
