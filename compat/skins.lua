@@ -21,17 +21,6 @@ local KNOWN_HUMANOID_MESHES = {
     ["myappearance_character.b3d"] = true,
 }
 
---- Deep copy helper
----@param orig table Original table
----@return table copy Cloned table
-local function deep_copy(orig)
-    if type(orig) ~= "table" then return orig end
-    local res = {}
-    for k, v in pairs(orig) do
-        res[k] = deep_copy(v)
-    end
-    return res
-end
 
 --- Validate whether a given mesh is an accepted humanoid player model
 --- Disallows non-human meshes (e.g. mobs, vehicles)
@@ -76,7 +65,7 @@ function cs.extract_base_skin(player, name)
     local vs_x, vs_y = nil, nil
     local custom_mesh = nil
 
-    -- 1. edit_skin (Mr. Rar) - Procedural layer compiler
+    -- edit_skin (Mr. Rar) - Procedural layer compiler
     local edit_skin_mod = rawget(_G, "edit_skin")
     if edit_skin_mod and type(edit_skin_mod.compile_skin) == "function" then
         local es_skin = nil
@@ -100,7 +89,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 2. myappearance (Don) - Modular 9-part character appearance
+    -- myappearance (Don) - Modular 9-part character appearance
     local myappearance_mod = rawget(_G, "myappearance")
     if myappearance_mod and type(myappearance_mod) == "table" then
         local ap = myappearance_mod[name]
@@ -126,7 +115,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 3. collectible_skins (Zughy) - Skin registry with custom models
+    -- collectible_skins (Zughy) - Skin registry with custom models
     local cs_mod = rawget(_G, "collectible_skins")
     if cs_mod and type(cs_mod.get_player_skin) == "function" then
         local skin_data = cs_mod.get_player_skin(name)
@@ -141,7 +130,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 4. skinsdb (bell07) - Multi-format skin database
+    -- skinsdb (bell07) - Multi-format skin database
     local skins_mod = rawget(_G, "skins")
     if skins_mod and type(skins_mod.get_player_skin) == "function" then
         local skin = skins_mod.get_player_skin(player)
@@ -164,7 +153,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 5. simple_skins (TenPlus1)
+    -- simple_skins (TenPlus1)
     if skins_mod and skins_mod.skins and skins_mod.skins[name] then
         local s_id = skins_mod.skins[name]
         if s_id and s_id ~= "" then
@@ -172,7 +161,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 6. wardrobe (AntumDeluge)
+    -- wardrobe (AntumDeluge)
     local wardrobe_mod = rawget(_G, "wardrobe")
     if wardrobe_mod then
         if wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
@@ -182,7 +171,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 7. nc_skins (NodeCore / Warr1024)
+    -- nc_skins (NodeCore / Warr1024)
     local nc_skins_mod = rawget(_G, "nc_skins")
     if nc_skins_mod and type(nc_skins_mod.get_skin) == "function" then
         local nc_tex = nc_skins_mod.get_skin(name)
@@ -191,7 +180,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 8. u_skins (Zeg9 / Casimir)
+    -- u_skins (Zeg9 / Casimir)
     local u_skins_mod = rawget(_G, "u_skins")
     if u_skins_mod and u_skins_mod.u_skins and u_skins_mod.u_skins[name] then
         local u_id = u_skins_mod.u_skins[name]
@@ -200,7 +189,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 9. multiskin (stu)
+    -- multiskin (stu)
     local multiskin_mod = rawget(_G, "multiskin")
     if multiskin_mod and multiskin_mod.layers and multiskin_mod.layers[name] then
         local m_skin = multiskin_mod.layers[name].skin
@@ -209,7 +198,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 10. mcl_skins (VoxeLibre / Mineclonia)
+    -- mcl_skins (VoxeLibre / Mineclonia)
     local mcl_skins_mod = rawget(_G, "mcl_skins")
     if mcl_skins_mod and type(mcl_skins_mod.get_player_skin) == "function" then
         local skin_data = mcl_skins_mod.get_player_skin(player)
@@ -220,7 +209,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 11. 3d_armor texture table
+    -- 3d_armor texture table
     local armor_mod = rawget(_G, "armor")
     if armor_mod and armor_mod.textures and armor_mod.textures[name] then
         local a_skin = armor_mod.textures[name].skin
@@ -229,7 +218,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 12. player_api get_textures
+    -- player_api get_textures
     local player_api_mod = rawget(_G, "player_api")
     if player_api_mod and type(player_api_mod.get_textures) == "function" then
         local p_tex = player_api_mod.get_textures(player)
@@ -238,7 +227,7 @@ function cs.extract_base_skin(player, name)
         end
     end
 
-    -- 13. properties.textures fallback
+    -- properties.textures fallback
     local props = player:get_properties()
     if props and props.textures and type(props.textures) == "table" and #props.textures > 0 then
         if props.textures[2] and props.textures[2] ~= "blank.png" and props.textures[2] ~= "" and props.textures[2] ~= "deathstats_transparent.png" then
@@ -304,7 +293,7 @@ function cs.get_player_visuals(player)
     local skins_mod = rawget(_G, "skins")
 
     -- Character size and rotation
-    local visual_size = deep_copy((props and props.visual_size) or { x = 1, y = 1, z = 1 })
+    local visual_size = table.copy((props and props.visual_size) or { x = 1, y = 1, z = 1 })
     local yaw = player:get_look_horizontal() or 0
     if visual_size.x == 0 and visual_size.y == 0 then
         visual_size = { x = 1, y = 1, z = 1 }
@@ -369,7 +358,7 @@ function cs.get_player_visuals(player)
 
     local textures
 
-    -- 1. skinsdb + 3d_armor (4 material slots)
+    -- skinsdb + 3d_armor (4 material slots)
     -- Slot 1: v10 skin / blank.png + cape
     -- Slot 2: v18 skin / blank.png + clothing
     -- Slot 3: 3D armor geometry overlay
@@ -402,7 +391,7 @@ function cs.get_player_visuals(player)
             "blank.png",
         }
 
-    -- 2. Standalone 3d_armor (3 material slots: skin, armor, wielditem)
+    -- Standalone 3d_armor (3 material slots: skin, armor, wielditem)
     elseif is_3d_armor then
         local final_skin = skin_tex
         if clothes_overlay then
@@ -426,7 +415,7 @@ function cs.get_player_visuals(player)
             "3d_armor_trans.png",
         }
 
-    -- 3. Standard humanoid model (1 slot or base textures)
+    -- Standard humanoid model (1 slot or base textures)
     else
         local final_skin = skin_tex
         if clothes_overlay then
@@ -439,7 +428,7 @@ function cs.get_player_visuals(player)
         textures = { final_skin }
     end
 
-    -- 4. Invisibility / Transparent Texture Trap Protection
+    -- Invisibility / Transparent Texture Trap Protection
     local is_transparent = true
     for _, tex in ipairs(textures) do
         if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" and tex ~= "3d_armor_trans.png" then

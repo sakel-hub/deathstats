@@ -32,7 +32,7 @@ function ch.get_player_satiation(player)
         return nil, nil, nil, nil, false
     end
 
-    -- 1. Check hbhunger (Wuzzy)
+    -- Check hbhunger (Wuzzy)
     local hbh = rawget(_G, "hbhunger")
     if hbh then
         local cur = nil
@@ -49,7 +49,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 2. Check stamina / stamina redo (TenPlus1 / sofar)
+    -- Check stamina / stamina redo (TenPlus1 / sofar)
     local stam = rawget(_G, "stamina")
     if stam then
         local cur = nil
@@ -77,7 +77,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 3. Check mcl_hunger (MineClone2 / VoxeLibre / Mineclonia)
+    -- Check mcl_hunger (MineClone2 / VoxeLibre / Mineclonia)
     local mcl_h = rawget(_G, "mcl_hunger")
     if mcl_h then
         local cur = nil
@@ -98,7 +98,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 4. Check hunger_ng (Linuxdirk)
+    -- Check hunger_ng (Linuxdirk)
     local hng = rawget(_G, "hunger_ng")
     if hng then
         if type(hng.get_hunger_information) == "function" then
@@ -130,7 +130,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 5. Check classic hunger mod (BlockMen / better_hud / pie)
+    -- Check classic hunger mod (BlockMen / better_hud / pie)
     local hmod = rawget(_G, "hunger")
     if hmod then
         local cur = nil
@@ -149,7 +149,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 6. Check hudbars (hb) registered bar state for 'satiation' or 'hunger'
+    -- Check hudbars (hb) registered bar state for 'satiation' or 'hunger'
     local hb_mod = rawget(_G, "hb")
     if hb_mod then
         for _, bar_id in ipairs({ "satiation", "hunger" }) do
@@ -182,7 +182,7 @@ function ch.get_player_satiation(player)
         end
     end
 
-    -- 7. Direct inventory 'hunger' stack count fallback (hbhunger stores count = hunger + 1)
+    -- Direct inventory 'hunger' stack count fallback (hbhunger stores count = hunger + 1)
     local inv = player:get_inventory()
     if inv and inv:get_size("hunger") > 0 then
         local st = inv:get_stack("hunger", 1)
@@ -283,7 +283,7 @@ function ch.is_player_sprint_exhausted(player)
     local name = player:get_player_name()
     if not name or name == "" then return false end
 
-    -- 1. hbsprint / sprint check
+    -- hbsprint / sprint check
     local spmod = rawget(_G, "sprint")
     if spmod then
         if spmod.stamina and spmod.stamina[name] ~= nil then
@@ -303,7 +303,7 @@ function ch.is_player_sprint_exhausted(player)
         end
     end
 
-    -- 2. sprint_lite API check
+    -- sprint_lite API check
     local slit = rawget(_G, "sprint_lite")
     if slit then
         if type(slit.get_stamina) == "function" then
@@ -317,7 +317,7 @@ function ch.is_player_sprint_exhausted(player)
         end
     end
 
-    -- 3. unified_stamina API check
+    -- unified_stamina API check
     local ustam = rawget(_G, "unified_stamina")
     if ustam then
         if type(ustam.get) == "function" then
@@ -333,7 +333,7 @@ function ch.is_player_sprint_exhausted(player)
         end
     end
 
-    -- 4. Active sprint key press control check
+    -- Active sprint key press control check
     local ctrl = player:get_player_control()
     if ctrl and ctrl.aux1 and (ctrl.up or ctrl.down or ctrl.left or ctrl.right) then
         return true
@@ -432,3 +432,6 @@ deathstats.is_player_starving = ch.is_player_starving
 deathstats.get_player_hydration = ch.get_player_hydration
 deathstats.is_player_dehydrated = ch.is_player_dehydrated
 deathstats.is_player_sprint_exhausted = ch.is_player_sprint_exhausted
+deathstats.hide_standalone_huds = ch.hide_standalone_huds
+deathstats.restore_standalone_huds = ch.restore_standalone_huds
+

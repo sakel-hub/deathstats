@@ -9,8 +9,10 @@
     (at your option) any later version.
 --]]
 
+local hb_mod = rawget(_G, "hb") or hb
+
 -- Fast exit if hudbars mod is not present
-if not core.get_modpath("hudbars") and not rawget(_G, "hb") then
+if not core.get_modpath("hudbars") and not hb_mod then
     return
 end
 
@@ -20,10 +22,10 @@ deathstats.compat_hudbars = {
 
 local compat = deathstats.compat_hudbars
 
--- 1. Hook hb.unhide_hudbar to prevent any mod or globalstep from unhiding bars while player is dead
-if hb.unhide_hudbar then
-    compat.orig_unhide_hudbar = hb.unhide_hudbar
-    function hb.unhide_hudbar(player, identifier)
+-- Hook hb.unhide_hudbar to prevent any mod or globalstep from unhiding bars while player is dead
+if hb_mod and hb_mod.unhide_hudbar then
+    compat.orig_unhide_hudbar = hb_mod.unhide_hudbar
+    function hb_mod.unhide_hudbar(player, identifier)
         if not player or not player:is_player() then
             return false
         end
@@ -36,10 +38,10 @@ if hb.unhide_hudbar then
     end
 end
 
--- 2. Hook hb.change_hudbar to prevent status updates from altering or re-showing bars while dead
-if hb.change_hudbar then
-    compat.orig_change_hudbar = hb.change_hudbar
-    function hb.change_hudbar(player, identifier, ...)
+-- Hook hb.change_hudbar to prevent status updates from altering or re-showing bars while dead
+if hb_mod and hb_mod.change_hudbar then
+    compat.orig_change_hudbar = hb_mod.change_hudbar
+    function hb_mod.change_hudbar(player, identifier, ...)
         if not player or not player:is_player() then
             return false
         end
@@ -52,10 +54,10 @@ if hb.change_hudbar then
     end
 end
 
--- 3. Hook hb.init_hudbar to ensure newly registered or initialized bars start hidden if dead
-if hb.init_hudbar then
-    compat.orig_init_hudbar = hb.init_hudbar
-    function hb.init_hudbar(player, identifier, start_value, start_max, start_hidden)
+-- Hook hb.init_hudbar to ensure newly registered or initialized bars start hidden if dead
+if hb_mod and hb_mod.init_hudbar then
+    compat.orig_init_hudbar = hb_mod.init_hudbar
+    function hb_mod.init_hudbar(player, identifier, start_value, start_max, start_hidden)
         if not player or not player:is_player() then
             return false
         end
@@ -63,7 +65,12 @@ if hb.init_hudbar then
         if name and deathstats.dead_players[name] then
             start_hidden = true
         end
-        return compat.orig_init_hudbar(player, identifier, start_value, start_max, start_hidden)
+        local res = compat.orig_init_hudbar(player, identifier, start_value, start_max, start_hidden)
+        if name and deathstats.dead_players[name] and hb_mod.players and hb_mod.players[name] then
+            compat.paused_players[name] = true
+            hb_mod.players[name] = nil
+        end
+        return res
     end
 end
 
@@ -74,28 +81,32 @@ function compat.hide(player)
     local name = player:get_player_name()
     if not name then return end
 
-    local hb_mod = rawget(_G, "hb")
-    if not hb_mod then return end
+    local h = rawget(_G, "hb") or hb
+    if not h then return end
 
-    -- 1. Pause hudbars automatic globalstep updates by removing player from hb.players
-    if hb_mod.players and hb_mod.players[name] then
+    -- Pause hudbars automatic globalstep updates by removing player from hb.players
+    if h.players and h.players[name] then
         compat.paused_players[name] = true
-        hb_mod.players[name] = nil
+        h.players[name] = nil
     end
 
-    -- 2. Forcibly hide and zero-scale all registered HUD bars across all bar types
+    -- Forcibly hide and zero-scale all registered HUD bars across all bar types
     -- Covers: progress_bar, statbar_classic, and statbar_modern
-    if hb_mod.hudtables then
-        for identifier, hudtable in pairs(hb_mod.hudtables) do
-            -- Call built-in hide
-            if compat.orig_hide_hudbar then
-                compat.orig_hide_hudbar(player, identifier)
-            elseif hb_mod.hide_hudbar then
-                hb_mod.hide_hudbar(player, identifier)
+    if h.hudtables then
+        for identifier, hudtable in pairs(h.hudtables) do
+            local has_state = hudtable.hudstate and hudtable.hudstate[name] ~= nil
+            local has_ids = hudtable.hudids and hudtable.hudids[name] ~= nil
+
+            -- Call built-in hide only when player state & IDs are initialized in hudbars
+            if has_state and has_ids then
+                local hide_fn = compat.orig_hide_hudbar or h.hide_hudbar
+                if hide_fn then
+                    hide_fn(player, identifier)
+                end
             end
 
             -- Direct zero-scaling on all underlying engine HUD IDs to guarantee invisibility
-            local ids = hudtable.hudids and hudtable.hudids[name]
+            local ids = has_ids and hudtable.hudids[name]
             if ids then
                 if ids.bg then
                     player:hud_change(ids.bg, "scale", { x = 0, y = 0 })
@@ -113,7 +124,7 @@ function compat.hide(player)
                 end
             end
 
-            if hudtable.hudstate and hudtable.hudstate[name] then
+            if has_state then
                 hudtable.hudstate[name].hidden = true
             end
         end
@@ -123,13 +134,15 @@ end
 --- Check if hudbars is actively managing the healthbar
 ---@return boolean
 function compat.manages_healthbar()
-    return hb ~= nil and hb.hudtables ~= nil and hb.hudtables.health ~= nil
+    local h = rawget(_G, "hb") or hb
+    return h ~= nil and h.hudtables ~= nil and h.hudtables.health ~= nil
 end
 
 --- Check if hudbars is actively managing the breathbar
 ---@return boolean
 function compat.manages_breathbar()
-    return hb ~= nil and hb.hudtables ~= nil and hb.hudtables.breath ~= nil
+    local h = rawget(_G, "hb") or hb
+    return h ~= nil and h.hudtables ~= nil and h.hudtables.breath ~= nil
 end
 
 --- Restore hudbars visibility and resume hudbars globalstep updates upon player respawn
@@ -139,33 +152,37 @@ function compat.unhide(player)
     local name = player:get_player_name()
     if not name then return end
 
-    local hb_mod = rawget(_G, "hb")
-    if not hb_mod then return end
+    local h = rawget(_G, "hb") or hb
+    if not h then return end
 
-    -- 1. Resume hudbars automatic globalstep updates
-    if compat.paused_players[name] or (hb_mod.players and not hb_mod.players[name]) then
+    -- Resume hudbars automatic globalstep updates
+    if compat.paused_players[name] or (h.players and not h.players[name]) then
         compat.paused_players[name] = nil
-        if hb_mod.players then
-            hb_mod.players[name] = player
+        if h.players then
+            h.players[name] = player
         end
     end
 
-    -- 2. Restore all HUD bars
-    if hb_mod.hudtables then
-        for identifier, hudtable in pairs(hb_mod.hudtables) do
-            local ids = hudtable.hudids and hudtable.hudids[name]
+    -- Restore all HUD bars
+    if h.hudtables then
+        for identifier, hudtable in pairs(h.hudtables) do
+            local has_state = hudtable.hudstate and hudtable.hudstate[name] ~= nil
+            local has_ids = hudtable.hudids and hudtable.hudids[name] ~= nil
+
+            local ids = has_ids and hudtable.hudids[name]
             if ids and ids.bar then
                 player:hud_change(ids.bar, "scale", { x = 1, y = 1 })
             end
-            if compat.orig_unhide_hudbar then
-                compat.orig_unhide_hudbar(player, identifier)
-            elseif hb_mod.unhide_hudbar then
-                hb_mod.unhide_hudbar(player, identifier)
+            if has_state and has_ids then
+                local unhide_fn = compat.orig_unhide_hudbar or h.unhide_hudbar
+                if unhide_fn then
+                    unhide_fn(player, identifier)
+                end
             end
         end
     end
 
-    -- 3. Explicitly suppress built-in engine health and breath bars if hudbars manages them
+    -- Explicitly suppress built-in engine health and breath bars if hudbars manages them
     -- This prevents duplicate health bars (engine statbar + hudbars) on respawn
     local suppress_flags = {}
     if compat.manages_healthbar() then
@@ -179,7 +196,21 @@ function compat.unhide(player)
     end
 end
 
--- 4. Globalstep reinforcement while dead (throttled to 0.1s intervals to prevent packet flooding)
+-- Re-enforce hide if hudbars initializes in on_joinplayer after deathstats
+core.register_on_joinplayer(function(player)
+    if not player or not player:is_player() then return end
+    local name = player:get_player_name()
+    if name and deathstats.dead_players[name] then
+        core.after(0, function()
+            local p = core.get_player_by_name(name)
+            if p and deathstats.dead_players[name] then
+                compat.hide(p)
+            end
+        end)
+    end
+end)
+
+-- Globalstep reinforcement while dead (throttled to 0.1s intervals to prevent packet flooding)
 local hb_check_timer = 0
 core.register_globalstep(function(dtime)
     if not next(deathstats.dead_players) then return end
@@ -187,14 +218,17 @@ core.register_globalstep(function(dtime)
     if hb_check_timer < 0.1 then return end
     hb_check_timer = 0
 
+    local h = rawget(_G, "hb") or hb
+    if not h then return end
+
     for name in pairs(deathstats.dead_players) do
         local p = core.get_player_by_name(name)
         if p and p:is_player() and p:get_hp() <= 0 then
             local needs_hide = false
-            if hb.players and hb.players[name] then
+            if h.players and h.players[name] then
                 needs_hide = true
-            elseif hb.hudtables then
-                for _, hudtable in pairs(hb.hudtables) do
+            elseif h.hudtables then
+                for _, hudtable in pairs(h.hudtables) do
                     if hudtable.hudstate and hudtable.hudstate[name] and not hudtable.hudstate[name].hidden then
                         needs_hide = true
                         break
