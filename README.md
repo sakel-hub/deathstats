@@ -15,8 +15,21 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
     - **Combat, Fall, Starvation, Suffocation, Void & Generic**: Iconic dripping crimson blood banner (`deathstats_you_died.png`) and visceral blood splatter with dark vignette (`deathstats_blood_splatter.png`).
   - Visceral "slapped on screen from distance" animation: accelerates forward from distant perspective, impacts the screen glass with an overshoot bounce, settling firmly into view with synchronous subtitle reveal.
   - Dynamic camera perspective:
-    - **Smooth Circular Orbit**: Smoothly orbits around the fallen player corpse or bones block in a circular path in first-person mode, eliminating third-person camera offsets.
-    - **Corpse Placeholder Entity**: Spawns an immortal, non-physical corpse mesh entity lying flat on the ground that inherits the player's exact character model, wielditem, and composite skins across 13+ appearance mods (`skinsdb`, `3d_armor`, `clothing`, `player_api`, `mcl_skins`, `simple_skins`, `wardrobe`, `edit_skin`, `collectible_skins`, `myappearance`, `nc_skins`, `u_skins`, `csm_skins`).
+    - **Smooth Dynamic Orbit**: Smoothly follows in-flight ragdoll corpses and orbits around the fallen player corpse or bones block in a circular path in first-person mode, eliminating third-person camera offsets.
+    - **Procedural Ragdoll Physics & Lethal Blow Impulse**: Spawns an immortal corpse mesh entity that inherits realistic impulse momentum and launch lift based on the damage and nature of the fatal blow:
+      - **Cause-of-Death Profiles**: High-damage explosions fling corpses with intense radial launch and 3D tumbling; fall splats pancake with high lateral dispersion; passive environmental deaths (drowning, suffocation, starvation, poison, void) collapse limp in place without artificial knockback.
+      - **Inelastic Surface Bouncing**: Impact with hard ground produces realistic inelastic hops ($e \approx 0.25$, capped at 2 bounces) with soft-surface damping (wool, leaves, dirt, and snow absorb impact immediately).
+      - **Steep Slope Rolling & Tumbling**: Corpses landing on slopes steeper than $28^\circ$ experience downhill rolling acceleration until reaching flat terrain or water.
+      - **Dynamic Resting Poses & Ledge Hanging**: Settling evaluates landing orientation to adopt realistic resting poses (prone face-down, supine face-up, or lateral side-recovery). Torso resting on cliff edges automatically drops hanging legs $45^\circ - 60^\circ$ downward over open drops.
+      - **Bodyfall Impact Audio & Debris**: Plays localized bodyfall thuds on high-velocity ground impact alongside bursting surface node debris particles.
+    - **Multiplayer Performance & Network Bandwidth Optimization**:
+      - **Dirty-Delta Bone Packet Filtering**: Bones are only updated over the network if angular displacement exceeds a $0.05\text{ rad}$ (~$2.8^\circ$) threshold, cutting `AO_CMD_SET_BONE_POSITION` packet spam by over 70%.
+      - **Rate-Throttled Flail Updates**: Airborne limb aerodynamic flailing is throttled to 10 Hz (and 5 Hz for low-velocity slides), entirely avoiding per-step network broadcasts.
+      - **Zero-Cost Settled State**: Once settled, the corpse marks itself at rest, skipping all subsequent raycasts, collision calculations, and bone updates until cleanup.
+      - **C++ Engine Collision Delegation**: Utilizes engine-native `moveresult` collision callbacks rather than script-side tick raycasts.
+    - **Chunk Safety & Surface Friction**: Ground contact applies kinetic surface friction that decelerates sliding corpses to a clean, settled stop at rest. In water or lava, hydrodynamic drag and buoyancy take effect strictly within loaded blocks without force-loading mapblocks. Massive overkill damage is strictly clamped (`18.0` m/s horizontal, `8.0` m/s vertical) to prevent corpses launching beyond map limits.
+    - **Flattened Collisionbox & Slope Incline Pitching**: Corpse uses a flattened physical collisionbox (`{-0.4, -0.15, -0.4, 0.4, 0.25, 0.4}`) and stepheight (`0.6`) so the torso physically rests against stairs and slopes without hovering or getting snagged. Downward two-point spine probes detect terrain incline and automatically pitch the settled corpse to align with stairs and slopes.
+    - **Corpse Appearance Inheritance**: Accurately inherits the player's exact character model, broken limb poses, attached wielditem, and composite skins across 13+ appearance mods (`skinsdb`, `3d_armor`, `clothing`, `player_api`, `mcl_skins`, `simple_skins`, `wardrobe`, `edit_skin`, `collectible_skins`, `myappearance`, `nc_skins`, `u_skins`, `csm_skins`).
     - **Atmospheric Corpse Particles**: Spawns natural particle effects from the corpse:
       - **Water**: continuous animated bubbling air bubbles (5x5 px pixel art) floating upward through water.
       - **Lava**: continuous animated licking fire & ember sparks (5x5 px pixel art) leaping with high glow.
@@ -42,6 +55,19 @@ A cinematic, pixel art-themed death screen and lifetime player statistics mod fo
     - **Overview Tab**: Total playtime, total deaths, K/D ratio, damage statistics, building and survival records.
     - **Ores Breakdown Tab**: Dynamic scrollable 2-column grid showing every single ore variety extracted with item icons, exact counts, and sorted rankings.
     - **Combat & Mobs Tab**: Dynamic scrollable 2-column grid of mobs and players slain with individual kill counts.
+
+- **Persistent Corpse Decay & Interactive Grave Epitaphs**:
+  - **World Persistence Post-Respawn**: Rather than vanishing the moment the player respawns, settled corpses remain resting in the world for a configurable duration (`deathstats_corpse_decay_time = 180` seconds by default; set to `0` to remove immediately).
+  - **Interactive Epitaph Plaques**: Living players can right-click any persistent corpse to view a death plaque modal with survival duration, death cause, and killer information.
+  - **Smoke & Ash Dissolution**: When the decay timer expires, the corpse dissolves cleanly with an atmospheric puff of smoke particles (`deathstats_particle_smoke.png`).
+  - **Strict Anti-Clutter Corpse Capping**: If a player dies repeatedly, any older corpse is immediately dissolved with smoke particles before spawning the new one, strictly capping corpses to 1 per player to prevent clutter.
+
+- **Nemesis Vendetta & Revenge Bounty System**:
+  - **Automated Vendetta Tracking**: When slain by another player in PvP, the victim receives an active vendetta against their killer for their upcoming life (`deathstats_enable_revenge = true`).
+  - **Respawn Prompt**: Players receive a private chat notification upon respawn reminding them of their bounty target: `[DeathStats] Vendetta Active: Slay <killer> during this life to claim revenge!`.
+  - **Revenge Completion & Broadcast**: Slaying your nemesis during that life completes the vendetta, logs revenge statistics to active-run and lifetime profiles, and optionally broadcasts a server-wide announcement: `[DeathStats] REVENGE! <Killer> has avenged their death and slain <Victim>!` (`deathstats_announce_revenge = true`).
+  - **[RVNG] Avenger Scoreboard Badge**: Slaying your nemesis awards the prestigious `[RVNG]` **Avenger** title badge on the multiplayer scoreboard (`sneak+aux1` and `/scores`).
+  - **Single-Life Bounty Window**: Vendettas are strictly scoped to the immediate next life; dying to environmental hazards or other players clears the vendetta target.
 
 - **Tactical Multiplayer Live Scoreboard**:
   - **Hold-to-View 2D HUD**: Press and hold **Sneak + Aux1** (default, configurable to **ZOOM** or other keys) to instantly overlay a tactical, semi-transparent scoreboard table on screen (`z_index = 1000`) without opening intrusive blocking windows. Releasing the key immediately tears down all HUD elements.
@@ -110,12 +136,31 @@ The following options can be customized in `luanti.conf` or the in-game Settings
 - `deathstats_formspec_side = right` (`right`, `left`, or `center` screen alignment)
 - `deathstats_enable_limb_fractures = true` (enable broken/fractured limb rotations on death)
 - `deathstats_enable_corpse_particles = true` (enable corpse environmental particle effects)
+- `deathstats_enable_corpse_ragdoll = true` (toggle procedural ragdoll physics on corpse death)
+- `deathstats_ragdoll_force_multiplier = 1.0` (overall velocity scaling multiplier for corpse knockback)
+- `deathstats_ragdoll_max_velocity = 18.0` (maximum horizontal velocity clamp to prevent launching into unloaded chunks)
+- `deathstats_ragdoll_tumbling = true` (enable 3D angular rotation and tumbling during corpse flight)
+- `deathstats_enable_slope_pitch = true` (automatic terrain and stair slope detection to pitch corpse torso along terrain incline)
+- `deathstats_ragdoll_restitution = 0.25` (elasticity restitution factor for hard surface bounces, 0.0 for zero bounce)
+- `deathstats_ragdoll_flail_rate = 10.0` (ragdoll limb aerodynamic flail update rate in Hz for multiplayer network throttling)
+- `deathstats_ragdoll_resting_poses = true` (enable diverse resting poses: prone face-down, supine face-up, lateral recovery)
+- `deathstats_enable_corpse_impact_sounds = true` (enable localized bodyfall thud sound effects on surface impact)
+- `deathstats_corpse_decay_time = 180` (duration in seconds that a settled corpse persists in the world after respawn; 0 to remove immediately)
+- `deathstats_enable_corpse_inspect = true` (enable corpse right-click interaction for living players to inspect epitaph plaques)
+- `deathstats_enable_revenge = true` (enable the nemesis revenge and vendetta bounty tracking system)
+- `deathstats_announce_revenge = true` (broadcast server-wide chat announcement when a player avenges their death)
+- `deathstats_enable_mvp_badges = true` (enable MVP and title badges on the multiplayer scoreboard)
+- `deathstats_enable_hall_of_fame = true` (enable the all-time Hall of Fame tab on the scoreboard formspec)
+- `deathstats_chat_death_coords = true` (print private death coordinates and biome to player chat upon respawn)
 
 - **Sound Effects**:
   - Plays authentic CC0 human death sound effects from Freesound picked at random on death (expressive death groans and hurt sounds by kreha). Automatically randomized across 5 engine audio variants (`deathstats_death.1.ogg` through `deathstats_death.5.ogg`).
 
 - **Multiplayer Performance**:
   - High performance, memory-efficient in-memory tracking.
+  - **Bandwidth Reduction**: Dynamic bone rotation caching (`luaent._applied_bones`) discards sub-threshold angular deltas ($<0.05\text{ rad}$), preventing network packet spamming (`AO_CMD_SET_BONE_POSITION`).
+  - **Adaptive Throttling**: Flight limb flutter updates throttled to 10 Hz ($v \ge 2\text{ m/s}$) and 5 Hz ($v < 2\text{ m/s}$).
+  - **Zero Settled Overhead**: Once resting conditions are met, entities enter an idle state skipping physical queries and raycasts.
   - Asynchronous / zero-lag Mod Storage persistence upon death, disconnect, and server shutdown.
   - Clean fallbacks for all engine versions.
 
