@@ -78,7 +78,7 @@ function deathstats.get_player_armor_points(player)
     end
     local name = player:get_player_name()
 
-    -- 1. Check 3d_armor mod definition table
+    -- Check 3d_armor mod definition table
     local armor_mod = rawget(_G, "armor")
     if armor_mod and armor_mod.def and armor_mod.def[name] then
         local lvl = armor_mod.def[name].level
@@ -87,7 +87,7 @@ function deathstats.get_player_armor_points(player)
         end
     end
 
-    -- 2. Check MineClone / Voxelibre mcl_armor player metadata if mod is loaded
+    -- Check MineClone / Voxelibre mcl_armor player metadata if mod is loaded
     if core.get_modpath("mcl_armor") ~= nil or rawget(_G, "mcl_armor") ~= nil then
         local meta = player:get_meta()
         if meta then
@@ -98,7 +98,7 @@ function deathstats.get_player_armor_points(player)
         end
     end
 
-    -- 3. Check hbarmor runtime table
+    -- Check hbarmor runtime table
     local hbarmor = rawget(_G, "hbarmor")
     if hbarmor and hbarmor.armor and hbarmor.armor[name] then
         local arm = tonumber(hbarmor.armor[name])
@@ -107,7 +107,7 @@ function deathstats.get_player_armor_points(player)
         end
     end
 
-    -- 4. Engine armor groups fallback (fleshy resistance)
+    -- Engine armor groups fallback (fleshy resistance)
     local groups = player:get_armor_groups()
     if groups and groups.fleshy and groups.fleshy < 100 then
         return math.max(0, 100 - groups.fleshy)
@@ -247,12 +247,15 @@ deathstats.register_scoreboard_column("player", {
     tooltip = S("Player Name & Status (Skull = Dead, Zzz = AFK)"),
     get_value = function(_p, item, is_small)
         local tag = ""
-        if item.is_dead then
-            tag = is_small and "[D] " or "[DEAD] "
-        elseif item.is_afk then
-            tag = is_small and "[A] " or "[AFK] "
+        if item.badge_str and item.badge_str ~= "" then
+            tag = item.badge_str .. " "
         end
-        local max_len = is_small and 12 or 22
+        if item.is_dead then
+            tag = tag .. (is_small and "[D] " or "[DEAD] ")
+        elseif item.is_afk then
+            tag = tag .. (is_small and "[A] " or "[AFK] ")
+        end
+        local max_len = is_small and 14 or 24
         local name = item.name or ""
         local full_str = tag .. name
         if #full_str > max_len then
@@ -397,7 +400,7 @@ function deathstats.calculate_player_score(pdata, player, cached_armor, cached_h
     local hp = cached_hp or deathstats.get_player_hp(player)
     local dmg_dealt = life.damage_dealt or 0
 
-    -- 1. Normalized Category Ratings (0 to 100)
+    -- Normalized Category Ratings (0 to 100)
     local cat_kills = math.min(100, kills * 10)
     local cat_kd = math.min(100, math.floor(kd * 25))
     local cat_survival = (deaths == 0) and (kills > 0 and 100 or 60)
@@ -479,17 +482,18 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
                 avg_score = avg_score,
                 deaths = (data and data.lifetime and data.lifetime.deaths) or 0,
                 kd = (run.deaths and run.deaths > 0) and (total_kills / run.deaths) or total_kills,
+                revenges = run.revenges or 0,
             })
         end
 
         -- Leaderboard sorting:
-        -- 1. Living players rank above dead players
-        -- 2. PvP kills (descending)
-        -- 3. PvE mob kills (descending)
-        -- 4. Damage dealt (descending)
-        -- 5. Nodes mined (descending)
-        -- 6. Survival time (descending)
-        -- 7. Name (alphabetical)
+        -- Living players rank above dead players
+        -- PvP kills (descending)
+        -- PvE mob kills (descending)
+        -- Damage dealt (descending)
+        -- Nodes mined (descending)
+        -- Survival time (descending)
+        -- Name (alphabetical)
         table.sort(base_list, function(a, b)
             if a.is_dead ~= b.is_dead then
                 return not a.is_dead
@@ -511,6 +515,97 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
         -- Assign rank positions
         for rank, item in ipairs(base_list) do
             item.rank = rank
+        end
+
+        -- Compute MVP badges and title decorations if enabled
+        if deathstats.config.enable_mvp_badges ~= false then
+            local best_score, best_score_item = -1, nil
+            local best_kills, best_kills_item = 0, nil
+            local best_mined, best_mined_item = 0, nil
+            local best_time, best_time_item = 0, nil
+            local best_armor, best_armor_item = 0, nil
+
+            for _, item in ipairs(base_list) do
+                item.badges = {}
+                if (item.score or 0) > best_score then
+                    best_score = item.score or 0
+                    best_score_item = item
+                end
+                if (item.kills or 0) > best_kills and item.kills > 0 then
+                    best_kills = item.kills
+                    best_kills_item = item
+                end
+                if (item.blocks_mined or 0) > best_mined and item.blocks_mined > 0 then
+                    best_mined = item.blocks_mined
+                    best_mined_item = item
+                end
+                if (item.time_alive or 0) > best_time and item.time_alive > 60 then
+                    best_time = item.time_alive
+                    best_time_item = item
+                end
+                if (item.armor or 0) > best_armor and item.armor > 0 then
+                    best_armor = item.armor
+                    best_armor_item = item
+                end
+            end
+
+            if best_score_item and best_score > 0 then
+                table.insert(best_score_item.badges, { id = "mvp", tag = "[MVP]", glyph = "[MVP]", icon = "deathstats_badge_crown.png", title = S("MVP / Score Leader") })
+            end
+            if best_kills_item and #best_kills_item.badges == 0 then
+                table.insert(best_kills_item.badges, { id = "kills", tag = "[KILL]", glyph = "[KILL]", icon = "deathstats_badge_sword.png", title = S("Top Killer") })
+            end
+            if best_mined_item and #best_mined_item.badges == 0 then
+                table.insert(best_mined_item.badges, { id = "mined", tag = "[MINE]", glyph = "[MINE]", icon = "deathstats_badge_pickaxe.png", title = S("Master Miner") })
+            end
+            if best_time_item and #best_time_item.badges == 0 then
+                table.insert(best_time_item.badges, { id = "time", tag = "[SURV]", glyph = "[SURV]", icon = "deathstats_badge_hourglass.png", title = S("Longest Survivor") })
+            end
+            if best_armor_item and #best_armor_item.badges == 0 then
+                table.insert(best_armor_item.badges, { id = "armor", tag = "[PROT]", glyph = "[PROT]", icon = "deathstats_badge_shield.png", title = S("Ironclad Armor") })
+            end
+            if deathstats.config.enable_revenge ~= false then
+                for _, item in ipairs(base_list) do
+                    if (item.revenges or 0) > 0 then
+                        local has_avenger = false
+                        for _, b in ipairs(item.badges) do
+                            if b.id == "avenger" then
+                                has_avenger = true
+                                break
+                            end
+                        end
+                        if not has_avenger then
+                            table.insert(item.badges, {
+                                id = "avenger",
+                                tag = "[RVNG]",
+                                glyph = "[RVNG]",
+                                icon = "deathstats_badge_sword.png",
+                                title = S("Avenger / Nemesis Slayer"),
+                            })
+                        end
+                    end
+                end
+            end
+
+            for _, item in ipairs(base_list) do
+                local tags = {}
+                for _, b in ipairs(item.badges) do
+                    table.insert(tags, b.tag or b.glyph)
+                end
+                local glyphs = table.concat(tags, " ")
+                item.badge_str = glyphs
+                if glyphs ~= "" then
+                    item.display_name = glyphs .. " " .. item.name
+                else
+                    item.display_name = item.name
+                end
+            end
+        else
+            for _, item in ipairs(base_list) do
+                item.badges = {}
+                item.badge_str = ""
+                item.display_name = item.name
+            end
         end
     end
 
@@ -709,6 +804,8 @@ function deathstats.get_scoreboard_bg_texture(m, viewer_row_idx, _entries)
         return deathstats.scoreboard_bg_cache[cache_key]
     end
 
+    local c = deathstats.colors
+
     local function combine_fill(x, y, fw, fh, color)
         return string.format(":%d,%d=%s", x, y, escape_combine_texture(string.format("[fill:%dx%d:%s", fw, fh, color)))
     end
@@ -720,18 +817,18 @@ function deathstats.get_scoreboard_bg_texture(m, viewer_row_idx, _entries)
 
     local parts = {
         "[combine:", w, "x", h,
-        -- Base panel: dark translucent tactical card (#12121af0)
-        combine_fill(0, 0, w, h, "#12121af0"),
+        -- Base panel: dark translucent tactical card (c.card_modal)
+        combine_fill(0, 0, w, h, c.card_modal),
         -- Top crimson accent strip (3px)
-        combine_fill(0, 0, w, 3, "#ff4444dd"),
+        combine_fill(0, 0, w, 3, c.crimson_glow .. "dd"),
         -- Bottom subtle border line (1px)
-        combine_fill(0, h - 1, w, 1, "#99111166"),
+        combine_fill(0, h - 1, w, 1, c.crimson_border .. "66"),
         -- Header divider line (1px)
-        combine_fill(0, hdr_sep_y, w, 1, "#3a3a4caa"),
+        combine_fill(0, hdr_sep_y, w, 1, c.tab_bar_sep .. "aa"),
         -- Column header divider line (1px)
-        combine_fill(0, col_sep_y, w, 1, "#ff444455"),
+        combine_fill(0, col_sep_y, w, 1, c.crimson_glow .. "55"),
         -- Footer divider line (1px)
-        combine_fill(0, foot_sep_y, w, 1, "#3a3a4caa"),
+        combine_fill(0, foot_sep_y, w, 1, c.tab_bar_sep .. "aa"),
     }
 
     -- Subtle vertical column divider lines between table columns
@@ -739,15 +836,15 @@ function deathstats.get_scoreboard_bg_texture(m, viewer_row_idx, _entries)
         for i = 2, #m.columns do
             local col = m.columns[i]
             local sep_x = col.x - 4
-            table.insert(parts, combine_fill(sep_x, hdr_sep_y, 1, foot_sep_y - hdr_sep_y, "#3a3a4c44"))
+            table.insert(parts, combine_fill(sep_x, hdr_sep_y, 1, foot_sep_y - hdr_sep_y, c.tab_bar_sep .. "44"))
         end
     end
 
     -- Optional highlighted background strip behind viewer's row
     if viewer_row_idx and viewer_row_idx >= 1 and viewer_row_idx <= m.max_rows then
         local row_top = col_sep_y + m.padding_v + (viewer_row_idx - 1) * m.row_height
-        table.insert(parts, combine_fill(4, row_top, w - 8, m.row_height, "#88181844"))
-        table.insert(parts, combine_fill(4, row_top, 3, m.row_height, "#ff4444"))
+        table.insert(parts, combine_fill(4, row_top, w - 8, m.row_height, c.row_viewer))
+        table.insert(parts, combine_fill(4, row_top, 3, m.row_height, c.active_strip))
     end
 
     -- Embed Infographic Icons into Column Header bar at exact column X coordinates
@@ -793,9 +890,10 @@ end
 ---@param m table Metrics table
 ---@return string row_str Formatted row string
 function deathstats.format_player_row(item, m)
+    local raw_name = item.name or ""
     if m.is_small then
         local name_len = 12
-        local display_name = item.name or ""
+        local display_name = raw_name
         if #display_name > name_len then
             display_name = display_name:sub(1, name_len - 1) .. "."
         end
@@ -811,7 +909,7 @@ function deathstats.format_player_row(item, m)
             math.min(99, item.rank or 0), display_name, k_str, dmg_str, mine_str, time_str, arm_str, hp_str, ping_str)
     else
         local name_len = 22
-        local display_name = item.name or ""
+        local display_name = raw_name
         if #display_name > name_len then
             display_name = display_name:sub(1, name_len - 1) .. "."
         end
@@ -951,7 +1049,7 @@ function deathstats.show_scoreboard_hud(player, precomputed_entries)
         player:hud_set_flags({ chat = false })
     end
 
-    -- 1. Backdrop Plaque (image HUD element)
+    -- Backdrop Plaque (image HUD element)
     state.hud_bg = player:hud_add({
         type = "image",
         position = { x = 0.5, y = 0.5 },
@@ -962,7 +1060,7 @@ function deathstats.show_scoreboard_hud(player, precomputed_entries)
         z_index = 1000,
     })
 
-    -- 2. Header Title & Time Text
+    -- Header Title & Time Text
     -- Offset calculated relative to plaque center (0, 0)
     local top_offset = -math.floor(metrics.board_h / 2)
     local left_offset = -math.floor(metrics.board_w / 2)
@@ -982,7 +1080,7 @@ function deathstats.show_scoreboard_hud(player, precomputed_entries)
     })
     state.last_title = title_str
 
-    -- 3. Column Header Titles (Left-aligned at each column data_x)
+    -- Column Header Titles (Left-aligned at each column data_x)
     local col_hdr_y = top_offset + metrics.header_h + math.floor(metrics.col_header_h / 2)
 
     for _, c in ipairs(metrics.columns) do
@@ -1000,7 +1098,7 @@ function deathstats.show_scoreboard_hud(player, precomputed_entries)
     end
     state.hud_col_header = state.col_header_ids[1]
 
-    -- 4. Player Rows (Table grid cells left-aligned at each column data_x)
+    -- Player Rows (Table grid cells left-aligned at each column data_x)
     local rows_start_y = top_offset + metrics.header_h + metrics.col_header_h + metrics.padding_v
     local visible_count = math.min(#entries, metrics.max_rows)
 
@@ -1033,7 +1131,7 @@ function deathstats.show_scoreboard_hud(player, precomputed_entries)
         end
     end
 
-    -- 5. Footer Info Text
+    -- Footer Info Text
     local footer_y = math.floor(metrics.board_h / 2) - math.floor(metrics.footer_h / 2)
     local footer_str = deathstats.get_scoreboard_footer_text(#entries, visible_count)
 
@@ -1291,7 +1389,7 @@ core.register_globalstep(function(dtime)
         return
     end
 
-    -- 1. Throttled AFK check interval (every 2.0s)
+    -- Throttled AFK check interval (every 2.0s)
     afk_check_timer = afk_check_timer + dtime
     local do_afk_check = false
     if afk_check_timer >= 2.0 then
@@ -1299,7 +1397,7 @@ core.register_globalstep(function(dtime)
         do_afk_check = true
     end
 
-    -- 2. Process connected players in a single unified pass
+    -- Process connected players in a single unified pass
     local frame_base = nil
     for _, player in ipairs(players) do
         local name = player:get_player_name()
@@ -1470,9 +1568,84 @@ end)
 -- Scrollable Formspec Scoreboard Dialog
 -- ==========================================
 
+--- Get the All-Time Hall of Fame players list sorted by lifetime composite score
+---@return table list Sorted list of all-time player dossiers
+function deathstats.get_hall_of_fame_data()
+    local idx_str = deathstats.storage and deathstats.storage:get_string("all_players_index")
+    local idx = (idx_str and idx_str ~= "" and core.deserialize(idx_str)) or {}
+    local list = {}
+
+    -- Also include currently connected players
+    for _, player in ipairs(core.get_connected_players()) do
+        local pname = player:get_player_name()
+        if pname and pname ~= "" then
+            idx[pname] = true
+        end
+    end
+
+    for pname in pairs(idx) do
+        local pdata = deathstats.players and deathstats.players[pname]
+        local life = (pdata and pdata.lifetime)
+        if not life and deathstats.storage then
+            local raw = deathstats.storage:get_string("player:" .. pname)
+            if raw and raw ~= "" then
+                life = core.deserialize(raw)
+            end
+        end
+
+        if life then
+            local kills = (life.players_killed or 0) + (life.mobs_killed or 0)
+            local deaths = life.deaths or 0
+            local kd = (deaths > 0) and (kills / deaths) or kills
+            local score = math.floor(
+                (life.players_killed or 0) * 100 +
+                (life.mobs_killed or 0) * 10 +
+                (life.blocks_mined or 0) * 1 +
+                (life.total_ores or 0) * 5 +
+                math.floor((life.damage_dealt or 0) * 0.5) +
+                math.floor((life.time_alive or 0) / 60)
+            )
+
+            table.insert(list, {
+                name = pname,
+                kills = kills,
+                pvp_kills = life.players_killed or 0,
+                mobs_killed = life.mobs_killed or 0,
+                deaths = deaths,
+                kd = kd,
+                damage_dealt = life.damage_dealt or 0,
+                blocks_mined = life.blocks_mined or 0,
+                total_ores = life.total_ores or 0,
+                time_alive = life.time_alive or 0,
+                score = score,
+                personal_bests = life.personal_bests or {},
+            })
+        end
+    end
+
+    table.sort(list, function(a, b)
+        if a.score ~= b.score then
+            return a.score > b.score
+        elseif a.kills ~= b.kills then
+            return a.kills > b.kills
+        elseif a.time_alive ~= b.time_alive then
+            return a.time_alive > b.time_alive
+        else
+            return a.name < b.name
+        end
+    end)
+
+    for rank, item in ipairs(list) do
+        item.rank = rank
+    end
+
+    return list
+end
+
 --- Display the full scrollable formspec scoreboard table with all players
 ---@param player ObjectRef Target player
-function deathstats.show_scoreboard_formspec(player)
+---@param tab string|nil Optional tab ("live" or "hall_of_fame"). Defaults to "live".
+function deathstats.show_scoreboard_formspec(player, tab)
     if not player or not player:is_player() then return end
     deathstats.hide_scoreboard_hud(player)
     local name = player:get_player_name()
@@ -1484,41 +1657,11 @@ function deathstats.show_scoreboard_formspec(player)
         core.chat_send_player(name, S("You cannot view the scoreboard while dead."))
         return
     end
-    local entries = deathstats.get_scoreboard_data(player)
+
+    tab = tab or "live"
     local time_str = deathstats.get_gametime_formatted()
     local c = deathstats.colors
-
     local row_h = 0.52
-    local total_rows = #entries
-
-    local reg_cols = deathstats.get_ordered_scoreboard_columns()
-    local total_pct = 0
-    for _, col in ipairs(reg_cols) do
-        total_pct = total_pct + (col.pct or 0.10)
-    end
-    if total_pct <= 0 then total_pct = 1.0 end
-
-    local usable_fs_w = 13.8
-    local fs_cols = {}
-    local curr_x = 0.5
-    for i, col in ipairs(reg_cols) do
-        local norm_pct = (col.pct or 0.10) / total_pct
-        local col_w = norm_pct * usable_fs_w
-        if i == #reg_cols then
-            col_w = (0.5 + usable_fs_w) - curr_x
-        end
-        table.insert(fs_cols, {
-            id = col.id,
-            title = col.title,
-            icon = col.icon,
-            tooltip = col.tooltip,
-            get_value = col.get_value,
-            get_color = col.get_color,
-            x = curr_x,
-            w = col_w,
-        })
-        curr_x = curr_x + col_w
-    end
 
     local fs = {
         "formspec_version[6]",
@@ -1538,80 +1681,202 @@ function deathstats.show_scoreboard_formspec(player)
         string.format("style_type[label;textcolor=%s]", c.text_gold),
         "label[1.2,0.72;" .. F(S("DEATHSTATS // MULTIPLAYER SCOREBOARD")) .. "]",
         string.format("style_type[label;textcolor=%s]", c.text_muted),
-        "label[8.2,0.72;" .. F(S("In-Game Time: @1", time_str)) .. "]",
-        "label[12.2,0.72;" .. F(S("@1 Connected", total_rows)) .. "]",
+        "label[6.8,0.72;" .. F(S("Time: @1", time_str)) .. "]",
+
+        -- Tab Switcher Buttons
+        string.format("style[tab_sb_live;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s]",
+            (tab == "live") and c.tab_active_bg or c.tab_inactive_bg,
+            (tab == "live") and c.tab_active_hover_bg or c.tab_inactive_hover_bg,
+            (tab == "live") and c.tab_active_text or c.tab_inactive_text,
+            (tab == "live") and c.tab_active_border or c.tab_inactive_border),
+        string.format("style[tab_sb_hof;bgcolor=%s;bgcolor_hovered=%s;textcolor=%s;font=bold;border=true;bordercolor=%s]",
+            (tab == "hall_of_fame") and c.tab_active_bg or c.tab_inactive_bg,
+            (tab == "hall_of_fame") and c.tab_active_hover_bg or c.tab_inactive_hover_bg,
+            (tab == "hall_of_fame") and c.tab_active_text or c.tab_inactive_text,
+            (tab == "hall_of_fame") and c.tab_active_border or c.tab_inactive_border),
+        string.format("button[9.2,0.45;2.3,0.50;tab_sb_live;%s]", F(tab == "live" and "▶ LIVE SCORES" or "LIVE SCORES")),
+        string.format("button[11.6,0.45;2.4,0.50;tab_sb_hof;%s]", F(tab == "hall_of_fame" and "▶ HALL OF FAME" or "HALL OF FAME")),
+
+        -- Refresh Button
+        string.format("style[btn_sb_refresh;bgcolor=%s;bgcolor_hovered=%s;border=true;bordercolor=%s]",
+            c.btn_secondary_bg, c.btn_secondary_hover_bg, c.btn_secondary_border),
+        "image_button[14.15,0.45;0.50,0.50;deathstats_icon_refresh.png;btn_sb_refresh;]",
+        string.format("tooltip[btn_sb_refresh;%s;%s;%s]", F(S("Refresh Statistics")), c.tooltip_bg, c.text_gold),
 
         -- Column Header Strip
         "box[0.5,1.15;14.2,0.55;" .. c.tab_bar_bg .. "]",
         "box[0.5,1.70;14.2,0.04;" .. c.tab_bar_sep .. "]",
     }
 
-    -- Column Header Tooltips, Icons, and Titles
-    for _, col in ipairs(fs_cols) do
-        if col.tooltip and col.tooltip ~= "" then
-            table.insert(fs, string.format("tooltip[%.2f,1.15;%.2f,0.55;%s]", col.x, col.w, F(col.tooltip)))
+    if tab == "live" then
+        local entries = deathstats.get_scoreboard_data(player)
+        local total_rows = #entries
+
+        local reg_cols = deathstats.get_ordered_scoreboard_columns()
+        local total_pct = 0
+        for _, col in ipairs(reg_cols) do
+            total_pct = total_pct + (col.pct or 0.10)
         end
-        table.insert(fs, string.format("image[%.2f,1.25;0.35,0.35;%s]", col.x + 0.05, col.icon))
-        table.insert(fs, string.format("label[%.2f,1.48;%s]", col.x + 0.45, F(col.title)))
-    end
+        if total_pct <= 0 then total_pct = 1.0 end
 
-    -- Scrollable Container for All Players
-    table.insert(fs, string.format("scrollbaroptions[max=%d]", math.max(0, math.ceil((total_rows * row_h - 5.8) / 0.1))))
-    table.insert(fs, "scrollbar[14.5,1.85;0.3,5.8;vertical;sb_scroll;0]")
-    table.insert(fs, "scroll_container[0.5,1.85;13.9,5.8;sb_scroll;vertical;0.1]")
-
-    -- Player rows inside scroll container
-    local last_fs_textcolor = nil
-    for i, item in ipairs(entries) do
-        local y = (i - 1) * row_h
-        local row_bg = item.is_viewer and "#88181844" or ((i % 2 == 0) and c.card_panel or c.row_alt)
-        table.insert(fs, string.format("box[0,%.2f;13.8,%.2f;%s]", y, row_h - 0.04, row_bg))
-
-        if item.is_viewer then
-            table.insert(fs, string.format("box[0,%.2f;0.08,%.2f;%s]", y, row_h - 0.04, c.crimson_glow))
-        end
-
-        local default_text_color = c.text_white
-        if item.is_dead then
-            default_text_color = c.text_dead
-        elseif item.is_afk then
-            default_text_color = c.text_afk
-        elseif item.is_viewer then
-            default_text_color = c.text_gold
+        local usable_fs_w = 13.8
+        local fs_cols = {}
+        local curr_x = 0.5
+        for i, col in ipairs(reg_cols) do
+            local norm_pct = (col.pct or 0.10) / total_pct
+            local col_w = norm_pct * usable_fs_w
+            if i == #reg_cols then
+                col_w = (0.5 + usable_fs_w) - curr_x
+            end
+            table.insert(fs_cols, {
+                id = col.id,
+                title = col.title,
+                icon = col.icon,
+                tooltip = col.tooltip,
+                get_value = col.get_value,
+                get_color = col.get_color,
+                x = curr_x,
+                w = col_w,
+            })
+            curr_x = curr_x + col_w
         end
 
         for _, col in ipairs(fs_cols) do
-            local rel_x = col.x - 0.5
-            local cell_text_color = default_text_color
-            if col.id == "ping" then
-                cell_text_color = deathstats.get_ping_textcolor(item.ping)
+            if col.tooltip and col.tooltip ~= "" then
+                table.insert(fs, string.format("tooltip[%.2f,1.15;%.2f,0.55;%s]", col.x, col.w, F(col.tooltip)))
+            end
+            table.insert(fs, string.format("image[%.2f,1.25;0.35,0.35;%s]", col.x + 0.05, col.icon))
+            table.insert(fs, string.format("label[%.2f,1.48;%s]", col.x + 0.45, F(col.title)))
+        end
+
+        table.insert(fs, string.format("scrollbaroptions[max=%d]", math.max(0, math.ceil((total_rows * row_h - 5.8) / 0.1))))
+        table.insert(fs, "scrollbar[14.5,1.85;0.3,5.8;vertical;sb_scroll;0]")
+        table.insert(fs, "scroll_container[0.5,1.85;13.9,5.8;sb_scroll;vertical;0.1]")
+
+        local last_fs_textcolor = nil
+        for i, item in ipairs(entries) do
+            local y = (i - 1) * row_h
+            local row_bg = item.is_viewer and c.row_viewer or ((i % 2 == 0) and c.card_panel or c.row_alt)
+            table.insert(fs, string.format("box[0,%.2f;13.8,%.2f;%s]", y, row_h - 0.04, row_bg))
+
+            if item.is_viewer then
+                table.insert(fs, string.format("box[0,%.2f;0.08,%.2f;%s]", y, row_h - 0.04, c.crimson_glow))
             end
 
-            if cell_text_color ~= last_fs_textcolor then
-                table.insert(fs, string.format("style_type[label;textcolor=%s]", cell_text_color))
-                last_fs_textcolor = cell_text_color
+            local default_text_color = c.text_white
+            if item.is_dead then
+                default_text_color = c.text_dead
+            elseif item.is_afk then
+                default_text_color = c.text_afk
+            elseif item.is_viewer then
+                default_text_color = c.text_gold
             end
 
-            if col.id == "player" or col.id == "name" then
-                if item.is_dead then
-                    table.insert(fs, string.format("image[%.2f,%.2f;0.32,0.32;deathstats_icon_skull.png]", rel_x + 0.05, y + 0.08))
-                elseif item.is_afk then
-                    table.insert(fs, string.format("image[%.2f,%.2f;0.32,0.32;deathstats_icon_afk.png]", rel_x + 0.05, y + 0.08))
+            for _, col in ipairs(fs_cols) do
+                local rel_x = col.x - 0.5
+                local cell_text_color = default_text_color
+                if col.id == "ping" then
+                    cell_text_color = deathstats.get_ping_textcolor(item.ping)
                 end
-                table.insert(fs, string.format("label[%.2f,%.2f;%s]", rel_x + 0.42, y + 0.26, F(item.name or "")))
-            else
-                local val
-                if col.get_value then
-                    val = col.get_value(nil, item, false) or ""
+
+                if cell_text_color ~= last_fs_textcolor then
+                    table.insert(fs, string.format("style_type[label;textcolor=%s]", cell_text_color))
+                    last_fs_textcolor = cell_text_color
+                end
+
+                if col.id == "player" or col.id == "name" then
+                    local icon_offset_x = 0
+                    if item.badges and #item.badges > 0 then
+                        for _, b in ipairs(item.badges) do
+                            if b.icon then
+                                table.insert(fs, string.format("image[%.2f,%.2f;0.32,0.32;%s]", rel_x + 0.05 + icon_offset_x, y + 0.08, b.icon))
+                                table.insert(fs, string.format("tooltip[%.2f,%.2f;0.32,0.32;%s;%s;%s]", rel_x + 0.05 + icon_offset_x, y + 0.08, F(b.title or b.tag or b.glyph or ""), c.tooltip_bg, c.text_gold))
+                                icon_offset_x = icon_offset_x + 0.36
+                            end
+                        end
+                    end
+                    if item.is_dead then
+                        table.insert(fs, string.format("image[%.2f,%.2f;0.32,0.32;deathstats_icon_skull.png]", rel_x + 0.05 + icon_offset_x, y + 0.08))
+                        table.insert(fs, string.format("tooltip[%.2f,%.2f;0.32,0.32;%s;%s;%s]", rel_x + 0.05 + icon_offset_x, y + 0.08, F(S("Status: Dead")), c.tooltip_bg, c.text_gold))
+                        icon_offset_x = icon_offset_x + 0.36
+                    elseif item.is_afk then
+                        table.insert(fs, string.format("image[%.2f,%.2f;0.32,0.32;deathstats_icon_afk.png]", rel_x + 0.05 + icon_offset_x, y + 0.08))
+                        table.insert(fs, string.format("tooltip[%.2f,%.2f;0.32,0.32;%s;%s;%s]", rel_x + 0.05 + icon_offset_x, y + 0.08, F(S("Status: AFK")), c.tooltip_bg, c.text_gold))
+                        icon_offset_x = icon_offset_x + 0.36
+                    end
+                    local disp_name = item.name or ""
+                    table.insert(fs, string.format("label[%.2f,%.2f;%s]", rel_x + 0.08 + icon_offset_x, y + 0.26, F(disp_name)))
                 else
-                    val = tostring(item[col.id] or "")
+                    local val
+                    if col.get_value then
+                        val = col.get_value(nil, item, false) or ""
+                    else
+                        val = tostring(item[col.id] or "")
+                    end
+                    table.insert(fs, string.format("label[%.2f,%.2f;%s]", rel_x + 0.08, y + 0.26, F(val)))
                 end
-                table.insert(fs, string.format("label[%.2f,%.2f;%s]", rel_x + 0.08, y + 0.26, F(val)))
             end
         end
-    end
+        table.insert(fs, "scroll_container_end[]")
 
-    table.insert(fs, "scroll_container_end[]")
+    elseif tab == "hall_of_fame" then
+        local hof = deathstats.get_hall_of_fame_data()
+        local total_rows = #hof
+
+        local hof_cols = {
+            { id = "rank",      title = S("RANK"),    x = 0.5,  w = 1.1, icon = "deathstats_icon_trophy.png" },
+            { id = "player",    title = S("LEGEND"),  x = 1.6,  w = 3.2, icon = "deathstats_icon_player.png" },
+            { id = "score",     title = S("SCORE"),   x = 4.8,  w = 1.8, icon = "deathstats_icon_trophy.png" },
+            { id = "kills",     title = S("KILLS"),   x = 6.6,  w = 1.6, icon = "deathstats_icon_sword.png" },
+            { id = "deaths",    title = S("DEATHS"),  x = 8.2,  w = 1.5, icon = "deathstats_icon_skull.png" },
+            { id = "kd",        title = S("K/D"),     x = 9.7,  w = 1.4, icon = "deathstats_icon_sword.png" },
+            { id = "mined",     title = S("MINED"),   x = 11.1, w = 1.6, icon = "deathstats_icon_pickaxe.png" },
+            { id = "time",      title = S("PLAYTIME"),x = 12.7, w = 1.9, icon = "deathstats_icon_clock.png" },
+        }
+
+        for _, col in ipairs(hof_cols) do
+            table.insert(fs, string.format("image[%.2f,1.25;0.35,0.35;%s]", col.x + 0.05, col.icon))
+            table.insert(fs, string.format("label[%.2f,1.48;%s]", col.x + 0.45, F(col.title)))
+        end
+
+        table.insert(fs, string.format("scrollbaroptions[max=%d]", math.max(0, math.ceil((total_rows * row_h - 5.8) / 0.1))))
+        table.insert(fs, "scrollbar[14.5,1.85;0.3,5.8;vertical;hof_scroll;0]")
+        table.insert(fs, "scroll_container[0.5,1.85;13.9,5.8;hof_scroll;vertical;0.1]")
+
+        if total_rows == 0 then
+            table.insert(fs, string.format("label[5.5,2.5;%s]", F(S("No Hall of Fame records yet. Survive and conquer!"))))
+        else
+            for i, item in ipairs(hof) do
+                local y = (i - 1) * row_h
+                local is_viewer = (item.name == name)
+                local row_bg = is_viewer and c.row_viewer or ((i % 2 == 0) and c.card_panel or c.row_alt)
+                table.insert(fs, string.format("box[0,%.2f;13.8,%.2f;%s]", y, row_h - 0.04, row_bg))
+
+                if is_viewer then
+                    table.insert(fs, string.format("box[0,%.2f;0.08,%.2f;%s]", y, row_h - 0.04, c.crimson_glow))
+                end
+
+                local cell_color = is_viewer and c.text_gold or (i == 1 and c.text_gold or c.text_white)
+                table.insert(fs, string.format("style_type[label;textcolor=%s]", cell_color))
+
+                if i == 1 then
+                    table.insert(fs, string.format("image[0.05,%.2f;0.32,0.32;deathstats_badge_crown.png]", y + 0.08))
+                    table.insert(fs, string.format("tooltip[0.05,%.2f;0.32,0.32;%s;%s;%s]", y + 0.08, F(S("All-Time Champion (#1)")), c.tooltip_bg, c.text_gold))
+                    table.insert(fs, string.format("label[0.42,%.2f;#1]", y + 0.26))
+                else
+                    table.insert(fs, string.format("label[0.10,%.2f;#%d]", y + 0.26, i))
+                end
+                table.insert(fs, string.format("label[1.2,%.2f;%s]", y + 0.26, F(deathstats.truncate_str(item.name, 18))))
+                table.insert(fs, string.format("label[4.4,%.2f;%s]", y + 0.26, F(deathstats.format_number(item.score or 0))))
+                table.insert(fs, string.format("label[6.2,%.2f;%s]", y + 0.26, F(deathstats.format_number(item.kills or 0))))
+                table.insert(fs, string.format("label[7.8,%.2f;%s]", y + 0.26, F(deathstats.format_number(item.deaths or 0))))
+                table.insert(fs, string.format("label[9.3,%.2f;%.2f]", y + 0.26, item.kd or 0))
+                table.insert(fs, string.format("label[10.7,%.2f;%s]", y + 0.26, F(deathstats.format_number(item.blocks_mined or 0))))
+                table.insert(fs, string.format("label[12.3,%.2f;%s]", y + 0.26, F(deathstats.format_time(item.time_alive or 0))))
+            end
+        end
+        table.insert(fs, "scroll_container_end[]")
+    end
 
     -- Footer bar with controls
     table.insert(fs, "box[0.5,7.75;14.2,0.45;" .. c.tab_bar_bg .. "]")
@@ -1626,6 +1891,7 @@ function deathstats.show_scoreboard_formspec(player)
 
     core.show_formspec(name, "deathstats:scoreboard", table.concat(fs))
     deathstats.open_scoreboard_formspecs[name] = true
+    deathstats.open_scoreboard_tabs[name] = tab
 end
 
 --- Close the full scoreboard formspec for a player
@@ -1635,12 +1901,23 @@ function deathstats.close_scoreboard_formspec(player)
     local name = player:get_player_name()
     core.close_formspec(name, "deathstats:scoreboard")
     deathstats.open_scoreboard_formspecs[name] = nil
+    deathstats.open_scoreboard_tabs[name] = nil
 end
 
 -- Register formspec receive fields handler for scoreboard
 core.register_on_player_receive_fields(function(player, formname, fields)
     if formname == "deathstats:scoreboard" then
-        if fields.btn_close_scoreboard or fields.quit then
+        if fields.tab_sb_live then
+            deathstats.show_scoreboard_formspec(player, "live")
+            return true
+        elseif fields.tab_sb_hof then
+            deathstats.show_scoreboard_formspec(player, "hall_of_fame")
+            return true
+        elseif fields.btn_sb_refresh then
+            local current_tab = deathstats.open_scoreboard_tabs[player:get_player_name()] or "live"
+            deathstats.show_scoreboard_formspec(player, current_tab)
+            return true
+        elseif fields.btn_close_scoreboard or fields.quit then
             deathstats.close_scoreboard_formspec(player)
             return true
         end
@@ -1652,7 +1929,7 @@ end)
 -- ==========================================
 
 core.register_chatcommand("deathstats", {
-    params = S("[scores|scoreboard [on|off]|afk|mock|help]"),
+    params = S("[stats|scores|scoreboard [on|off]|afk|mock|help]"),
     description = S("View deathstats options, lifetime records, and multiplayer scoreboard"),
     func = function(name, param)
         param = (param or ""):match("^%s*(.-)%s*$"):lower()
@@ -1680,6 +1957,14 @@ core.register_chatcommand("deathstats", {
             else
                 return false, S("Invalid state. Use '/deathstats scoreboard on' or '/deathstats scoreboard off'.")
             end
+        elseif param == "stats" or param:find("^stats%s*") or param == "lifetime" or param:find("^lifetime%s*") then
+            local sub = param:match("^%a+%s*(.*)$")
+            local cmd = core.chatcommands["stats"]
+            if cmd then
+                return cmd.func(name, sub)
+            end
+            deathstats.show_lifetime_stats_formspec(player, "overview")
+            return true
         elseif param == "scores" or param == "score" or param == "scoreboard" or param == "top" or param == "" then
             if not deathstats.config.enable_scoreboard then
                 return false, S("Scoreboard feature is currently disabled.")
@@ -1723,9 +2008,9 @@ core.register_chatcommand("deathstats", {
             return true, string.format("AFK Timeout: %ds | Current idle time: %ds | Status: %s",
                 timeout, idle_sec, is_afk and "AFK" or "ACTIVE")
         elseif param == "help" then
-            return true, S("DeathStats Commands:\n/deathstats scores - Toggle full scoreboard\n/scores - Scoreboard shortcut\n/deathstats scoreboard [on|off] - Enable/disable scoreboard (server priv)\n/deathstats afk [seconds] - Check or set AFK timeout\n/deathstats mock [on|off|<count>] - Toggle testing mock players")
+            return true, S("DeathStats Commands:\n/stats [tab] - View lifetime statistics dossier\n/mystats - Shortcut for lifetime statistics\n/deathstats stats - Lifetime dossier\n/deathstats scores - Toggle full scoreboard\n/scores - Scoreboard shortcut\n/deathstats scoreboard [on|off] - Enable/disable scoreboard (server priv)\n/deathstats afk [seconds] - Check or set AFK timeout\n/deathstats mock [on|off|<count>] - Toggle testing mock players")
         else
-            return false, S("Unknown subcommand. Use '/deathstats scores', '/scores', '/deathstats afk', or '/deathstats mock'.")
+            return false, S("Unknown subcommand. Use '/stats', '/deathstats stats', '/deathstats scores', '/scores', '/deathstats afk', or '/deathstats mock'.")
         end
     end,
 })
@@ -1749,6 +2034,38 @@ core.register_chatcommand("scores", {
             deathstats.show_scoreboard_formspec(player)
             return true
         end
+    end,
+})
+
+core.register_chatcommand("stats", {
+    params = S("[overview|records|ores|combat]"),
+    description = S("View your lifetime statistics dossier"),
+    func = function(name, param)
+        local player = core.get_player_by_name(name)
+        if not player then return false end
+        param = (param or ""):match("^%s*(.-)%s*$"):lower()
+        local tab = "overview"
+        if param == "records" or param == "record" then
+            tab = "records"
+        elseif param == "ores" or param == "ore" or param == "mining" then
+            tab = "ores"
+        elseif param == "combat" or param == "pvp" or param == "kills" then
+            tab = "combat"
+        end
+        deathstats.show_lifetime_stats_formspec(player, tab)
+        return true
+    end,
+})
+
+core.register_chatcommand("mystats", {
+    params = S("[overview|records|ores|combat]"),
+    description = S("Shortcut to view lifetime statistics dossier"),
+    func = function(name, param)
+        local cmd = core.chatcommands["stats"]
+        if cmd then return cmd.func(name, param) end
+        local player = core.get_player_by_name(name)
+        if player then deathstats.show_lifetime_stats_formspec(player, "overview") end
+        return true
     end,
 })
 

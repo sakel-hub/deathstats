@@ -82,7 +82,7 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
     local entries = {}
     local seen_names = {}
 
-    -- 1. Include real connected players first (using standard scoreboard data)
+    -- Include real connected players first (using standard scoreboard data)
     if deathstats.orig_get_scoreboard_data then
         entries = deathstats.orig_get_scoreboard_data(viewer_player, precomputed_base)
         for _, item in ipairs(entries) do
@@ -90,7 +90,7 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
         end
     end
 
-    -- 2. Inject mock players (skipping any whose name matches an active connected player)
+    -- Inject mock players (skipping any whose name matches an active connected player)
     local mock_limit = deathstats.mock_scoreboard_player_count or #deathstats.mock_players_data
     local added_count = 0
     for _, mp in ipairs(deathstats.mock_players_data) do
@@ -137,11 +137,12 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
                 ping = mp.ping,
                 score = score,
                 avg_score = avg_score,
+                revenges = mp.revenges or 0,
             })
         end
     end
 
-    -- 3. Sort:
+    -- Sort:
     -- Real online players are listed first (ignoring score sorting for mock purposes)
     -- Living players rank above dead players.
     table.sort(entries, function(a, b)
@@ -164,7 +165,7 @@ function deathstats.get_scoreboard_data(viewer_player, precomputed_base)
         end
     end)
 
-    -- 4. Assign rank positions
+    -- Assign rank positions
     for rank, item in ipairs(entries) do
         item.rank = rank
     end
