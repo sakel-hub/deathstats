@@ -62,7 +62,7 @@ core.register_globalstep(function(dtime)
         return
     end
 
-    -- 1. Keep dead players camera oriented properly and detect delayed bones
+    -- Keep dead players camera oriented properly and detect delayed bones
     for name in pairs(deathstats.dead_players) do
         local player = core.get_player_by_name(name)
         if player and player:is_player() then
@@ -78,7 +78,7 @@ core.register_globalstep(function(dtime)
         end
     end
 
-    -- 2. Handle HUD distance flight and screen slap animation
+    -- Handle HUD distance flight and screen slap animation
     for name, anim in pairs(deathstats.active_animations) do
         local player = core.get_player_by_name(name)
         if not player or not player:is_player() then
@@ -127,14 +127,126 @@ end)
 -- Formspec Event Handlers
 -- ==========================================
 
+--- Retrieve the fallback death reason and epitaph information for a player
+---@param player ObjectRef|string The player object or player username
+---@return table last_info Formatted death info table { reason_text = string, funny_note = string, category = string }
+function deathstats.get_last_death_info(player)
+    local name = (type(player) == "string") and player
+        or (player and player.get_player_name and player:get_player_name())
+    local data = name and deathstats.players[name]
+    local p_obj = (type(player) ~= "string") and player or (name and core.get_player_by_name(name))
+    local meta = p_obj and p_obj.get_meta and p_obj:get_meta()
+    local d_info_str = meta and meta:get_string("deathstats:death_info")
+    local d_info = nil
+    if d_info_str and d_info_str ~= "" then
+        local des = core.deserialize(d_info_str)
+        if type(des) == "table" then
+            d_info = des
+        end
+    end
+
+    local last_reason = name and deathstats.last_death_reason and deathstats.last_death_reason[name]
+    local last_life = data and data.last_life
+
+    local category = (last_reason and last_reason.category)
+        or (d_info and d_info.category)
+        or (last_life and last_life.last_category)
+        or "unknown"
+
+    local reason_text = (last_reason and last_reason.reason_text)
+        or (d_info and d_info.reason_text)
+        or (last_life and last_life.last_cause)
+        or "You died"
+
+    local funny_note = (last_reason and last_reason.funny_note)
+        or (d_info and d_info.funny_note)
+        or (last_life and last_life.last_funny)
+        or "Mistakes were made."
+
+    return {
+        category = category,
+        reason_text = reason_text,
+        funny_note = funny_note,
+        damage = (last_reason and last_reason.damage) or (d_info and d_info.damage),
+        killer_name = (last_reason and last_reason.killer_name) or (d_info and d_info.killer_name) or (last_life and last_life.last_killer),
+        weapon_name = (last_reason and last_reason.weapon_name) or (d_info and (d_info.weapon_name or d_info.weapon)) or (last_life and last_life.last_weapon),
+        node_name = (last_reason and last_reason.node_name) or (d_info and d_info.node_name),
+    }
+end
+
 core.register_on_player_receive_fields(function(player, formname, fields)
     if not player then return end
     local name = player:get_player_name()
 
+    -- Corpse Epitaph Plaque handling (open for living players)
+    if formname == "deathstats:corpse_epitaph" then
+        if fields.btn_close_epitaph or fields.quit then
+            core.close_formspec(name, "deathstats:corpse_epitaph")
+            return true
+        end
+    end
+
+    -- Lifetime Statistics Dashboard (accessible by both living players via /stats and deceased players)
+    if formname == "deathstats:lifetime" then
+        if fields.tab_overview then
+            deathstats.show_lifetime_stats_formspec(player, "overview")
+            return true
+        elseif fields.tab_records then
+            deathstats.show_lifetime_stats_formspec(player, "records")
+            return true
+        elseif fields.tab_ores then
+            deathstats.show_lifetime_stats_formspec(player, "ores")
+            return true
+        elseif fields.tab_combat then
+            deathstats.show_lifetime_stats_formspec(player, "combat")
+            return true
+        elseif fields.btn_close then
+            core.close_formspec(name, "deathstats:lifetime")
+            return true
+        elseif fields.btn_back_death then
+            if deathstats.is_player_dead(player) then
+                deathstats.show_death_formspec(player, deathstats.get_last_death_info(player))
+            else
+                core.close_formspec(name, "deathstats:lifetime")
+            end
+            return true
+        elseif fields.btn_modal_respawn then
+            if deathstats.is_player_dead(player) then
+                deathstats.respawn_player(player)
+            else
+                core.close_formspec(name, "deathstats:lifetime")
+            end
+            return true
+        elseif fields.quit then
+            if deathstats.is_player_dead(player) then
+                deathstats.show_death_formspec(player, deathstats.get_last_death_info(player))
+            end
+            return true
+        end
+        return true
+    end
+
     -- If player is dead: strictly control formspec navigation and prevent closing
     if deathstats.dead_players[name] and not deathstats.is_respawning[name] then
-        -- Respawn button clicked from either death screen or lifetime stats
-        if fields.btn_try_again or fields.btn_modal_respawn then
+        -- Photo mode toggle: hide UI
+        if fields.btn_photo_mode then
+            core.close_formspec(name, "deathstats:death")
+            deathstats.show_photo_mode_formspec(player)
+            return true
+        end
+
+        -- Photo mode active: restore death formspec
+        if formname == "deathstats:photo_mode" then
+            if fields.btn_show_ui or fields.quit then
+                core.close_formspec(name, "deathstats:photo_mode")
+                deathstats.show_death_formspec(player, deathstats.get_last_death_info(player))
+                return true
+            end
+            return true
+        end
+
+        -- Respawn button clicked from death screen
+        if fields.btn_try_again then
             deathstats.respawn_player(player)
             return true
         end
@@ -145,38 +257,11 @@ core.register_on_player_receive_fields(function(player, formname, fields)
             return true
         end
 
-        -- Lifetime Statistics tab switches
-        if formname == "deathstats:lifetime" then
-            if fields.tab_overview then
-                deathstats.show_lifetime_stats_formspec(player, "overview")
-                return true
-            elseif fields.tab_ores then
-                deathstats.show_lifetime_stats_formspec(player, "ores")
-                return true
-            elseif fields.tab_combat then
-                deathstats.show_lifetime_stats_formspec(player, "combat")
-                return true
-            elseif fields.btn_back_death then
-                local data = deathstats.players[name]
-                local last_info = {
-                    reason_text = (data and data.last_life and data.last_life.last_cause) or "You died",
-                    funny_note = (data and data.last_life and data.last_life.last_funny) or "Mistakes were made.",
-                }
-                deathstats.show_death_formspec(player, last_info)
-                return true
-            end
-        end
-
         -- If player pressed ESC, closed the window, or any formspec was closed while dead:
         -- Immediately re-show the death screen to prevent the "zombie state" (see Luanti #11523)
         -- and keep the player immobilized via active formspec UI without delay
         if fields.quit then
-            local data = deathstats.players[name]
-            local last_info = {
-                reason_text = (data and data.last_life and data.last_life.last_cause) or "You died",
-                funny_note = (data and data.last_life and data.last_life.last_funny) or "Mistakes were made.",
-            }
-            deathstats.show_death_formspec(player, last_info)
+            deathstats.show_death_formspec(player, deathstats.get_last_death_info(player))
             return true
         end
     end
@@ -211,7 +296,7 @@ core.register_on_joinplayer(function(player)
     local name = player:get_player_name()
     deathstats.left_players[name] = nil
     local meta = player:get_meta()
-    if player:get_hp() == 0 or (meta and meta:get_string("deathstats:death_active") == "1") then
+    if player:get_hp() <= 0 or (meta and meta:get_string("deathstats:death_active") == "1") then
         deathstats.trigger_death_screen(player, nil, true)
     else
         if meta and meta:get_string("deathstats:death_active") ~= "" then
