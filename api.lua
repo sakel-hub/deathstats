@@ -2208,48 +2208,196 @@ function deathstats.calculate_corpse_impulse(player, death_info, last_blow)
     return initial_velocity, setmetatable(rot_speed, rot_mt), rot_speed.x, rot_speed.y, rot_speed.z
 end
 
+--- Helper to generate a random floating point number between min_val and max_val
+local function random_float(min_val, max_val)
+    return min_val + math.random() * (max_val - min_val)
+end
+
+--- Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce
+---@param corpse ObjectRef The corpse entity object
+---@param impact_vy number Downward velocity of the impact
+---@param _rebound_v Vector Resulting rebound velocity vector
+---@param _rot table|nil Current rotation {x, y, z}
+---@param bounce_count number Current bounce index (1 or 2)
+function deathstats.apply_corpse_bounce_impact(corpse, impact_vy, _rebound_v, _rot, bounce_count)
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
+    local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
+        and (deathstats.config.enable_fall_fractures ~= false)
+    if not fractures_enabled then return end
+
+    local vy = math.abs(tonumber(impact_vy) or 4.0)
+    local shock = math.min(1.6, math.max(0.35, vy / 5.5))
+    local bounce_damp = (bounce_count and bounce_count > 1) and 0.65 or 1.0
+    local eff_shock = shock * bounce_damp
+
+    -- Inertial shock: sudden deceleration whips limbs and snaps head
+    local head_pitch = math.rad(-25) * eff_shock
+    local head_yaw = ((math.random() < 0.5) and -1 or 1) * math.rad(random_float(15, 30)) * eff_shock
+    local arm_pitch = math.rad(random_float(20, 45)) * eff_shock
+    local arm_splay = math.rad(random_float(30, 60)) * eff_shock
+    local leg_pitch = math.rad(random_float(-12, 18)) * eff_shock
+    local leg_splay = math.rad(random_float(20, 45)) * eff_shock
+
+    deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, math.rad(10) * eff_shock, -arm_splay))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, math.rad(-10) * eff_shock, arm_splay))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_splay))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_splay))
+end
+
 --- Apply final limp resting fractures or organic pose angles to corpse limbs on landing
 ---@param corpse ObjectRef The corpse entity object
 ---@param impact_damage number|nil Damage of the lethal impact
 ---@param pose_type string|nil Optional resting pose ("supine", "prone", "lateral")
 ---@param hanging_legs boolean|nil True if legs hang over a ledge/drop
-function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hanging_legs)
+---@param roll_rad number|nil Optional corpse roll angle in radians
+function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hanging_legs, roll_rad)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
         and (deathstats.config.enable_fall_fractures ~= false)
     if not fractures_enabled then return end
 
     local dmg = tonumber(impact_damage) or 5
-    local scale = math.min(1.4, 1.0 + math.max(0, dmg - 10) * 0.02)
+    local scale = math.min(1.35, 1.0 + math.max(0, dmg - 10) * 0.015)
     local ptype = pose_type or "supine"
+
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    local roll_z = roll_rad or (luaent and luaent._rot and luaent._rot.z)
+        or (corpse.get_rotation and corpse:get_rotation().z) or 0
+    local is_right_side = (roll_z < -0.1)
 
     local custom = {}
     if ptype == "prone" then
-        -- Prone: Face down on stomach. Arms reaching up/out, head turned sideways
-        custom["Head"] = math.rad(math.random() < 0.5 and -45 or 45)
-        custom["Arm_Left"] = math.rad(-65 * scale)
-        custom["Arm_Right"] = math.rad(65 * scale)
-        custom["Leg_Left"] = math.rad(-20 * scale)
-        custom["Leg_Right"] = math.rad(20 * scale)
-    elseif ptype == "lateral" then
-        -- Lateral: Lying on side. Head in line with spine, arms relaxed across torso, legs with wide visual separation
-        custom["Head"] = math.rad(15)
-        custom["Arm_Left"] = math.rad(-25 * scale)
-        custom["Arm_Right"] = math.rad(40 * scale)
-        custom["Leg_Left"] = math.rad(-40 * scale)
-        custom["Leg_Right"] = math.rad(35 * scale)
-    else
-        -- Supine (standard): Splayed outward or fractured based on damage
-        if dmg <= 10 and not hanging_legs then
-            deathstats.fracture_corpse_limbs(corpse)
-            return
+        -- Prone: Face down on stomach with organic archetypes (collapsed, reach, sprawl)
+        local arch = math.random(1, 3)
+        local head_sign = (math.random() < 0.5) and -1 or 1
+        if arch == 1 then
+            -- Collapsed: arms drawn up near shoulders, legs straight
+            custom["Head"] = math.rad(head_sign * random_float(35, 55))
+            custom["Arm_Left"] = math.rad(random_float(-55, -35) * scale)
+            custom["Arm_Right"] = math.rad(random_float(35, 55) * scale)
+            custom["Leg_Left"] = math.rad(random_float(-14, -6) * scale)
+            custom["Leg_Right"] = math.rad(random_float(6, 14) * scale)
+        elseif arch == 2 then
+            -- Asymmetric reach: one arm forward, one trailing back
+            local reach_left = (math.random() < 0.5)
+            custom["Head"] = math.rad(head_sign * random_float(40, 65))
+            if reach_left then
+                custom["Arm_Left"] = math.rad(random_float(-75, -50) * scale)
+                custom["Arm_Right"] = math.rad(random_float(15, 35) * scale)
+                custom["Leg_Left"] = math.rad(random_float(-12, -4) * scale)
+                custom["Leg_Right"] = math.rad(random_float(15, 30) * scale)
+            else
+                custom["Arm_Left"] = math.rad(random_float(-35, -15) * scale)
+                custom["Arm_Right"] = math.rad(random_float(50, 75) * scale)
+                custom["Leg_Left"] = math.rad(random_float(-30, -15) * scale)
+                custom["Leg_Right"] = math.rad(random_float(4, 12) * scale)
+            end
         else
-            custom["Arm_Left"] = math.rad(-75 * scale)
-            custom["Arm_Right"] = math.rad(75 * scale)
-            custom["Leg_Left"] = math.rad(-35 * scale)
-            custom["Leg_Right"] = math.rad(35 * scale)
-            custom["Head"] = math.rad((math.random() < 0.5 and -40 or 40) * scale)
+            -- Limp sprawl: relaxed random limbs
+            custom["Head"] = math.rad(head_sign * random_float(30, 60))
+            custom["Arm_Left"] = math.rad(random_float(-65, -40) * scale)
+            custom["Arm_Right"] = math.rad(random_float(40, 65) * scale)
+            custom["Leg_Left"] = math.rad(random_float(-22, -10) * scale)
+            custom["Leg_Right"] = math.rad(random_float(10, 22) * scale)
         end
+    elseif ptype == "lateral" then
+        -- Lateral: Lying on side with organic archetypes (curled, runner, parallel, splay)
+        local arch = math.random(1, 4)
+        local head_tilt
+        local l_arm, r_arm, l_leg, r_leg
+
+        if arch == 1 then
+            -- Semi-fetal / curled: legs resting closely together (spread only 8° to 16°)
+            l_leg = random_float(-24, -14) * scale
+            r_leg = random_float(-12, -2) * scale
+            l_arm = random_float(-35, -18) * scale
+            r_arm = random_float(18, 38) * scale
+            head_tilt = random_float(-25, -5)
+        elseif arch == 2 then
+            -- Staggered runner: one leg forward, one trailing back (spread 30° to 45°)
+            l_leg = random_float(-32, -20) * scale
+            r_leg = random_float(10, 24) * scale
+            l_arm = random_float(-35, -15) * scale
+            r_arm = random_float(-10, 20) * scale
+            head_tilt = random_float(-15, 15)
+        elseif arch == 3 then
+            -- Limp parallel: legs almost straight with minimal separation (< 18°)
+            l_leg = random_float(-15, -6) * scale
+            r_leg = random_float(6, 15) * scale
+            l_arm = random_float(-20, -8) * scale
+            r_arm = random_float(8, 20) * scale
+            head_tilt = random_float(-12, 12)
+        else
+            -- Relaxed splay: natural asymmetric spread
+            l_leg = random_float(-35, -20) * scale
+            r_leg = random_float(15, 32) * scale
+            l_arm = random_float(-35, -15) * scale
+            r_arm = random_float(20, 38) * scale
+            head_tilt = random_float(-20, 20)
+        end
+
+        -- Mirror left/right symmetrically if lying on the right side
+        if is_right_side then
+            custom["Arm_Left"] = math.rad(-r_arm)
+            custom["Arm_Right"] = math.rad(-l_arm)
+            custom["Leg_Left"] = math.rad(-r_leg)
+            custom["Leg_Right"] = math.rad(-l_leg)
+            custom["Head"] = math.rad(-head_tilt)
+        else
+            custom["Arm_Left"] = math.rad(l_arm)
+            custom["Arm_Right"] = math.rad(r_arm)
+            custom["Leg_Left"] = math.rad(l_leg)
+            custom["Leg_Right"] = math.rad(r_leg)
+            custom["Head"] = math.rad(head_tilt)
+        end
+    else
+        -- Supine: Lying flat on back with organic archetypes (sprawl, relaxed, folded, impact)
+        local arch = math.random(1, 4)
+        local head_angle = random_float(-45, 45)
+        if arch == 1 then
+            -- Asymmetric sprawl
+            local fling_left = (math.random() < 0.5)
+            if fling_left then
+                custom["Arm_Left"] = math.rad(random_float(-80, -50) * scale)
+                custom["Arm_Right"] = math.rad(random_float(15, 35) * scale)
+                custom["Leg_Left"] = math.rad(random_float(-45, -25) * scale)
+                custom["Leg_Right"] = math.rad(random_float(8, 18) * scale)
+            else
+                custom["Arm_Left"] = math.rad(random_float(-35, -15) * scale)
+                custom["Arm_Right"] = math.rad(random_float(50, 80) * scale)
+                custom["Leg_Left"] = math.rad(random_float(-18, -8) * scale)
+                custom["Leg_Right"] = math.rad(random_float(25, 45) * scale)
+            end
+            custom["Head"] = math.rad(head_angle)
+        elseif arch == 2 then
+            -- Relaxed rest
+            custom["Arm_Left"] = math.rad(random_float(-35, -15) * scale)
+            custom["Arm_Right"] = math.rad(random_float(15, 35) * scale)
+            custom["Leg_Left"] = math.rad(random_float(-22, -10) * scale)
+            custom["Leg_Right"] = math.rad(random_float(10, 22) * scale)
+            custom["Head"] = math.rad(random_float(-25, 25))
+        elseif arch == 3 then
+            -- Peaceful folded
+            custom["Arm_Left"] = math.rad(random_float(18, 40) * scale)
+            custom["Arm_Right"] = math.rad(random_float(-40, -18) * scale)
+            custom["Leg_Left"] = math.rad(random_float(-12, -4) * scale)
+            custom["Leg_Right"] = math.rad(random_float(4, 12) * scale)
+            custom["Head"] = math.rad(random_float(-15, 15))
+        else
+            -- Severe / impact sprawl with individual random jitter
+            custom["Arm_Left"] = math.rad(random_float(-80, -55) * scale)
+            custom["Arm_Right"] = math.rad(random_float(55, 80) * scale)
+            custom["Leg_Left"] = math.rad(random_float(-45, -25) * scale)
+            custom["Leg_Right"] = math.rad(random_float(25, 45) * scale)
+            custom["Head"] = math.rad(head_angle * scale)
+        end
+    end
+
+    -- Add organic per-joint micro-jitter (±2.5 degrees) so no two poses are identical
+    for bone_name, angle in pairs(custom) do
+        local jitter = math.rad(random_float(-2.5, 2.5))
+        custom[bone_name] = angle + jitter
     end
 
     -- If legs hang over a ledge/cliff, flex them downward toward the drop
@@ -2257,8 +2405,8 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
         local hang_pitch = (ptype == "prone") and math.rad(45)
             or (ptype == "supine") and math.rad(-45)
             or math.rad(-30)
-        local cur_left_z = custom["Leg_Left"] or math.rad(-35 * scale)
-        local cur_right_z = custom["Leg_Right"] or math.rad(35 * scale)
+        local cur_left_z = custom["Leg_Left"] or math.rad(-25 * scale)
+        local cur_right_z = custom["Leg_Right"] or math.rad(25 * scale)
         custom["Leg_Left"] = vector.new(hang_pitch, 0, cur_left_z)
         custom["Leg_Right"] = vector.new(hang_pitch, 0, cur_right_z)
     end
@@ -2266,11 +2414,12 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
     deathstats.fracture_corpse_limbs(corpse, custom)
 end
 
---- Procedurally adjust corpse limb angles during high-speed flight with 3D aerodynamics & flutter
+--- Procedurally adjust corpse limb angles during flight with 3D aerodynamics, vertical drag & bounce shock
 ---@param corpse ObjectRef The corpse entity object
 ---@param velocity Vector Current velocity vector
 ---@param _base_yaw number Facing yaw of the corpse
-function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw)
+---@param bounce_shock number|nil Optional active bounce shock impulse
+function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw, bounce_shock)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
         and (deathstats.config.enable_fall_fractures ~= false)
@@ -2284,18 +2433,22 @@ function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw)
 
     local luaent = corpse.get_luaentity and corpse:get_luaentity()
     local t = (luaent and luaent._timer) or 0
+    local shock = bounce_shock or (luaent and luaent._bounce_shock) or 0
+    local shock_decay = math.min(1.2, math.max(0, shock))
 
-    -- Flaccid harmonic flutter from wind resistance
-    local flutter = math.sin(t * 12.0) * math.min(0.2, speed_3d * 0.025)
+    -- Prominent harmonic flutter from wind resistance (well above 0.05 dirty delta threshold)
+    local flutter = math.sin(t * 14.0) * math.min(math.rad(18), speed_3d * math.rad(3.5))
+    -- Multi-frame damped harmonic recoil ripples through limbs after hard impact
+    local shock_osc = math.sin(t * 18.0) * shock_decay * math.rad(30.0)
 
     -- Dynamic 3D relative limb angles:
-    -- Pitch (X-axis): air drag pushes limbs opposite vertical flight
+    -- Pitch (X-axis): air drag pushes limbs opposite vertical flight (vy > 0 pushes down, vy < 0 drags up)
     -- Yaw (Y-axis): limp sideways splay / oscillation
     -- Roll (Z-axis): planar splay outward along floor plane
-    local arm_pitch = math.min(math.rad(45), math.max(math.rad(-30), -vy * 0.04)) + flutter
-    local arm_roll = math.min(math.rad(55), math.rad(15 + speed_h * 3.5))
-    local leg_pitch = math.min(math.rad(30), math.max(math.rad(-20), -vy * 0.025)) - flutter * 0.5
-    local leg_roll = arm_roll * 0.5
+    local arm_pitch = math.min(math.rad(55), math.max(math.rad(-35), -vy * 0.05)) + flutter + shock_osc * 0.5
+    local arm_roll = math.min(math.rad(70), math.rad(20 + speed_h * 4.0 + shock_decay * 30.0))
+    local leg_pitch = math.min(math.rad(40), math.max(math.rad(-25), -vy * 0.035)) - flutter * 0.5 + shock_osc * 0.3
+    local leg_roll = arm_roll * 0.5 + shock_decay * math.rad(15)
 
     -- Arm_Left: roll negative (splay left), pitch drag
     deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, flutter * 0.5, -arm_roll))
@@ -2305,10 +2458,63 @@ function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw)
     deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_roll))
     -- Leg_Right: roll positive (splay right)
     deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_roll))
-    -- Head: loose floppy neck
-    local head_pitch = math.rad(-15) - math.min(math.rad(20), math.max(0, -vy * 0.03)) + flutter * 0.5
-    local head_yaw = math.sin(t * 8.0) * math.min(math.rad(15), speed_h * 0.02)
+    -- Head: loose floppy neck with whiplash recoil
+    local head_pitch = math.rad(-15) - math.min(math.rad(25), math.max(0, -vy * 0.03)) + flutter * 0.5 - shock_osc * 0.7
+    local head_yaw = math.sin(t * 8.0) * math.min(math.rad(18), speed_h * 0.025) + (math.sin(t * 15.0) * shock_decay * math.rad(20))
     deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
+end
+
+--- Procedurally adjust corpse limbs while sliding along ground or tumbling down stairs/hills
+--- Simulates ground surface friction drag, stair step bumps, and reactive limp jostling
+---@param corpse ObjectRef The corpse entity object
+---@param velocity Vector Current velocity vector
+---@param _base_yaw number Facing yaw of the corpse
+---@param bounce_shock number|nil Active bounce shock impulse
+---@param slide_timer number|nil Accumulated sliding duration in seconds
+function deathstats.update_ragdoll_slide_limbs(corpse, velocity, _base_yaw, bounce_shock, slide_timer)
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
+    local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
+        and (deathstats.config.enable_fall_fractures ~= false)
+    if not fractures_enabled then return end
+
+    local vx = (velocity and velocity.x) or 0
+    local vz = (velocity and velocity.z) or 0
+    local speed_h = math.sqrt(vx * vx + vz * vz)
+    local t = slide_timer or 0
+
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    local shock = bounce_shock or (luaent and luaent._bounce_shock) or 0
+    local shock_decay = math.min(1.2, math.max(0, shock))
+
+    -- Stair step & rough terrain micro-jostle (frequency increases with speed, 12 to 18 rad/s)
+    local bump_freq = 12.0 + math.min(6.0, speed_h * 1.5)
+    local arm_bump = math.sin(t * bump_freq) * math.min(math.rad(22), speed_h * math.rad(4.5))
+    local leg_bump_l = math.sin(t * (bump_freq * 0.9)) * math.min(math.rad(18), speed_h * math.rad(3.5))
+    local leg_bump_r = math.cos(t * (bump_freq * 0.9)) * math.min(math.rad(18), speed_h * math.rad(3.5))
+
+    -- Damped bounce recoil oscillation ripples through limbs after hard surface hits
+    local shock_osc = math.sin(t * 18.0) * shock_decay * math.rad(28.0)
+
+    -- Dynamic surface drag: arms trailing backward along ground, splaying outward
+    local arm_pitch = math.min(math.rad(45), math.max(math.rad(-20), math.rad(10) + arm_bump + shock_decay * math.rad(15)))
+    local arm_roll = math.min(math.rad(65), math.rad(25 + speed_h * 4.5 + shock_decay * 25.0))
+
+    -- Legs splay along ground plane: keep local X/Y pitch strictly 0 for planar ground alignment,
+    -- varying Z-roll (lateral splay) with alternating step/stair jostle
+    local leg_roll_base = math.rad(15 + speed_h * 2.5 + shock_decay * 15.0)
+    local leg_roll_l = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_l))
+    local leg_roll_r = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_r))
+
+    -- Apply bone rotations:
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, math.rad(8), -arm_roll))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, -math.rad(8), arm_roll))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(0, 0, -leg_roll_l))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(0, 0, leg_roll_r))
+
+    -- Head: flopping from terrain bumps and bounce recoil
+    local head_flop = math.sin(t * 10.0) * math.min(math.rad(20), speed_h * math.rad(3.0)) + shock_osc
+    local head_pitch = math.rad(-12) + math.sin(t * bump_freq) * math.rad(8) - shock_decay * math.rad(15)
+    deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_flop, 0))
 end
 
 
@@ -2356,13 +2562,14 @@ end
 ---@param yaw number Orientation yaw in radians
 ---@return number pitch Pitch angle in radians (clamped to [-55°, +55°])
 ---@return number target_y Adjusted ground midpoint elevation for the corpse
+---@return boolean ground_found True if valid walkable ground was probed under corpse
 function deathstats.detect_corpse_slope_pitch(pos, yaw)
-    if not pos then return 0, 0 end
+    if not pos then return 0, 0, false end
     yaw = yaw or 0
 
     -- Floating in liquid: corpses remain level
     if deathstats.is_in_liquid(pos) then
-        return 0, pos.y
+        return 0, pos.y, false
     end
 
     -- In character.b3d lay animation (frames 162-166), body lies backward along spine axis:
@@ -2381,7 +2588,7 @@ function deathstats.detect_corpse_slope_pitch(pos, yaw)
 
     if y_head and y_pelvis then
         local delta_y = y_head - y_pelvis
-        local dist_h = spine_half_span * 2.0 -- 1.0 node baseline
+        local dist_h = spine_half_span * 2.0 -- 1.1 node baseline
 
         -- In Luanti Z-X-Y set_rotation:
         -- Positive pitch around local X tilts the vector at -Z (head) downward.
@@ -2392,13 +2599,15 @@ function deathstats.detect_corpse_slope_pitch(pos, yaw)
         local max_pitch = math.rad(55)
         local pitch = math.max(-max_pitch, math.min(max_pitch, raw_pitch))
 
-        -- Ground contact midpoint: with collisionbox min_y = -0.15, offset by +0.15 so back rests on surface
-        local contact_mid_y = (y_head + y_pelvis) * 0.5
-        local target_y = contact_mid_y + 0.15
-        return pitch, target_y
+        -- Ground contact: anchor directly to body elevation (torso resting flat on ground)
+        -- with a minimal 0.02 block epsilon to prevent coplanar polygon z-fighting
+        local y_body = deathstats.probe_ground_elevation(pos.x, pos.z, pos.y)
+        local contact_y = y_body or ((y_head + y_pelvis) * 0.5)
+        local target_y = contact_y + 0.02
+        return pitch, target_y, true
     end
 
-    return 0, pos.y
+    return 0, pos.y, false
 end
 
 --- Probe 3D terrain elevation surrounding the corpse to determine the true downhill slope gradient
@@ -2521,6 +2730,37 @@ function deathstats.detect_hanging_legs(pos, yaw)
     return (not y_feet) or (y_pelvis - y_feet >= 1)
 end
 
+--- Return the vertical position offset required to keep different resting poses
+--- (supine, prone, lateral) resting flat on top of the ground.
+--- In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed
+--- along the back plane (Y min = -0.108, Y max = +0.427).
+--- Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face
+--- 0.32 blocks into the ground if not offset.
+--- Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.
+---@param pose_type string|nil "supine", "prone", or "lateral"
+---@return number offset Vertical offset in nodes
+function deathstats.get_pose_elevation_offset(pose_type)
+    if pose_type == "prone" then
+        return 0.32
+    elseif pose_type == "lateral" then
+        return 0.16
+    end
+    return 0.0
+end
+
+--- Return the interaction selectionbox bounding box for a given resting pose
+--- to match the physical mesh contact bounds in world space.
+---@param pose_type string|nil "supine", "prone", or "lateral"
+---@return number[] selectionbox Bounding box table { minx, miny, minz, maxx, maxy, maxz }
+function deathstats.get_pose_selectionbox(pose_type)
+    if pose_type == "prone" then
+        return { -0.5, -0.45, -0.5, 0.5, 0.15, 0.5 }
+    elseif pose_type == "lateral" then
+        return { -0.5, -0.30, -0.5, 0.5, 0.30, 0.5 }
+    end
+    return { -0.5, -0.20, -0.5, 0.5, 0.35, 0.5 }
+end
+
 --- Settle the corpse entity to a complete rest at its final position
 ---@param luaent table|ObjectRef The corpse Lua entity table or ObjectRef
 function deathstats.settle_corpse_at_rest(luaent)
@@ -2556,10 +2796,10 @@ function deathstats.settle_corpse_at_rest(luaent)
         if r > math.pi then r = r - 2 * math.pi end
         local abs_r = math.abs(r)
 
-        if abs_r > (3 * math.pi / 4) then
+        if abs_r > (5 * math.pi / 8) then
             pose_type = "prone"
             roll = math.pi
-        elseif abs_r >= (math.pi / 4) and abs_r <= (3 * math.pi / 4) then
+        elseif abs_r >= (3 * math.pi / 8) and abs_r <= (5 * math.pi / 8) then
             pose_type = "lateral"
             roll = (r > 0) and (math.pi / 2) or (-math.pi / 2)
         else
@@ -2572,9 +2812,9 @@ function deathstats.settle_corpse_at_rest(luaent)
     if pos and not deathstats.is_in_liquid(pos) then
         local target_y = nil
         if deathstats.config.enable_slope_pitch ~= false then
-            local detected_pitch, slope_target_y = deathstats.detect_corpse_slope_pitch(pos, base_yaw)
+            local detected_pitch, slope_target_y, ground_found = deathstats.detect_corpse_slope_pitch(pos, base_yaw)
             pitch = detected_pitch or 0
-            if slope_target_y and math.abs(slope_target_y - pos.y) > 0.001
+            if slope_target_y and (ground_found or (ground_found == nil and math.abs(slope_target_y - pos.y) > 0.001))
                 and slope_target_y <= (pos.y + 0.5) and (pos.y - slope_target_y) <= 15.0 then
                 target_y = slope_target_y
             end
@@ -2584,11 +2824,18 @@ function deathstats.settle_corpse_at_rest(luaent)
         if not target_y then
             local surface_y = deathstats.find_ground_surface(pos, nil, luaent._death_info or { category = "fall" })
             if surface_y and surface_y < (pos.y - 0.001) and (pos.y - surface_y) <= 40.0 then
-                target_y = surface_y + 0.15
+                target_y = surface_y + 0.02
             end
         end
 
-        if target_y and obj.set_pos then
+        local pose_offset = deathstats.get_pose_elevation_offset(pose_type)
+        if target_y then
+            target_y = target_y + pose_offset
+        elseif pose_offset > 0 then
+            target_y = pos.y + pose_offset
+        end
+
+        if target_y and (math.abs(target_y - pos.y) > 0.001) and obj.set_pos then
             obj:set_pos(vector.new(pos.x, target_y, pos.z))
             pos = (obj.get_pos and obj:get_pos()) or vector.new(pos.x, target_y, pos.z)
             -- Re-evaluate slope pitch at exact ground position if slope pitch is enabled
@@ -2610,7 +2857,7 @@ function deathstats.settle_corpse_at_rest(luaent)
     end
 
     luaent._applied_bones = nil
-    deathstats.settle_ragdoll_limbs(obj, luaent._impact_damage, pose_type, hanging_legs)
+    deathstats.settle_ragdoll_limbs(obj, luaent._impact_damage, pose_type, hanging_legs, roll)
 
     luaent._settled_pos = pos and vector.new(pos.x, pos.y, pos.z)
 
@@ -2618,7 +2865,7 @@ function deathstats.settle_corpse_at_rest(luaent)
         obj:set_properties({
             physical = false,
             pointable = (deathstats.config.enable_corpse_inspect ~= false),
-            selectionbox = { -0.5, -0.2, -0.5, 0.5, 0.35, 0.5 },
+            selectionbox = deathstats.get_pose_selectionbox(pose_type),
         })
     end
 
@@ -2776,14 +3023,14 @@ function deathstats.is_soft_node(ndef, node_name)
 end
 
 --- Extract an impact sound specification from a node definition table
---- Queries minetest_game and Luanti engine standard sound keys (dug, footstep, place, dig)
+--- Queries Luanti games and engine standard sound keys (dug, footstep, place, dig)
 ---@param ndef table|nil Node definition table
 ---@return string|nil sound_name, number base_gain, number base_pitch
 function deathstats.get_node_impact_sound(ndef)
     if not ndef or type(ndef.sounds) ~= "table" then
         return nil, 1.0, 1.0
     end
-    -- Standard node sound keys in minetest_game and Luanti engine:
+    -- Standard node sound keys in Luanti games and engine:
     -- 'dug': Node struck / dug impact sound (e.g. default_hard_footstep, default_dirt_footstep with gain 1.0)
     -- 'footstep': Stepping sound on the node
     -- 'place': Node placement sound, also played by engine when falling blocks land
@@ -3161,6 +3408,15 @@ core.register_entity("deathstats:corpse", {
                         end
                     end
 
+                    -- Apply immediate physical impact reaction to corpse limbs on bounce
+                    local rebound_v = vector.new(rebound_vx, rebound_vy, rebound_vz)
+                    deathstats.apply_corpse_bounce_impact(self.object, old_impact_vy, rebound_v, self._rot, self._bounce_count)
+
+                    -- Record shock state for decaying rebound flight oscillation
+                    self._bounce_shock = math.min(1.6, math.max(0.35, old_impact_vy / 5.5))
+                    self._bounce_shock_timer = 0.45
+                    self._flail_timer = 1.0 -- immediately allow next flight limb update
+
                     self._last_vy = rebound_vy
                     return
                 end
@@ -3264,6 +3520,30 @@ core.register_entity("deathstats:corpse", {
                     end
 
                     local ground_speed = math.sqrt(new_vx * new_vx + new_vz * new_vz)
+
+                    -- Decay bounce shock timer while on ground
+                    if self._bounce_shock_timer and self._bounce_shock_timer > 0 then
+                        self._bounce_shock_timer = self._bounce_shock_timer - dtime
+                        self._bounce_shock = (self._bounce_shock or 0) * math.exp(-4.5 * dtime)
+                        if self._bounce_shock_timer <= 0 then
+                            self._bounce_shock = 0
+                        end
+                    end
+
+                    -- Dynamic limb movement while sliding on ground or tumbling down stairs/hills
+                    if ground_speed > 0.2 or (self._bounce_shock and self._bounce_shock > 0.05) then
+                        self._flail_timer = (self._flail_timer or 0) + dtime
+                        local flail_hz = deathstats.config.ragdoll_flail_rate or 10.0
+                        local flail_interval = 1.0 / flail_hz
+                        if ground_speed < 1.5 then
+                            flail_interval = flail_interval * 1.5
+                        end
+                        if self._flail_timer >= flail_interval then
+                            self._flail_timer = 0
+                            deathstats.update_ragdoll_slide_limbs(self.object, vector.new(new_vx, cur_v.y, new_vz), self._base_yaw or 0, self._bounce_shock, self._slide_timer)
+                        end
+                    end
+
                     if ground_speed < 0.15 or self._slide_timer > 4.5 then
                         deathstats.settle_corpse_at_rest(self)
                         return
@@ -3307,18 +3587,28 @@ core.register_entity("deathstats:corpse", {
                     end
                 end
 
-                -- Dynamic limb flail during high velocity flight (throttled to ragdoll_flail_rate Hz)
-                local fly_speed = math.sqrt(cur_v.x * cur_v.x + cur_v.z * cur_v.z)
+                -- Dynamic limb flail during high velocity flight or rebound shock (throttled to ragdoll_flail_rate Hz)
+                local speed_3d = math.sqrt(cur_v.x * cur_v.x + cur_v.y * cur_v.y + cur_v.z * cur_v.z)
                 local flail_hz = deathstats.config.ragdoll_flail_rate or 10.0
                 local flail_interval = 1.0 / flail_hz
-                if fly_speed < 2.0 then
+                if speed_3d < 2.0 then
                     flail_interval = flail_interval * 2.0
                 end
-                if fly_speed > 1.2 then
+
+                -- Decay bounce shock timer
+                if self._bounce_shock_timer and self._bounce_shock_timer > 0 then
+                    self._bounce_shock_timer = self._bounce_shock_timer - dtime
+                    self._bounce_shock = (self._bounce_shock or 0) * math.exp(-4.5 * dtime)
+                    if self._bounce_shock_timer <= 0 then
+                        self._bounce_shock = 0
+                    end
+                end
+
+                if speed_3d > 1.0 or (self._bounce_shock and self._bounce_shock > 0.05) then
                     self._flail_timer = (self._flail_timer or 0) + dtime
                     if self._flail_timer >= flail_interval then
                         self._flail_timer = 0
-                        deathstats.update_ragdoll_flight_limbs(self.object, cur_v, self._base_yaw or 0)
+                        deathstats.update_ragdoll_flight_limbs(self.object, cur_v, self._base_yaw or 0, self._bounce_shock)
                     end
                 end
 
@@ -3327,7 +3617,7 @@ core.register_entity("deathstats:corpse", {
                     local ground_y = deathstats.find_ground_surface(pos, nil, self._death_info or { category = "fall" })
                     if ground_y and (pos.y - ground_y) <= 40.0 then
                         if self.object.set_pos then
-                            self.object:set_pos(vector.new(pos.x, ground_y + 0.15, pos.z))
+                            self.object:set_pos(vector.new(pos.x, ground_y + 0.02, pos.z))
                         end
                         deathstats.settle_corpse_at_rest(self)
                         return
@@ -3451,37 +3741,49 @@ core.register_item("deathstats:camera_hand", {
 ---@param corpse ObjectRef The corpse entity object
 ---@param mesh_name string|nil The model mesh name
 function deathstats.pose_corpse(corpse, mesh_name)
-    if not corpse or not corpse.set_animation then return end
+    if not corpse then return end
 
-    local anim_range = nil
+    local anim_def = nil
     local papi = rawget(_G, "player_api")
     if papi and papi.registered_models and mesh_name and papi.registered_models[mesh_name] then
         local model_def = papi.registered_models[mesh_name]
         if model_def.animations then
-            anim_range = model_def.animations.lay or model_def.animations.die
+            anim_def = model_def.animations.lay or model_def.animations.die
         end
     end
 
     local def_mod = rawget(_G, "default")
-    if not anim_range and def_mod and def_mod.registered_player_models and mesh_name and def_mod.registered_player_models[mesh_name] then
+    if not anim_def and def_mod and def_mod.registered_player_models and mesh_name and def_mod.registered_player_models[mesh_name] then
         local model_def = def_mod.registered_player_models[mesh_name]
         if model_def.animations then
-            anim_range = model_def.animations.lay or model_def.animations.die
+            anim_def = model_def.animations.lay or model_def.animations.die
         end
     end
 
     local mcl_p = rawget(_G, "mcl_player")
-    if not anim_range and mcl_p and mcl_p.registered_players then
-        anim_range = { x = 162, y = 166 }
+    if not anim_def and mcl_p and mcl_p.registered_players then
+        anim_def = { x = 162, y = 166 }
     end
 
-    if not anim_range then
-        anim_range = { x = 162, y = 166 }
+    if not anim_def then
+        anim_def = { x = 162, y = 166 }
+    end
+
+    -- Multi-track glTF support (track name string or { track = "lay", ... })
+    local track_name = (type(anim_def) == "string" and anim_def) or (type(anim_def) == "table" and anim_def.track)
+    if track_name then
+        if corpse.play_animation then
+            corpse:play_animation(track_name, { speed = 1, loop = false, priority = 0 })
+        end
+        if corpse.set_animation then
+            corpse:set_animation({ x = 0, y = 0 }, 1, 0, false)
+        end
+        return
     end
 
     -- Freeze pose on the final frame of the lay animation so corpse lies completely flat
     -- Note: frame_speed must be non-zero (1) for the Luanti engine to seek to the frame; loop must be false
-    local target_frame = (type(anim_range) == "table" and (anim_range.y or anim_range[2])) or 166
+    local target_frame = (type(anim_def) == "table" and (anim_def.y or anim_def[2])) or 166
     if corpse.set_animation then
         corpse:set_animation({ x = target_frame, y = target_frame }, 1, 0, false)
     end
@@ -3577,11 +3879,6 @@ end
 ---@return boolean success True if the rotation was applied
 function deathstats.rotate_corpse_bone_planar(corpse, bone_name, z_rad)
     return deathstats.rotate_corpse_bone(corpse, bone_name, vector.new(0, 0, z_rad))
-end
-
---- Helper to generate a random floating point number between min_val and max_val
-local function random_float(min_val, max_val)
-    return min_val + math.random() * (max_val - min_val)
 end
 
 --- Programmatically rotate corpse limbs on fall death to simulate fractured / broken bones.
@@ -3913,10 +4210,10 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             local pose_type = "supine"
             if deathstats.config.ragdoll_resting_poses ~= false then
                 local pick = math.random()
-                if pick < 0.35 then
+                if pick < 0.30 then
                     pose_type = "prone"
                     roll = math.pi
-                elseif pick < 0.70 then
+                elseif pick < 0.60 then
                     pose_type = "lateral"
                     roll = (math.random() < 0.5) and (math.pi / 2) or (-math.pi / 2)
                 else
@@ -3926,13 +4223,22 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             end
 
             local pitch = 0
-            if deathstats.config.enable_slope_pitch ~= false then
-                local detected_pitch, target_y = deathstats.detect_corpse_slope_pitch(corpse_pos, visuals.yaw or 0)
-                pitch = detected_pitch or 0
-                if target_y and math.abs(target_y - corpse_pos.y) <= 1.2 then
-                    if corpse.set_pos then
-                        corpse:set_pos(vector.new(corpse_pos.x, target_y, corpse_pos.z))
+            local in_liquid = deathstats.is_in_liquid(corpse_pos, death_info)
+            if not in_liquid then
+                local pose_offset = deathstats.get_pose_elevation_offset(pose_type)
+                if deathstats.config.enable_slope_pitch ~= false then
+                    local detected_pitch, target_y, ground_found = deathstats.detect_corpse_slope_pitch(corpse_pos, visuals.yaw or 0)
+                    pitch = detected_pitch or 0
+                    if (ground_found or ground_found == nil) and target_y and math.abs(target_y - corpse_pos.y) <= 1.2 then
+                        target_y = target_y + pose_offset
+                        if corpse.set_pos then
+                            corpse:set_pos(vector.new(corpse_pos.x, target_y, corpse_pos.z))
+                        end
+                    elseif pose_offset > 0 and corpse.set_pos then
+                        corpse:set_pos(vector.new(corpse_pos.x, corpse_pos.y + pose_offset, corpse_pos.z))
                     end
+                elseif pose_offset > 0 and corpse.set_pos then
+                    corpse:set_pos(vector.new(corpse_pos.x, corpse_pos.y + pose_offset, corpse_pos.z))
                 end
             end
             if corpse.set_rotation then
@@ -3942,8 +4248,19 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
                 luaent._settled = true
                 luaent._rot = { x = pitch, y = visuals.yaw or 0, z = roll }
                 luaent._pose_type = pose_type
+                local cur_p = (corpse.get_pos and corpse:get_pos()) or corpse_pos
+                luaent._settled_pos = cur_p and vector.new(cur_p.x, cur_p.y, cur_p.z)
             end
-            deathstats.settle_ragdoll_limbs(corpse, (last_blow and last_blow.damage) or 5, pose_type)
+            if corpse.set_properties then
+                corpse:set_properties({
+                    physical = false,
+                    pointable = (deathstats.config.enable_corpse_inspect ~= false),
+                    selectionbox = deathstats.get_pose_selectionbox(pose_type),
+                    collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
+                    stepheight = 0.6,
+                })
+            end
+            deathstats.settle_ragdoll_limbs(corpse, (last_blow and last_blow.damage) or 5, pose_type, nil, roll)
         elseif fractures_enabled then
             deathstats.fracture_corpse_limbs(corpse)
         end
@@ -4648,9 +4965,9 @@ function deathstats.get_player_visuals(player)
         or (skins_mod and skins_mod.armor_loaded == true)
         or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props.textures and #props.textures >= 4)))
 
-    -- Detect if using the standard 3-slot 3d_armor model (3d_armor_character.b3d)
+    -- Detect if using the standard 3-slot 3d_armor model (3d_armor_character.b3d / 3d_armor_character.glb)
     local is_3d_armor = not is_skinsdb and (
-        (mesh == "3d_armor_character.b3d")
+        (mesh == "3d_armor_character.b3d" or mesh == "3d_armor_character.glb")
         or (armor_mod and ((armor_mod.textures and armor_mod.textures[name]) or (mesh and mesh:find("3d_armor"))))
         or (armor_mod and props.textures and #props.textures == 3)
     )
@@ -4734,7 +5051,8 @@ function deathstats.get_player_visuals(player)
 
     -- Standalone 3d_armor support: 3 material slots (skin, armor, wielditem)
     elseif is_3d_armor then
-        mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or "3d_armor_character.b3d"
+        local fallback_armor = (props.mesh and props.mesh:find("%.glb$")) and "3d_armor_character.glb" or "3d_armor_character.b3d"
+        mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or (mesh and mesh:find("3d_armor") and mesh) or fallback_armor
         local a_tex = (armor_mod and armor_mod.textures and armor_mod.textures[name]) or {}
         local skin_tex = a_tex.skin or (props.textures and props.textures[1]) or "character.png"
         local armor_tex = a_tex.armor or "3d_armor_trans.png"
@@ -5152,7 +5470,7 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
-    -- 1b. Check if corpse needs to be spawned / re-spawned once mapblock is loaded
+    -- Check if corpse needs to be spawned / re-spawned once mapblock is loaded
     local should_show_bones = deathstats.get_bones_mode()
     local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
     if not bones_active then
@@ -5182,7 +5500,7 @@ function deathstats.update_death_camera(player, dtime)
             end
         end
 
-        -- 1c. Dynamic corpse tracking: smoothly update orbit_center to follow the moving ragdoll corpse
+        -- Dynamic corpse tracking: smoothly update orbit_center to follow the moving ragdoll corpse
         if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) and data.corpse.get_pos then
             local cpos = data.corpse:get_pos()
             if cpos then
@@ -5286,7 +5604,7 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
-    -- 1d. Check if camera anchor needs to be re-instantiated if lost across engine reload
+    -- Check if camera anchor needs to be re-instantiated if lost across engine reload
     if (not data.anchor or (data.anchor.is_valid and not data.anchor:is_valid())) and data.orbit_center then
         local new_anchor = core.add_entity(data.orbit_center, "deathstats:camera_anchor")
         if new_anchor then
@@ -5475,7 +5793,7 @@ function deathstats.update_death_camera(player, dtime)
     -- Advance orbit angle smoothly only after ragdoll corpse has settled
     data.orbit_speed = data.orbit_speed or deathstats.config.orbit_speed or 0.4
     if data.corpse_settled ~= false then
-        data.orbit_angle = ((data.orbit_angle or 0) + data.orbit_speed * (dtime or 0)) % (2 * math.pi)
+        data.orbit_angle = (data.orbit_angle or 0) + data.orbit_speed * (dtime or 0)
     end
     local angle = data.orbit_angle or (data.yaw or 0)
     data.orbit_angle = angle
@@ -5486,19 +5804,20 @@ function deathstats.update_death_camera(player, dtime)
 
     -- Raycast obstacle detection to prevent camera clipping into walls / terrain.
     -- Uses a continuous clearance buffer (zero boundary step discontinuity) and multi-angle probing.
-    local buffer = 0.45
+    local buffer = 0.35
     local probe_radius = radius + buffer
     local nominal_ratio = height / math.max(0.1, radius)
     local probe_height = probe_radius * nominal_ratio
 
     if core.raycast and data.orbit_center then
-        local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.8, data.orbit_center.z)
+        local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.5, data.orbit_center.z)
         local min_clear_r = probe_radius
 
         -- Directional lookahead probing: check primary camera sightline plus forward lookahead (+0.06 rad)
         -- to detect approaching walls before camera sweeps into them while avoiding phantom drag from past obstacles
-        for step = 1, 2 do
-            local p_angle = (step == 1) and angle or (angle + 0.06)
+        local probe_steps = { 0, 0.06 }
+        for _, offset_angle in ipairs(probe_steps) do
+            local p_angle = angle + offset_angle
             local cam_x = data.orbit_center.x + probe_radius * math.sin(p_angle)
             local cam_y = data.orbit_center.y + probe_height
             local cam_z = data.orbit_center.z - probe_radius * math.cos(p_angle)
@@ -5510,16 +5829,16 @@ function deathstats.update_death_camera(player, dtime)
                     local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
                     if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
                         local hit_pos = pointed_thing.intersection_point or pointed_thing.under
-                        -- Safely ignore floor nodes directly beneath/around the corpse (not an obstacle)
-                        local is_ground = (hit_pos.y <= data.orbit_center.y + 0.35)
-                            and (math.abs(hit_pos.x - data.orbit_center.x) <= 1.0)
-                            and (math.abs(hit_pos.z - data.orbit_center.z) <= 1.0)
+                        -- Only ignore floor strictly beneath corpse feet/pelvis level
+                        local is_ground = (hit_pos.y <= data.orbit_center.y - 0.1)
+                            and (math.abs(hit_pos.x - data.orbit_center.x) <= 0.6)
+                            and (math.abs(hit_pos.z - data.orbit_center.z) <= 0.6)
                         if not is_ground then
                             -- Project 3D hit point to horizontal orbit radius from orbit center
                             local hx = hit_pos.x - data.orbit_center.x
                             local hz = hit_pos.z - data.orbit_center.z
                             local hit_r = math.sqrt(hx * hx + hz * hz)
-                            if hit_r >= 0.8 and hit_r < min_clear_r then
+                            if hit_r >= 0.4 and hit_r < min_clear_r then
                                 min_clear_r = hit_r
                             end
                             break
@@ -5529,9 +5848,19 @@ function deathstats.update_death_camera(player, dtime)
             end
         end
 
-        -- Continuous safe radius: as an obstacle approaches, target_radius transitions
-        -- smoothly from full radius downward with zero boundary step jump (no cliff)
-        target_radius = math.max(1.2, math.min(radius, min_clear_r - buffer))
+        -- Allow camera to zoom in down to 0.4 blocks to avoid penetrating steep terrain or walls
+        target_radius = math.max(0.4, math.min(radius, min_clear_r - buffer))
+
+        -- Additional node clearance check: ensure camera eye point is not inside a solid block
+        local cam_x = data.orbit_center.x + target_radius * math.sin(angle)
+        local cam_y = data.orbit_center.y + target_radius * nominal_ratio
+        local cam_z = data.orbit_center.z - target_radius * math.cos(angle)
+        local eye_pos = vector.round(vector.new(cam_x, cam_y, cam_z))
+        local node_at_cam = core.get_node_or_nil(eye_pos)
+        local def_cam = node_at_cam and node_at_cam.name ~= "ignore" and core.registered_nodes[node_at_cam.name]
+        if def_cam and def_cam.walkable and node_at_cam.name ~= "air" and def_cam.drawtype ~= "airlike" then
+            target_radius = math.max(0.4, target_radius - 0.6)
+        end
     end
 
     -- Smoothly interpolate current radius toward target radius using framerate-independent exponential damping.
@@ -5545,9 +5874,10 @@ function deathstats.update_death_camera(player, dtime)
     else
         if target_radius < data.eff_radius - 0.02 then
             -- Obstacle detected closer than current camera radius:
-            -- React smoothly and promptly to avoid clipping, and refresh the hold timer
+            -- React rapidly when following a moving corpse (12.0) to prevent ground penetration
             data.obstacle_hold_timer = 0.5
-            local lerp_speed = 4.5
+            local is_moving = (data.corpse_settled == false)
+            local lerp_speed = is_moving and 12.0 or 4.5
             local factor = 1.0 - math.exp(-lerp_speed * dt)
             data.eff_radius = data.eff_radius + (target_radius - data.eff_radius) * factor
         elseif target_radius > data.eff_radius + 0.02 then
@@ -5605,9 +5935,10 @@ function deathstats.update_death_camera(player, dtime)
 
     -- Suppress redundant horizontal yaw updates to avoid packet flooding (deadband 0.008 rad matching 08cdd88)
     if player.set_look_horizontal then
-        local cur_yaw = player.get_look_horizontal and player:get_look_horizontal()
-        if not cur_yaw or math.abs(angle - cur_yaw) > 0.008 then
+        local last_yaw = data.last_sent_yaw
+        if not last_yaw or math.abs(angle - last_yaw) > 0.008 then
             player:set_look_horizontal(angle)
+            data.last_sent_yaw = angle
         end
     end
     -- Suppress redundant vertical pitch updates to avoid packet flooding (deadband 0.005 rad matching 08cdd88)
@@ -6508,6 +6839,12 @@ core.register_on_leaveplayer(function(player)
     deathstats.set_engine_player_attached(name, nil)
     deathstats.player_camera_data[name] = nil
     deathstats.respawn_immunity[name] = nil
+    if deathstats.last_death_reason then
+        deathstats.last_death_reason[name] = nil
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.hidden_huds then
+        deathstats.compat_hunger.hidden_huds[name] = nil
+    end
 end)
 
 -- Guard all interaction callbacks: orbiting dead players cannot punch, place, dig, or eat
@@ -6775,7 +7112,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
     -- Setup HUD Elements positioned down around the horizon
     local huds = {}
 
-    -- A. Fullscreen Splatter Vignette Overlay (Thematic per death type)
+    -- Fullscreen Splatter Vignette Overlay (Thematic per death type)
     local blood_opacity = deathstats.config.blood_splatter_opacity
     local overlay_tex = "deathstats_blood_splatter.png"
     if death_info then
@@ -6797,7 +7134,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         z_index = 100,
     })
 
-    -- B. "YOU DIED" Banner centered horizontally, moved to y=0.20
+    -- "YOU DIED" Banner centered horizontally, moved to y=0.20
     -- Responsive scale calculated to preserve natural texture aspect ratio (1376x558)
     local target_scale_x, target_scale_y = deathstats.get_banner_responsive_scale(player)
     local initial_scale_x = deathstats.config.enable_animation and (target_scale_x * 0.15) or target_scale_x
@@ -6824,7 +7161,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
         z_index = 200,
     })
 
-    -- C. Subtitle 1: Death Cause & Weapon (pure white font, moved to y=0.33)
+    -- Primary Subtitle: Death Cause & Weapon (pure white font, moved to y=0.33)
     local cause_text = death_info.reason_text or "You died"
     local initial_cause = deathstats.config.enable_animation and "" or cause_text
     huds.cause = player:hud_add({
@@ -6837,7 +7174,7 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
     })
     huds.cached_cause = cause_text
 
-    -- D. Subtitle 2: Funny Epitaph Note (soft white, moved to y=0.37)
+    -- Secondary Subtitle: Funny Epitaph Note (soft white, moved to y=0.37)
     local funny_text = "“" .. (death_info.funny_note or "Mistakes were made.") .. "”"
     local initial_funny = deathstats.config.enable_animation and "" or funny_text
     huds.funny = player:hud_add({
