@@ -48,6 +48,8 @@ end
 -- Mined Blocks & Ore Breakdown (Tracks dropped items via core.get_node_drops)
 core.register_on_dignode(function(_pos, oldnode, digger)
     if not digger or not digger:is_player() then return end
+    local name = digger:get_player_name()
+    if deathstats.dead_players and deathstats.dead_players[name] then return end
     local data = deathstats.get_player_data(digger)
     if not data then return end
 
@@ -113,6 +115,8 @@ end)
 -- Crafted Items
 core.register_on_craft(function(itemstack, player, _old_craft_grid, _craft_inv)
     if not player or not player:is_player() then return end
+    local name = player:get_player_name()
+    if deathstats.dead_players and deathstats.dead_players[name] then return end
     local data = deathstats.get_player_data(player)
     if not data then return end
 
@@ -124,6 +128,8 @@ end)
 -- Consumed Items (Food / Potions)
 core.register_on_item_eat(function(_hp_change, _replace_with_item, _itemstack, user, _pointed_thing)
     if not user or not user:is_player() then return end
+    local name = user:get_player_name()
+    if deathstats.dead_players and deathstats.dead_players[name] then return end
     deathstats.reset_player_activity(user)
     local data = deathstats.get_player_data(user)
     if not data then return end
@@ -395,6 +401,9 @@ core.register_on_leaveplayer(function(player)
     deathstats.recent_starvations[name] = nil
     deathstats.recent_dehydrations[name] = nil
     deathstats.last_blow[name] = nil
+    if deathstats.last_death_reason then
+        deathstats.last_death_reason[name] = nil
+    end
 end)
 
 core.register_on_shutdown(function()
@@ -410,9 +419,23 @@ deathstats.fall_peaks = deathstats.fall_peaks or {}
 
 core.register_globalstep(function(dtime)
     fall_timer = fall_timer + dtime
-    if fall_timer >= 0.1 then
+    dist_timer = dist_timer + dtime
+
+    local do_fall = fall_timer >= 0.1
+    local do_dist = dist_timer >= 1.0
+
+    if not do_fall and not do_dist then return end
+
+    local players = core.get_connected_players()
+    if #players == 0 then
+        if do_fall then fall_timer = 0 end
+        if do_dist then dist_timer = 0 end
+        return
+    end
+
+    if do_fall then
         fall_timer = 0
-        for _, player in ipairs(core.get_connected_players()) do
+        for _, player in ipairs(players) do
             local name = player:get_player_name()
             if not deathstats.dead_players[name] then
                 local vel = (player.get_velocity and player:get_velocity())
@@ -433,36 +456,28 @@ core.register_globalstep(function(dtime)
         end
     end
 
-    dist_timer = dist_timer + dtime
-    if dist_timer < 1.0 then return end
-    dist_timer = 0
-
-    for _, player in ipairs(core.get_connected_players()) do
-        local name = player:get_player_name()
-        -- Skip dead players: no movement distance or fall speed tracking while deceased
-        if not deathstats.dead_players[name] then
-            local data = deathstats.players[name]
-            if data then
-                local pos = player:get_pos()
-                if data.last_pos then
-                    local dx = pos.x - data.last_pos.x
-                    local dy = pos.y - data.last_pos.y
-                    local dz = pos.z - data.last_pos.z
-                    local dist_sq = dx * dx + dy * dy + dz * dz
-                    -- Only count natural movements, ignore sub-millimeter noise (<= 0.05m) and teleports (>= 50m/s)
-                    if dist_sq > 0.0025 and dist_sq < 2500.0 then
-                        local dist = math.sqrt(dist_sq)
-                        data.current_run.distance_traveled = data.current_run.distance_traveled + dist
-                        data.lifetime.distance_traveled = data.lifetime.distance_traveled + dist
+    if do_dist then
+        dist_timer = 0
+        for _, player in ipairs(players) do
+            local name = player:get_player_name()
+            -- Skip dead players: no movement distance tracking while deceased
+            if not deathstats.dead_players[name] then
+                local data = deathstats.players[name]
+                if data then
+                    local pos = player:get_pos()
+                    if data.last_pos then
+                        local dx = pos.x - data.last_pos.x
+                        local dy = pos.y - data.last_pos.y
+                        local dz = pos.z - data.last_pos.z
+                        local dist_sq = dx * dx + dy * dy + dz * dz
+                        -- Only count natural movements, ignore sub-millimeter noise (<= 0.05m) and teleports (>= 50m/s)
+                        if dist_sq > 0.0025 and dist_sq < 2500.0 then
+                            local dist = math.sqrt(dist_sq)
+                            data.current_run.distance_traveled = data.current_run.distance_traveled + dist
+                            data.lifetime.distance_traveled = data.lifetime.distance_traveled + dist
+                        end
                     end
-                end
-                data.last_pos = pos
-
-                -- Track vertical speed for fall damage detection
-                local vel = (player.get_velocity and player:get_velocity())
-                    or (player.get_player_velocity and player:get_player_velocity())
-                if vel then
-                    deathstats.recent_falls[name] = vel.y
+                    data.last_pos = pos
                 end
             end
         end

@@ -75,6 +75,8 @@ core.register_globalstep(function(dtime)
                 local safe_dt = math.min(dtime or 0.05, 0.1)
                 deathstats.update_death_camera(player, safe_dt)
             end
+        else
+            deathstats.dead_players[name] = nil
         end
     end
 

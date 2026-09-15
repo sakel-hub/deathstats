@@ -1531,6 +1531,7 @@ core.register_on_leaveplayer(function(player)
     deathstats.hide_scoreboard_hud(player)
     local name = player:get_player_name()
     deathstats.open_scoreboard_formspecs[name] = nil
+    deathstats.open_scoreboard_tabs[name] = nil
     deathstats.last_activity[name] = nil
     deathstats.player_last_pos[name] = nil
     deathstats.player_last_look[name] = nil
