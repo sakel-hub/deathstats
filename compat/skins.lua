@@ -19,6 +19,8 @@ local KNOWN_HUMANOID_MESHES = {
     ["skinsdb_3d_armor_character_5.b3d"] = true,
     ["character_female.b3d"] = true,
     ["myappearance_character.b3d"] = true,
+    ["character.glb"] = true,
+    ["3d_armor_character.glb"] = true,
 }
 
 
@@ -336,7 +338,7 @@ function cs.get_player_visuals(player)
         or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props and props.textures and #props.textures >= 4)))
 
     local is_3d_armor = not is_skinsdb and (
-        (raw_mesh == "3d_armor_character.b3d")
+        (raw_mesh == "3d_armor_character.b3d" or raw_mesh == "3d_armor_character.glb")
         or (armor_mod and ((armor_mod.textures and armor_mod.textures[name]) or (raw_mesh and raw_mesh:find("3d_armor"))))
         or (armor_mod and props and props.textures and #props.textures == 3)
     )
@@ -346,10 +348,11 @@ function cs.get_player_visuals(player)
     if is_skinsdb then
         mesh = "skinsdb_3d_armor_character_5.b3d"
     elseif is_3d_armor then
-        mesh = (cs.is_humanoid_mesh(raw_mesh) and raw_mesh) or "3d_armor_character.b3d"
+        local fallback_mesh = (raw_mesh and raw_mesh:find("%.glb$")) and "3d_armor_character.glb" or "3d_armor_character.b3d"
+        mesh = (cs.is_humanoid_mesh(raw_mesh) and raw_mesh) or fallback_mesh
     else
         if not cs.is_humanoid_mesh(mesh) then
-            mesh = "character.b3d"
+            mesh = (raw_mesh and raw_mesh:find("%.glb$")) and "character.glb" or "character.b3d"
         end
     end
 
