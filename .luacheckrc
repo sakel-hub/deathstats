@@ -72,6 +72,7 @@ read_globals = {
 
     "default",
     "player_api",
+    "x_player_api",
     "mcl_core",
     "mcl_player",
     "mcl_mobs",

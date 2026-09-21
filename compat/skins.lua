@@ -35,8 +35,8 @@ function cs.is_humanoid_mesh(mesh)
     if KNOWN_HUMANOID_MESHES[mesh] then
         return true
     end
-    -- Check player_api registered models
-    local papi = rawget(_G, "player_api")
+    -- Check x_player_api or player_api registered models
+    local papi = rawget(_G, "x_player_api") or rawget(_G, "player_api")
     if papi and papi.registered_models and papi.registered_models[mesh] then
         return true
     end
@@ -220,6 +220,35 @@ function cs.extract_base_skin(player, name)
         end
     end
 
+    -- x_player_api (proxy-based visuals & real skin storage)
+    local xpapi = rawget(_G, "x_player_api")
+    if xpapi then
+        if type(xpapi.get_textures) == "function" then
+            local p_tex = xpapi.get_textures(player)
+            if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
+                    and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png" then
+                return p_tex[1], nil, "1.0", vs_x, vs_y
+            end
+        end
+        local pdata = xpapi.get_player_data and xpapi.get_player_data(player)
+        if pdata and pdata.textures and pdata.textures[1] and pdata.textures[1] ~= ""
+                and pdata.textures[1] ~= "blank.png" and pdata.textures[1] ~= "deathstats_transparent.png" then
+            return pdata.textures[1], nil, "1.0", vs_x, vs_y
+        end
+        local proxies = xpapi.get_visual_proxies and xpapi.get_visual_proxies(player)
+        if proxies then
+            local proxy = proxies.glb or proxies.b3d
+            if proxy and proxy.is_valid and proxy:is_valid() then
+                local p_props = proxy:get_properties()
+                if p_props and p_props.textures and p_props.textures[1]
+                        and p_props.textures[1] ~= "blank.png" and p_props.textures[1] ~= ""
+                        and p_props.textures[1] ~= "deathstats_transparent.png" then
+                    return p_props.textures[1], nil, "1.0", vs_x, vs_y
+                end
+            end
+        end
+    end
+
     -- player_api get_textures
     local player_api_mod = rawget(_G, "player_api")
     if player_api_mod and type(player_api_mod.get_textures) == "function" then
@@ -326,8 +355,32 @@ function cs.get_player_visuals(player)
         end
     end
 
+    -- Extract x_player_api real model / proxy mesh if active
+    local xpapi = rawget(_G, "x_player_api")
+    local xp_mesh = nil
+    if xpapi then
+        if xpapi.get_model_name then
+            xp_mesh = xpapi.get_model_name(player)
+        end
+        local proxies = xpapi.get_visual_proxies and xpapi.get_visual_proxies(player)
+        if proxies then
+            if proxies.glb and proxies.glb.is_valid and proxies.glb:is_valid() then
+                local glb_props = proxies.glb:get_properties()
+                if glb_props and glb_props.mesh and glb_props.mesh ~= "" then
+                    xp_mesh = glb_props.mesh
+                end
+            elseif proxies.b3d and proxies.b3d.is_valid and proxies.b3d:is_valid() then
+                local b3d_props = proxies.b3d:get_properties()
+                if b3d_props and b3d_props.mesh and b3d_props.mesh ~= "" then
+                    xp_mesh = b3d_props.mesh
+                end
+            end
+        end
+    end
+
     -- Determine slot architecture
-    local raw_mesh = (armor_mod and armor_mod.models and armor_mod.models[name])
+    local raw_mesh = xp_mesh
+        or (armor_mod and armor_mod.models and armor_mod.models[name])
         or custom_mesh
         or (props and props.mesh)
         or "character.b3d"

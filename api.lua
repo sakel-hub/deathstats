@@ -4770,23 +4770,19 @@ function deathstats.hook_animation_function(mod_table, fn_name)
     end
 end
 
--- Hook available player animation handlers immediately
-deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
-deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
-deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
-
--- Also hook in on_mods_loaded in case a mod initialized late
+-- Hook available player animation handlers once all mods have loaded
 core.register_on_mods_loaded(function()
+    deathstats.hook_animation_function(rawget(_G, "x_player_api"), "set_animation")
     deathstats.hook_animation_function(rawget(_G, "player_api"), "set_animation")
     deathstats.hook_animation_function(rawget(_G, "default"), "player_set_animation")
     deathstats.hook_animation_function(rawget(_G, "mcl_player"), "player_set_animation")
 end)
 
---- Set or clear the player_attached flag in player_api and default mods
+--- Set or clear the player_attached flag in player_api / x_player_api and default mods
 ---@param name string The player name
 ---@param attached boolean|nil True if attached, nil to clear
 function deathstats.set_engine_player_attached(name, attached)
-    local papi = rawget(_G, "player_api")
+    local papi = rawget(_G, "x_player_api") or rawget(_G, "player_api")
     if papi and papi.player_attached then
         papi.player_attached[name] = attached
     end

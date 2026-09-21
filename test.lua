@@ -617,6 +617,7 @@ local function create_mock_player(name)
         hud_id_counter = 1,
         get_player_name = function(self) return self.name end,
         is_player = function(self) return true end,
+        is_valid = function(self) return true end,
         attached_parent = nil,
         set_attach = function(self, parent, bone, pos, rot, forced_visible)
             self.attached_parent = parent
@@ -4080,6 +4081,7 @@ local function run_test_suite_44()
     -- Non-humanoid fallback (e.g. quadrupeds, non-player entities)
     local mock_mob = {
         is_player = function() return false end,
+        is_valid = function() return true end,
         get_properties = function() return { mesh = "mobs_animal_cow.b3d" } end,
     }
     local mob_bone, mob_pos, mob_rot = xbmod.calculate_impact_bone(
@@ -4093,6 +4095,7 @@ local function run_test_suite_44()
     -- Missing bone in target model fallback to Body
     local mock_missing_head = {
         is_player = function() return false end,
+        is_valid = function() return true end,
         get_properties = function() return { mesh = "character.b3d" } end,
         get_bone_position = function(self, b)
             if b == "Body" then return vector.new(0, 0, 0) end
@@ -9510,5 +9513,80 @@ suites[96] = function()
 end
 suites[96]()
 
-print("\nALL 96 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 97: x_player_api Visual Proxy & Dual-Model Corpse Extraction ---
+suites[97] = function()
+    print("\n--- TEST 97: x_player_api Visual Proxy & Dual-Model Corpse Extraction ---")
+
+    local saved_xpapi = rawget(_G, "x_player_api")
+
+    local mock_glb_proxy = {
+        is_valid = function() return true end,
+        get_properties = function()
+            return {
+                mesh = "character.glb",
+                textures = { "hero_skin.png" },
+            }
+        end,
+    }
+
+    local mock_xpapi = {
+        registered_models = {
+            ["custom_hero.glb"] = { mesh = "custom_hero.glb" },
+        },
+        player_attached = {},
+        get_model_name = function(_player)
+            return "character.glb"
+        end,
+        get_textures = function(_player)
+            return { "hero_skin.png" }
+        end,
+        get_visual_proxies = function(_player)
+            return {
+                glb = mock_glb_proxy,
+                b3d = nil,
+            }
+        end,
+        set_animation = function(_player, _anim) end,
+    }
+    rawset(_G, "x_player_api", mock_xpapi)
+
+    -- Verify humanoid model check recognizes x_player_api models
+    local is_human = deathstats.compat_skins.is_humanoid_mesh("custom_hero.glb")
+    assert(is_human == true, "x_player_api registered models must be recognized as humanoid")
+
+    -- Setup mock player whose native properties have blank textures (standard x_player_api proxy hiding)
+    local p_xp = create_mock_player("ProxyPlayer")
+    p_xp.properties.textures = { "blank.png", "blank.png", "blank.png" }
+    p_xp.properties.mesh = "character.b3d"
+
+    -- Verify base skin extraction penetrates blank textures to retrieve real proxy skin
+    local skin_tex = deathstats.compat_skins.extract_base_skin(p_xp, "ProxyPlayer")
+    assert(skin_tex == "hero_skin.png",
+        string.format("Expected extracted skin 'hero_skin.png', got '%s'", tostring(skin_tex)))
+
+    -- Verify get_player_visuals retrieves GLB mesh from active proxy
+    local visuals = deathstats.compat_skins.get_player_visuals(p_xp)
+    assert(visuals.mesh == "character.glb",
+        string.format("Expected corpse mesh 'character.glb', got '%s'", tostring(visuals.mesh)))
+    assert(visuals.textures[1] == "hero_skin.png",
+        string.format("Expected corpse texture 'hero_skin.png', got '%s'", tostring(visuals.textures[1])))
+
+    -- Verify set_engine_player_attached sets x_player_api.player_attached
+    deathstats.set_engine_player_attached("ProxyPlayer", true)
+    assert(mock_xpapi.player_attached["ProxyPlayer"] == true, "x_player_api.player_attached must be set")
+    deathstats.set_engine_player_attached("ProxyPlayer", nil)
+    assert(mock_xpapi.player_attached["ProxyPlayer"] == nil, "x_player_api.player_attached must be cleared")
+
+    -- Verify animation hook wrapping
+    deathstats.hook_animation_function(mock_xpapi, "set_animation")
+    assert(deathstats.hooked_animations[mock_xpapi.set_animation] == true,
+        "x_player_api.set_animation must be hooked")
+
+    rawset(_G, "x_player_api", saved_xpapi)
+
+    print("  [PASS] x_player_api Visual Proxy & Dual-Model Corpse Extraction")
+end
+suites[97]()
+
+print("\nALL 97 TEST SUITES PASSED SUCCESSFULLY!")
 
