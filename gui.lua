@@ -273,7 +273,9 @@ end)
 -- Engine Hooks & Overrides
 -- ==========================================
 
--- Override core.show_death_screen to suppress the default engine death formspec
+--- Override core.show_death_screen to suppress the default engine death formspec
+---@param player ObjectRef The deceased player
+---@param reason table|nil The death cause or reason table
 function core.show_death_screen(player, reason)
     local meta = player and player:get_meta()
     local is_reconnect = player and player:get_hp() <= 0 and meta and (meta:get_string("deathstats:death_active") == "1")

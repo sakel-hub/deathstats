@@ -2880,7 +2880,7 @@ function deathstats.ensure_corpse_clearance(pos, yaw, is_wall_sitting)
     if not pos then return pos end
     local px, py, pz = pos.x, pos.y, pos.z
 
-    -- 1. If resting against a wall (wall_sit, slouch), nudge forward away from the wall behind
+    -- If resting against a wall (wall_sit, slouch), nudge forward away from the wall behind
     if is_wall_sitting and yaw then
         local f_x = -math.sin(yaw)
         local f_z = math.cos(yaw)
@@ -2899,7 +2899,7 @@ function deathstats.ensure_corpse_clearance(pos, yaw, is_wall_sitting)
         end
     end
 
-    -- 2. General check: if corpse torso is inside a walkable solid block, push to nearest open air
+    -- If corpse torso is inside a walkable solid block, push to nearest open air
     scratch_pos.x = px
     scratch_pos.y = py + 0.5
     scratch_pos.z = pz
@@ -4416,7 +4416,10 @@ end
 function deathstats.unhide_corpse_arrows(corpse)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     if not corpse.get_children then return end
-    for _, child in ipairs(corpse:get_children()) do
+    local children = corpse:get_children()
+    if type(children) ~= "table" then return end
+    for i = 1, #children do
+        local child = children[i]
         if child and (not child.is_valid or child:is_valid()) then
             local cent = child.get_luaentity and child:get_luaentity()
             if cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:"))) then
@@ -5197,14 +5200,14 @@ end
 
 
 
+deathstats.hooked_animations = {}
+
 --- Wrap an animation function to prevent death animation looping while a player is dead
 --- In Luanti Game (MTG) / Repixture, player_api.globalstep calls player_set_animation(player, "lay") every tick
 --- which defaults to loop = true at 30 fps, causing a violent 0.13s death replay loop.
 --- This hook forces loop = false and speed = 1 so the character cleanly stays in the final flat pose.
 ---@param mod_table table|nil The mod table containing the animation function
 ---@param fn_name string The name of the animation function
-deathstats.hooked_animations = {}
-
 function deathstats.hook_animation_function(mod_table, fn_name)
     if mod_table and type(mod_table) == "table" and type(mod_table[fn_name]) == "function" and not deathstats.hooked_animations[mod_table[fn_name]] then
         local orig_fn = mod_table[fn_name]

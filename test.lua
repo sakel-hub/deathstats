@@ -8300,7 +8300,8 @@ suites[88] = function()
         blast_pos = { x = 0, y = 5, z = -8 },
     }
 
-    local vel, pitch = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    local vel, rot = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    local pitch = (type(rot) == "table" and rot.x) or rot
     assert(vel.z > 0, "Corpse must be propelled forward (z > 0) away from explosion behind player")
     assert(pitch < 0, "Corpse pitch must be negative (hurled onto face/prone) when blast is behind")
 
@@ -8310,7 +8311,8 @@ suites[88] = function()
         damage = 30,
         blast_pos = { x = 0, y = 5, z = 8 },
     }
-    local vel_front, pitch_front = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    local vel_front, rot_front = deathstats.calculate_corpse_impulse(p, { type = "explosion", damage = 30 })
+    local pitch_front = (type(rot_front) == "table" and rot_front.x) or rot_front
     assert(vel_front.z < 0, "Corpse must be propelled backward (z < 0) away from explosion in front of player")
     assert(pitch_front > 0, "Corpse pitch must be positive (flung backward onto back/supine) when blast is in front")
 
@@ -9659,6 +9661,8 @@ suites[98] = function()
         remove = function() end,
     }
     deathstats.remove_corpse(void_corpse)
+    deathstats.unhide_corpse_arrows(void_corpse)
+    deathstats.unhide_corpse_arrows(nil)
 
     local corpse_with_children = {
         is_valid = function() return true end,
@@ -9858,7 +9862,7 @@ suites[100] = function()
     local c_ent = c_obj:get_luaentity()
     assert(c_ent ~= nil, "corpse luaentity must be created")
 
-    -- 1. In-air physics step: test scratch_vel and aerodynamic drag
+    -- In-air physics step: test scratch_vel and aerodynamic drag
     c_obj:set_velocity({ x = 4.0, y = -12.0, z = 4.0 })
     c_ent:on_step(0.05, { touching_ground = false, collisions = {} })
     local v_air = c_obj:get_velocity()
@@ -9866,7 +9870,7 @@ suites[100] = function()
         "get_velocity must return valid table after in-air step")
     assert(v_air.x < 4.0 and v_air.z < 4.0, "air drag must dampen horizontal velocity")
 
-    -- 2. Multi-collision moveresult iteration: tests numeric 1..#moveresult.collisions
+    -- Multi-collision moveresult iteration: tests numeric 1..#moveresult.collisions
     local multi_mr = {
         touching_ground = false,
         collisions = {
@@ -9881,13 +9885,13 @@ suites[100] = function()
     local v_bounce = c_obj:get_velocity()
     assert(v_bounce.y > 0, "rebound velocity must be positive upward")
 
-    -- 3. Ground sliding & kinetic friction step
+    -- Ground sliding & kinetic friction step
     c_obj:set_velocity({ x = 3.0, y = 0, z = 3.0 })
     c_ent:on_step(0.05, { touching_ground = true, collisions = {} })
     local v_ground = c_obj:get_velocity()
     assert(v_ground.x < 3.0 and v_ground.z < 3.0, "kinetic ground friction must slow horizontal velocity")
 
-    -- 4. Liquid drag step (lava and water)
+    -- Liquid drag step (lava and water)
     local lava_obj = core.add_entity({ x = 0, y = 5, z = 0 }, "deathstats:corpse")
     local lava_ent = lava_obj:get_luaentity()
     core.set_node({ x = 0, y = 5, z = 0 }, { name = "default:lava_source" })
@@ -9897,7 +9901,7 @@ suites[100] = function()
     assert(v_lava.x < 2.0 and v_lava.z < 2.0, "lava viscous drag must dampen velocity")
     lava_obj:remove()
 
-    -- 5. Airborne failsafe pos update via scratch_pos
+    -- Airborne failsafe pos update via scratch_pos
     local fail_obj = core.add_entity({ x = 0, y = 20, z = 0 }, "deathstats:corpse")
     local fail_ent = fail_obj:get_luaentity()
     fail_ent._air_timer = 10.5
@@ -9913,7 +9917,7 @@ suites[100]()
 suites[101] = function()
     print("\n--- TEST 101: Wall Clearance, Prone Particle Inversion, Liquid Buoyancy & Shutdown Safety ---")
 
-    -- 1. Wall Clearance & Ambient Light Sampling
+    -- Wall Clearance & Ambient Light Sampling
     -- Set up a wall at z = 49 (behind a player facing north / yaw=0)
     core.set_node({ x = 50, y = 5, z = 49 }, { name = "default:stone" })
     core.set_node({ x = 50, y = 5, z = 50 }, { name = "air" })
@@ -9926,7 +9930,7 @@ suites[101] = function()
     local mock_light = deathstats.sample_corpse_ambient_light(cleared_pos, 0)
     assert(mock_light ~= nil and mock_light >= 0, "sample_corpse_ambient_light must return non-nil light value")
 
-    -- 2. Prone Face-Down Particle Vector Inversion (roll = math.pi)
+    -- Prone Face-Down Particle Vector Inversion (roll = math.pi)
     local rot_prone = { x = 0, y = 0, z = math.pi }
     local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot_prone, 0.4, 0.9, 0.1)
     -- With roll = pi, local Y must be negative so that world-space transformation yields positive Y (upwards)
@@ -9953,7 +9957,7 @@ suites[101] = function()
 
     dummy_corpse:remove()
 
-    -- 3. Liquid Buoyancy: Submerged Corpse Floats Upward
+    -- Liquid Buoyancy: Submerged Corpse Floats Upward
     core.set_node({ x = 60, y = 5, z = 60 }, { name = "default:water_source" })
     core.set_node({ x = 60, y = 6, z = 60 }, { name = "air" }) -- surface is at y = 5, y=6 is air
     local p_drown = create_mock_player("SubmergedPlayer", 0, { x = 60, y = 5, z = 60 })
@@ -9984,7 +9988,7 @@ suites[101] = function()
     mock_players["SubmergedPlayer"] = nil
     deathstats.players["SubmergedPlayer"] = nil
 
-    -- 4. Server Shutdown & Offline Player Warning Safety
+    -- Server Shutdown & Offline Player Warning Safety
     deathstats.is_shutting_down = true
     local p_off = create_mock_player("ShutdownOfflinePlayer", 20)
     mock_players["ShutdownOfflinePlayer"] = p_off
