@@ -2,8 +2,13 @@
 
 [![ContentDB](https://content.luanti.org/packages/SaKeL/deathstats/shields/title/)](https://content.luanti.org/packages/SaKeL/deathstats/)
 [![ContentDB Downloads](https://content.luanti.org/packages/SaKeL/deathstats/shields/downloads/)](https://content.luanti.org/packages/SaKeL/deathstats/)
+[![ContentDB Rating](https://content.luanti.org/packages/SaKeL/deathstats/shields/rating/)](https://content.luanti.org/packages/SaKeL/deathstats/)
+[![ContentDB Version](https://content.luanti.org/packages/SaKeL/deathstats/shields/version/)](https://content.luanti.org/packages/SaKeL/deathstats/)
+![Luanti](https://img.shields.io/badge/Luanti-5.4%2B-5599ff.svg)
+[![Luacheck](https://img.shields.io/github/actions/workflow/status/sakel-hub/deathstats/luacheck.yml?label=Luacheck&logo=lua)](https://github.com/sakel-hub/deathstats/actions)
 [![License: LGPL 2.1](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](LICENSE.txt)
 [![Media License: CC0 1.0](https://img.shields.io/badge/Media-CC0_1.0-lightgrey.svg)](LICENSE.txt)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/sakel-hub/deathstats/pulls)
 ![AI-Assisted](https://img.shields.io/badge/AI--assisted-gray)
 
 A cinematic death screen, ragdoll physics, and player statistics mod for Luanti.
