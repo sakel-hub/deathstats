@@ -37,7 +37,7 @@ function cs.is_humanoid_mesh(mesh)
     end
     -- Check x_player_api or player_api registered models
     local papi = rawget(_G, "x_player_api") or rawget(_G, "player_api")
-    if papi and papi.registered_models and papi.registered_models[mesh] then
+    if papi and type(papi) == "table" and type(papi.registered_models) == "table" and papi.registered_models[mesh] then
         return true
     end
     -- Check default registered player models
@@ -222,31 +222,36 @@ function cs.extract_base_skin(player, name)
 
     -- x_player_api (proxy-based visuals & real skin storage)
     local xpapi = rawget(_G, "x_player_api")
-    if xpapi then
+    if xpapi and type(xpapi) == "table" then
         if type(xpapi.get_textures) == "function" then
-            local p_tex = xpapi.get_textures(player)
-            if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
+            local ok, p_tex = pcall(xpapi.get_textures, player)
+            if ok and type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
                     and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png"
                     and p_tex[1] ~= "player.png" and p_tex[1] ~= "player_back.png" then
                 return p_tex[1], nil, "1.0", vs_x, vs_y
             end
         end
-        local pdata = xpapi.get_player_data and xpapi.get_player_data(player)
-        if pdata and pdata.textures and pdata.textures[1] and pdata.textures[1] ~= ""
-                and pdata.textures[1] ~= "blank.png" and pdata.textures[1] ~= "deathstats_transparent.png"
-                and pdata.textures[1] ~= "player.png" and pdata.textures[1] ~= "player_back.png" then
-            return pdata.textures[1], nil, "1.0", vs_x, vs_y
+        if type(xpapi.get_player_data) == "function" then
+            local ok, pdata = pcall(xpapi.get_player_data, player)
+            if ok and type(pdata) == "table" and type(pdata.textures) == "table"
+                    and pdata.textures[1] and pdata.textures[1] ~= ""
+                    and pdata.textures[1] ~= "blank.png" and pdata.textures[1] ~= "deathstats_transparent.png"
+                    and pdata.textures[1] ~= "player.png" and pdata.textures[1] ~= "player_back.png" then
+                return pdata.textures[1], nil, "1.0", vs_x, vs_y
+            end
         end
-        local proxies = xpapi.get_visual_proxies and xpapi.get_visual_proxies(player)
-        if proxies then
-            local proxy = proxies.glb or proxies.b3d
-            if proxy and proxy.is_valid and proxy:is_valid() then
-                local p_props = proxy:get_properties()
-                if p_props and p_props.textures and p_props.textures[1]
-                        and p_props.textures[1] ~= "blank.png" and p_props.textures[1] ~= ""
-                        and p_props.textures[1] ~= "deathstats_transparent.png"
-                        and p_props.textures[1] ~= "player.png" and p_props.textures[1] ~= "player_back.png" then
-                    return p_props.textures[1], nil, "1.0", vs_x, vs_y
+        if type(xpapi.get_visual_proxies) == "function" then
+            local ok, proxies = pcall(xpapi.get_visual_proxies, player)
+            if ok and type(proxies) == "table" then
+                local proxy = proxies.glb or proxies.b3d
+                if proxy and type(proxy) == "table" and proxy.is_valid and proxy:is_valid() then
+                    local p_props = proxy:get_properties()
+                    if p_props and p_props.textures and p_props.textures[1]
+                            and p_props.textures[1] ~= "blank.png" and p_props.textures[1] ~= ""
+                            and p_props.textures[1] ~= "deathstats_transparent.png"
+                            and p_props.textures[1] ~= "player.png" and p_props.textures[1] ~= "player_back.png" then
+                        return p_props.textures[1], nil, "1.0", vs_x, vs_y
+                    end
                 end
             end
         end
@@ -254,12 +259,12 @@ function cs.extract_base_skin(player, name)
 
     -- player_api get_textures (verify player_api has initialized model/textures before query)
     local player_api_mod = rawget(_G, "player_api")
-    if player_api_mod and type(player_api_mod.get_textures) == "function" then
-        local p_anim = player_api_mod.get_animation and player_api_mod.get_animation(player)
-        local has_model = p_anim and p_anim.model and player_api_mod.registered_models and player_api_mod.registered_models[p_anim.model]
+    if player_api_mod and type(player_api_mod) == "table" and type(player_api_mod.get_textures) == "function" then
+        local p_anim = type(player_api_mod.get_animation) == "function" and player_api_mod.get_animation(player)
+        local has_model = p_anim and p_anim.model and type(player_api_mod.registered_models) == "table" and player_api_mod.registered_models[p_anim.model]
         if p_anim and (p_anim.textures or has_model) then
-            local p_tex = player_api_mod.get_textures(player)
-            if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
+            local ok, p_tex = pcall(player_api_mod.get_textures, player)
+            if ok and type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
                     and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png"
                     and p_tex[1] ~= "player.png" and p_tex[1] ~= "player_back.png" then
                 return p_tex[1], nil, "1.0", vs_x, vs_y
@@ -385,21 +390,26 @@ function cs.get_player_visuals(player)
     -- Extract x_player_api real model / proxy mesh if active
     local xpapi = rawget(_G, "x_player_api")
     local xp_mesh = nil
-    if xpapi then
-        if xpapi.get_model_name then
-            xp_mesh = xpapi.get_model_name(player)
+    if xpapi and type(xpapi) == "table" then
+        if type(xpapi.get_model_name) == "function" then
+            local ok, m_name = pcall(xpapi.get_model_name, player)
+            if ok and type(m_name) == "string" and m_name ~= "" then
+                xp_mesh = m_name
+            end
         end
-        local proxies = xpapi.get_visual_proxies and xpapi.get_visual_proxies(player)
-        if proxies then
-            if proxies.glb and proxies.glb.is_valid and proxies.glb:is_valid() then
-                local glb_props = proxies.glb:get_properties()
-                if glb_props and glb_props.mesh and glb_props.mesh ~= "" then
-                    xp_mesh = glb_props.mesh
-                end
-            elseif proxies.b3d and proxies.b3d.is_valid and proxies.b3d:is_valid() then
-                local b3d_props = proxies.b3d:get_properties()
-                if b3d_props and b3d_props.mesh and b3d_props.mesh ~= "" then
-                    xp_mesh = b3d_props.mesh
+        if type(xpapi.get_visual_proxies) == "function" then
+            local ok, proxies = pcall(xpapi.get_visual_proxies, player)
+            if ok and type(proxies) == "table" then
+                if proxies.glb and type(proxies.glb) == "table" and proxies.glb.is_valid and proxies.glb:is_valid() then
+                    local glb_props = proxies.glb:get_properties()
+                    if glb_props and glb_props.mesh and glb_props.mesh ~= "" then
+                        xp_mesh = glb_props.mesh
+                    end
+                elseif proxies.b3d and type(proxies.b3d) == "table" and proxies.b3d.is_valid and proxies.b3d:is_valid() then
+                    local b3d_props = proxies.b3d:get_properties()
+                    if b3d_props and b3d_props.mesh and b3d_props.mesh ~= "" then
+                        xp_mesh = b3d_props.mesh
+                    end
                 end
             end
         end

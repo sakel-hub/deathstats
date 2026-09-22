@@ -3875,10 +3875,10 @@ function deathstats.pose_corpse(corpse, mesh_name, anim_name)
     local req_anim = anim_name or "lay"
 
     local anim_def = nil
-    local papi = rawget(_G, "player_api")
-    if papi and papi.registered_models and mesh_name and papi.registered_models[mesh_name] then
+    local papi = rawget(_G, "player_api") or rawget(_G, "x_player_api")
+    if papi and type(papi) == "table" and type(papi.registered_models) == "table" and mesh_name and papi.registered_models[mesh_name] then
         local model_def = papi.registered_models[mesh_name]
-        if model_def.animations then
+        if model_def and type(model_def) == "table" and model_def.animations then
             if req_anim == "sit" then
                 anim_def = model_def.animations.sit
             else
@@ -4912,7 +4912,7 @@ end
 deathstats.hooked_animations = {}
 
 function deathstats.hook_animation_function(mod_table, fn_name)
-    if mod_table and type(mod_table[fn_name]) == "function" and not deathstats.hooked_animations[mod_table[fn_name]] then
+    if mod_table and type(mod_table) == "table" and type(mod_table[fn_name]) == "function" and not deathstats.hooked_animations[mod_table[fn_name]] then
         local orig_fn = mod_table[fn_name]
         local hooked_fn = function(player, anim_name, speed, loop)
             if player and player:is_player() then
@@ -4946,12 +4946,13 @@ end)
 ---@param name string The player name
 ---@param attached boolean|nil True if attached, nil to clear
 function deathstats.set_engine_player_attached(name, attached)
+    if not name or name == "" then return end
     local papi = rawget(_G, "x_player_api") or rawget(_G, "player_api")
-    if papi and papi.player_attached then
+    if papi and type(papi) == "table" and type(papi.player_attached) == "table" then
         papi.player_attached[name] = attached
     end
     local def_mod = rawget(_G, "default")
-    if def_mod and def_mod.player_attached then
+    if def_mod and type(def_mod) == "table" and type(def_mod.player_attached) == "table" then
         def_mod.player_attached[name] = attached
     end
 end
@@ -6964,17 +6965,24 @@ function deathstats.reset_camera(player, is_leaving)
         player:set_physics_override((data and data.old_physics_override) or { speed = 1, jump = 1, gravity = 1 })
     end
 
-    -- Reapply model and skins to player_api and compatible skin frameworks
+    -- Reapply model and skins to player_api, x_player_api, and compatible skin frameworks
     local papi = rawget(_G, "player_api")
-    if papi and papi.set_model then
-        papi.set_model(player, mesh_name)
-    end
-    if papi and papi.set_textures and tex then
-        papi.set_textures(player, tex)
+    if papi and type(papi) == "table" then
+        if type(papi.set_model) == "function" then
+            pcall(papi.set_model, player, mesh_name)
+        end
+        if type(papi.set_textures) == "function" and tex then
+            pcall(papi.set_textures, player, tex)
+        end
     end
     local x_papi = rawget(_G, "x_player_api")
-    if x_papi and x_papi.set_model then
-        x_papi.set_model(player, mesh_name)
+    if x_papi and type(x_papi) == "table" then
+        if type(x_papi.set_model) == "function" then
+            pcall(x_papi.set_model, player, mesh_name)
+        end
+        if type(x_papi.set_textures) == "function" and tex then
+            pcall(x_papi.set_textures, player, tex)
+        end
     end
     local skins_mod = rawget(_G, "skins")
     if skins_mod and skins_mod.update_player_skin then
@@ -7013,20 +7021,33 @@ function deathstats.reset_camera(player, is_leaving)
         local p = core.get_player_by_name(name)
         if not p or not p:is_player() then return end
         local player_papi = rawget(_G, "player_api")
+        local restore_xpapi = rawget(_G, "x_player_api")
         local def_mod = rawget(_G, "default")
         local mcl_p = rawget(_G, "mcl_player")
-        if player_papi and player_papi.set_animation then
-            player_papi.set_animation(p, "stand", 30)
-        elseif def_mod and def_mod.player_set_animation then
-            def_mod.player_set_animation(p, "stand", 30)
-        elseif mcl_p and mcl_p.player_set_animation then
-            mcl_p.player_set_animation(p, "stand", 30)
+        if player_papi and type(player_papi) == "table" and type(player_papi.set_animation) == "function" then
+            pcall(player_papi.set_animation, p, "stand", 30)
+        elseif restore_xpapi and type(restore_xpapi) == "table" and type(restore_xpapi.set_animation) == "function" then
+            pcall(restore_xpapi.set_animation, p, "stand", 30)
+        elseif def_mod and type(def_mod) == "table" and type(def_mod.player_set_animation) == "function" then
+            pcall(def_mod.player_set_animation, p, "stand", 30)
+        elseif mcl_p and type(mcl_p) == "table" and type(mcl_p.player_set_animation) == "function" then
+            pcall(mcl_p.player_set_animation, p, "stand", 30)
         end
-        if player_papi and player_papi.set_model then
-            player_papi.set_model(p, mesh_name)
+        if player_papi and type(player_papi) == "table" then
+            if type(player_papi.set_model) == "function" then
+                pcall(player_papi.set_model, p, mesh_name)
+            end
+            if type(player_papi.set_textures) == "function" and tex then
+                pcall(player_papi.set_textures, p, tex)
+            end
         end
-        if player_papi and player_papi.set_textures and tex then
-            player_papi.set_textures(p, tex)
+        if restore_xpapi and type(restore_xpapi) == "table" then
+            if type(restore_xpapi.set_model) == "function" then
+                pcall(restore_xpapi.set_model, p, mesh_name)
+            end
+            if type(restore_xpapi.set_textures) == "function" and tex then
+                pcall(restore_xpapi.set_textures, p, tex)
+            end
         end
     end
     restore_stand()
@@ -7561,9 +7582,9 @@ function deathstats.on_player_respawn(player)
             end
             local p_props = p:get_properties()
             if p_props and (p_props.visual == "upright_sprite" or (p_props.visual_size and p_props.visual_size.y == 2 and p_props.visual_size.x == 1) or (p_props.textures and p_props.textures[1] == "player.png")) then
-                local papi = rawget(_G, "player_api")
-                if papi and papi.set_model then
-                    papi.set_model(p, "character.b3d")
+                local papi = rawget(_G, "player_api") or rawget(_G, "x_player_api")
+                if papi and type(papi) == "table" and type(papi.set_model) == "function" then
+                    pcall(papi.set_model, p, "character.b3d")
                 else
                     p:set_properties({ visual = "mesh", mesh = "character.b3d", visual_size = { x = 1, y = 1, z = 1 }, textures = { "character.png" } })
                 end
@@ -7587,9 +7608,9 @@ function deathstats.on_player_respawn(player)
             end
             local p_props = p:get_properties()
             if p_props and (p_props.visual == "upright_sprite" or (p_props.visual_size and p_props.visual_size.y == 2 and p_props.visual_size.x == 1) or (p_props.textures and p_props.textures[1] == "player.png")) then
-                local papi = rawget(_G, "player_api")
-                if papi and papi.set_model then
-                    papi.set_model(p, "character.b3d")
+                local papi = rawget(_G, "player_api") or rawget(_G, "x_player_api")
+                if papi and type(papi) == "table" and type(papi.set_model) == "function" then
+                    pcall(papi.set_model, p, "character.b3d")
                 else
                     p:set_properties({ visual = "mesh", mesh = "character.b3d", visual_size = { x = 1, y = 1, z = 1 }, textures = { "character.png" } })
                 end
