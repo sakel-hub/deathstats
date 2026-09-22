@@ -5899,8 +5899,8 @@ local function run_test_suite_54()
         "Anchor pos must be stationed directly at corpse orbit_center")
     assert(sim_cam_data.anchor.last_move_continuous == false,
         "Anchor must use continuous = false for unthrottled position updates")
-    assert(vector.length(sim_cam_data.anchor:get_velocity()) == 0,
-        "Anchor velocity must remain zero to prevent drifting or falling through nodes")
+    assert(vector.length(sim_cam_data.anchor:get_velocity()) > 0.1,
+        "Anchor must have non-zero velocity tracking corpse")
     assert(p.eye_offset ~= nil and p.eye_offset[1].z < 0 and p.eye_offset[1].y > 0,
         "Player eye offset must project backwards and upwards from stationed anchor")
     deathstats.reset_camera(p)
@@ -7202,8 +7202,8 @@ local function run_test_suite_68()
         assert(cam_corpse_dist < 0.001,
             "Anchor must track moving corpse stationed at orbit center")
         local anchor_vel = cdata.anchor:get_velocity()
-        assert(anchor_vel and vector.length(anchor_vel) == 0,
-            "Anchor velocity must remain zero to prevent drifting or falling through nodes")
+        assert(anchor_vel and anchor_vel.y == -4,
+            "Anchor must inherit corpse velocity for client-side extrapolation")
 
         -- Settled corpse tranquility: once corpse rests, anchor must become completely stationary
         cdata.corpse:set_velocity(vector.zero())
@@ -10359,24 +10359,29 @@ suites[102] = function()
     assert(vector.distance(center_data.orbit_center, c_pos_init) < 0.001,
         "Initial orbit_center must match corpse position exactly (no pre-elevation offset)")
 
-    -- Verify anchor velocity and acceleration are strictly zero on spawn
+    -- Verify anchor inherits corpse velocity for 60 FPS client extrapolation and acceleration is strictly 0
     local a_vel_init = center_data.anchor:get_velocity()
-    assert(vector.length(a_vel_init) == 0,
-        "Camera anchor must have zero velocity on spawn even when corpse has ragdoll impulse")
+    assert(vector.length(a_vel_init) > 0.1,
+        "Camera anchor must inherit corpse velocity on spawn for smooth client extrapolation without jitter")
     local a_acc_init = center_data.anchor:get_acceleration()
     assert(vector.length(a_acc_init) == 0,
-        "Camera anchor must have zero acceleration on spawn")
+        "Camera anchor must have zero acceleration on spawn (no gravity free-fall)")
 
-    -- Simulate corpse moving through flight steps and verify anchor remains locked 1:1 with zero autonomous velocity
+    -- Simulate corpse moving through flight steps and verify anchor tracks smoothly with move_to
     for i = 1, 5 do
         center_data.corpse:set_pos({ x = 20 + i * 0.5, y = 5 + i * 0.2, z = 20 - i * 0.3 })
+        center_data.corpse:set_velocity({ x = 2, y = -1, z = 1 })
         deathstats.update_death_camera(p_center, 0.05)
         local cur_cpos = center_data.corpse:get_pos()
         local cur_apos = center_data.anchor:get_pos()
         assert(vector.distance(cur_apos, cur_cpos) < 0.001,
             string.format("Anchor must track moving corpse pos 1:1 at step %d, dist=%f", i, vector.distance(cur_apos, cur_cpos)))
-        assert(vector.length(center_data.anchor:get_velocity()) == 0,
-            string.format("Anchor velocity must remain strictly zero at step %d", i))
+        assert(center_data.anchor.last_move_continuous == false,
+            "Camera anchor must use unthrottled move_to during flight to prevent position-snap jitter")
+        assert(vector.length(center_data.anchor:get_velocity()) > 0,
+            string.format("Anchor must retain corpse velocity during flight at step %d", i))
+        local step_acc = center_data.anchor:get_acceleration()
+        assert(vector.length(step_acc) == 0, "Anchor acceleration must remain zero during flight")
     end
 
     -- Settle corpse and verify anchor remains locked at final rest position without spiraling away

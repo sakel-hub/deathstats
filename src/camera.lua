@@ -316,17 +316,16 @@ function deathstats.update_death_camera(player, dtime)
                     if luaent then luaent._effect_type = nil end
 
                     if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-                        if data.anchor.set_pos then
-                            data.anchor:set_pos(data.orbit_center)
-                        end
                         if data.anchor.move_to then
                             data.anchor:move_to(data.orbit_center, false)
+                        elseif data.anchor.set_pos then
+                            data.anchor:set_pos(data.orbit_center)
                         end
                         if data.anchor.set_velocity then
-                            data.anchor:set_velocity(VEC_ZERO)
+                            data.anchor:set_velocity(cvel)
                         end
                         if data.anchor.set_acceleration then
-                            data.anchor:set_acceleration(VEC_ZERO)
+                            data.anchor:set_acceleration(vector.zero())
                         end
                     end
                 else
@@ -339,16 +338,20 @@ function deathstats.update_death_camera(player, dtime)
 
                     if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
                         local cur_apos = data.anchor.get_pos and data.anchor:get_pos()
-                        if not cur_apos or vector.distance(cur_apos, data.orbit_center) > 0.01 then
+                        local dist = cur_apos and vector.distance(cur_apos, data.orbit_center) or 0
+                        local avel = data.anchor.get_velocity and data.anchor:get_velocity()
+                        local has_vel = avel and (avel.x ~= 0 or avel.y ~= 0 or avel.z ~= 0)
+
+                        if dist > 0.01 or has_vel then
+                            if data.anchor.set_velocity then
+                                data.anchor:set_velocity(VEC_ZERO)
+                            end
+                            if data.anchor.set_acceleration then
+                                data.anchor:set_acceleration(VEC_ZERO)
+                            end
                             if data.anchor.set_pos then
                                 data.anchor:set_pos(data.orbit_center)
                             end
-                        end
-                        if data.anchor.set_velocity then
-                            data.anchor:set_velocity(VEC_ZERO)
-                        end
-                        if data.anchor.set_acceleration then
-                            data.anchor:set_acceleration(VEC_ZERO)
                         end
                     end
                 end
@@ -434,8 +437,9 @@ function deathstats.update_death_camera(player, dtime)
                     show_on_minimap = false,
                 })
             end
+            local cvel = data.corpse_settled and vector.zero() or (data.corpse_vel or vector.zero())
             if new_anchor.set_velocity then
-                new_anchor:set_velocity(vector.zero())
+                new_anchor:set_velocity(cvel)
             end
             if new_anchor.set_acceleration then
                 new_anchor:set_acceleration(vector.zero())
@@ -1435,8 +1439,16 @@ function deathstats.set_death_camera(player, death_info)
                 show_on_minimap = false,
             })
         end
-        if anchor.set_velocity then
-            anchor:set_velocity(vector.zero())
+        local cvel = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
+        local is_moving = (not is_reconnect_death) and (vector.length(cvel) >= 0.05)
+        if is_moving then
+            if anchor.set_velocity then
+                anchor:set_velocity(cvel)
+            end
+        else
+            if anchor.set_velocity then
+                anchor:set_velocity(vector.zero())
+            end
         end
         if anchor.set_acceleration then
             anchor:set_acceleration(vector.zero())
