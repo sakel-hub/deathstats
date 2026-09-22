@@ -8,6 +8,133 @@
     (at your option) any later version.
 --]]
 
+---@class DeathStatsConfig
+---@field enable_sounds boolean
+---@field enable_camera boolean
+---@field enable_animation boolean
+---@field enable_limb_fractures boolean
+---@field enable_fall_fractures boolean
+---@field animation_duration number
+---@field blood_splatter_opacity number
+---@field formspec_side string
+---@field banner_texture string
+---@field orbit_radius number
+---@field orbit_height number
+---@field orbit_speed number
+---@field enable_corpse_particles boolean
+---@field enable_corpse_ragdoll boolean
+---@field ragdoll_force_multiplier number
+---@field ragdoll_max_velocity number
+---@field ragdoll_tumbling boolean
+---@field ragdoll_restitution number
+---@field ragdoll_flail_rate number
+---@field ragdoll_resting_poses boolean
+---@field enable_corpse_impact_sounds boolean
+---@field enable_slope_pitch boolean
+---@field enable_scoreboard boolean
+---@field scoreboard_key string
+---@field time_format string
+---@field scoreboard_update_interval number
+---@field scoreboard_suppress_chat boolean
+---@field afk_timeout number
+---@field chat_death_coords boolean
+---@field enable_corpse_inspect boolean
+---@field enable_mvp_badges boolean
+---@field enable_hall_of_fame boolean
+---@field corpse_decay_time number
+---@field enable_revenge boolean
+---@field announce_revenge boolean
+
+---@class DeathStatsColors
+---@field transparent string
+---@field card_sidebar string
+---@field card_modal string
+---@field card_panel string
+---@field card_inset string
+---@field row_alt string
+---@field row_viewer string
+---@field tab_bar_bg string
+---@field tab_bar_sep string
+---@field tooltip_bg string
+---@field crimson_border string
+---@field crimson_glow string
+---@field active_strip string
+---@field text_gold string
+---@field text_crimson string
+---@field text_white string
+---@field text_muted string
+---@field text_ping_good string
+---@field text_ping_warn string
+---@field text_ping_bad string
+---@field text_dead string
+---@field text_afk string
+---@field btn_primary_bg string
+---@field btn_primary_hover_bg string
+---@field btn_primary_border string
+---@field btn_primary_hover_border string
+---@field btn_primary_text string
+---@field btn_secondary_bg string
+---@field btn_secondary_hover_bg string
+---@field btn_secondary_border string
+---@field btn_secondary_hover_border string
+---@field btn_secondary_text string
+---@field tab_active_bg string
+---@field tab_active_hover_bg string
+---@field tab_active_border string
+---@field tab_active_hover_border string
+---@field tab_active_text string
+---@field tab_inactive_bg string
+---@field tab_inactive_hover_bg string
+---@field tab_inactive_border string
+---@field tab_inactive_hover_border string
+---@field tab_inactive_text string
+---@field hud_white integer
+---@field hud_soft_white integer
+---@field hud_gold integer
+---@field hud_crimson integer
+---@field hud_muted integer
+---@field hud_cyan integer
+---@field hud_green integer
+---@field hud_ping_good integer
+---@field hud_ping_warn integer
+---@field hud_ping_bad integer
+---@field hud_dead integer
+---@field hud_afk integer
+
+---@class DeathStats
+---@field modpath string
+---@field storage StorageRef
+---@field config DeathStatsConfig
+---@field colors DeathStatsColors
+---@field active_huds table<string, table<string, any>>
+---@field active_animations table<string, table<string, any>>
+---@field active_scoreboard_huds table<string, table<string, any>>
+---@field scoreboard_states table<string, boolean>
+---@field open_scoreboard_formspecs table<string, boolean>
+---@field open_scoreboard_tabs table<string, string>
+---@field scoreboard_bg_cache table<string, string>
+---@field formatted_name_cache table<string, string>
+---@field node_tile_texture_cache table<string, string>
+---@field registered_columns table<string, table<string, any>>
+---@field last_activity table<string, number>
+---@field player_last_pos table<string, Vector>
+---@field player_last_look table<string, number>
+---@field dead_players table<string, boolean>
+---@field player_camera_data table<string, table<string, any>>
+---@field is_respawning table<string, boolean>
+---@field players table<string, table<string, any>>
+---@field recent_punches table<string, table<string, any>>
+---@field recent_falls table<string, number>
+---@field recent_starvations table<string, number>
+---@field recent_dehydrations table<string, number>
+---@field last_blow table<string, table<string, any>>
+---@field last_death_reason table<string, table<string, any>>
+---@field respawn_immunity table<string, boolean>
+---@field left_players table<string, boolean>
+---@field player_corpses table<string, table<string, any>>
+---@field is_shutting_down boolean
+---@field compat_hunger table<string, any>
+---@field compat_skins table<string, any>
 deathstats = {
     modpath = core.get_modpath("deathstats") or ".",
     storage = core.get_mod_storage(),

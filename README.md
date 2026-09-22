@@ -1,6 +1,10 @@
 # DeathStats for Luanti
 
-[![AI Assisted](https://www.aihonestybadge.com/badges/ai-assisted.svg)](https://www.aihonestybadge.com)
+[![ContentDB](https://content.luanti.org/packages/SaKeL/deathstats/shields/title/)](https://content.luanti.org/packages/SaKeL/deathstats/)
+[![ContentDB Downloads](https://content.luanti.org/packages/SaKeL/deathstats/shields/downloads/)](https://content.luanti.org/packages/SaKeL/deathstats/)
+[![License: LGPL 2.1](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](LICENSE.txt)
+[![Media License: CC0 1.0](https://img.shields.io/badge/Media-CC0_1.0-lightgrey.svg)](LICENSE.txt)
+[![AI-Assisted](https://img.shields.io/badge/AI--assisted-gray)](https://www.aihonestybadge.com/)
 
 A cinematic death screen, ragdoll physics, and player statistics mod for Luanti.
 
