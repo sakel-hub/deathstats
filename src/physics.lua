@@ -19,6 +19,7 @@ local WALL_TEST_YS = { 0.60, 0.80 }
 
 local safe_normalize = deathstats.safe_normalize
 
+--- Calculate initial 3D linear launch velocity and angular tumbling impulse for a ragdoll corpse
 ---@param player ObjectRef|nil The deceased player
 ---@param death_info table|nil The death analysis table
 ---@param last_blow table|nil The recorded lethal blow data
@@ -269,11 +270,12 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
     local custom = {}
     if ptype == "prone" then
         -- Prone: Face down on stomach with organic archetypes (collapsed, reach, sprawl)
+        -- Limp neck turned sideways (cheek rest) with slight upward tilt so head rests naturally flush with ground
         local arch = math.random(1, 3)
         local head_sign = (math.random() < 0.5) and -1 or 1
         if arch == 1 then
             -- Collapsed: arms drawn up near shoulders, legs straight
-            custom["Head"] = math.rad(head_sign * random_float(35, 55))
+            custom["Head"] = vector.new(math.rad(-14), 0, math.rad(head_sign * random_float(45, 70)))
             custom["Arm_Left"] = math.rad(random_float(-55, -35) * scale)
             custom["Arm_Right"] = math.rad(random_float(35, 55) * scale)
             custom["Leg_Left"] = math.rad(random_float(-14, -6) * scale)
@@ -281,7 +283,7 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
         elseif arch == 2 then
             -- Asymmetric reach: one arm forward, one trailing back
             local reach_left = (math.random() < 0.5)
-            custom["Head"] = math.rad(head_sign * random_float(40, 65))
+            custom["Head"] = vector.new(math.rad(-14), 0, math.rad(head_sign * random_float(50, 75)))
             if reach_left then
                 custom["Arm_Left"] = math.rad(random_float(-75, -50) * scale)
                 custom["Arm_Right"] = math.rad(random_float(15, 35) * scale)
@@ -295,7 +297,7 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
             end
         else
             -- Limp sprawl: relaxed random limbs
-            custom["Head"] = math.rad(head_sign * random_float(30, 60))
+            custom["Head"] = vector.new(math.rad(-14), 0, math.rad(head_sign * random_float(45, 75)))
             custom["Arm_Left"] = math.rad(random_float(-65, -40) * scale)
             custom["Arm_Right"] = math.rad(random_float(40, 65) * scale)
             custom["Leg_Left"] = math.rad(random_float(-22, -10) * scale)
@@ -835,17 +837,15 @@ end
 --- Return the vertical position offset required to keep different resting poses
 --- (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.
 --- In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed
---- along the back plane (Y min = -0.108, Y max = +0.427).
---- Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face
---- 0.32 blocks into the ground if not offset.
+--- along the central torso plane.
+--- Supine and prone both rest flat on the ground with zero vertical offset (0.0),
+--- keeping the body (torso and legs) flush against the ground.
 --- Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.
 --- Wall sit and slouch maintain upright origin contact (0.0).
 ---@param pose_type string|nil "supine", "prone", "lateral", "wall_sit", or "slouch"
 ---@return number offset Vertical offset in nodes
 function deathstats.get_pose_elevation_offset(pose_type)
-    if pose_type == "prone" then
-        return 0.32
-    elseif pose_type == "lateral" then
+    if pose_type == "lateral" then
         return 0.16
     end
     return 0.0
@@ -857,7 +857,7 @@ end
 ---@return number[] selectionbox Bounding box table { minx, miny, minz, maxx, maxy, maxz }
 function deathstats.get_pose_selectionbox(pose_type)
     if pose_type == "prone" then
-        return { -0.5, -0.45, -0.5, 0.5, 0.15, 0.5 }
+        return { -0.5, -0.20, -0.5, 0.5, 0.35, 0.5 }
     elseif pose_type == "lateral" then
         return { -0.5, -0.30, -0.5, 0.5, 0.30, 0.5 }
     elseif pose_type == "wall_sit" then
@@ -1174,42 +1174,73 @@ function deathstats.settle_corpse_at_rest(luaent)
     end
 end
 
-local GROUND_PROBE_DYS = { -0.45, -0.85, -0.15 }
+local GROUND_PROBE_DYS = { -0.45, -0.85, -0.15, -0.55 }
+local GROUND_PROBE_OFFSETS = {
+    { x = 0, z = 0 },
+    { x = -0.28, z = 0 },
+    { x = 0.28, z = 0 },
+    { x = 0, z = -0.28 },
+    { x = 0, z = 0.28 },
+    { x = -0.28, z = -0.28 },
+    { x = 0.28, z = -0.28 },
+    { x = -0.28, z = 0.28 },
+    { x = 0.28, z = 0.28 },
+}
 local ground_probe_scratch = { x = 0, y = 0, z = 0 }
 
 --- Check if a corpse has solid ground or liquid support beneath it
 --- Used to detect if blocks below a settled corpse have been dug out
+--- Uses integer coordinate rounding to prevent negative coordinate truncation in C++ engine
+--- and probes the corpse collision footprint (±0.28) so corpses on edges/slopes remain grounded
 ---@param pos Vector 3D corpse position
 ---@return boolean has_support True if supported by walkable ground or liquid
 function deathstats.has_ground_support(pos)
     if not pos then return true end
 
-    -- Probe levels below the corpse: directly below (-0.45), further down (-0.85), and at pos (-0.15)
-    ground_probe_scratch.x = pos.x
-    ground_probe_scratch.z = pos.z
-    for i = 1, #GROUND_PROBE_DYS do
-        ground_probe_scratch.y = pos.y + GROUND_PROBE_DYS[i]
-        local node = core.get_node_or_nil(ground_probe_scratch)
-        if node and node.name ~= "ignore" then
-            if node.name ~= "air" then
-                local ndef = core.registered_nodes[node.name]
-                if ndef then
-                    -- Liquid provides buoyancy support
-                    if ndef.liquidtype and ndef.liquidtype ~= "none" then
-                        return true
-                    end
-                    -- Solid walkable node provides ground support
-                    if ndef.walkable ~= false then
-                        return true
+    local base_x = pos.x
+    local base_y = pos.y
+    local base_z = pos.z
+
+    -- Track probed integer columns to avoid duplicate node queries when offsets map to same node
+    local tested_cols = {}
+
+    for o = 1, #GROUND_PROBE_OFFSETS do
+        local off = GROUND_PROBE_OFFSETS[o]
+        local px = math.floor(base_x + off.x + 0.5)
+        local pz = math.floor(base_z + off.z + 0.5)
+        local col_key = px * 65536 + pz
+
+        if not tested_cols[col_key] then
+            tested_cols[col_key] = true
+            ground_probe_scratch.x = px
+            ground_probe_scratch.z = pz
+
+            for i = 1, #GROUND_PROBE_DYS do
+                local py = math.floor(base_y + GROUND_PROBE_DYS[i] + 0.5)
+                ground_probe_scratch.y = py
+                local node = core.get_node_or_nil(ground_probe_scratch)
+                if node and node.name ~= "ignore" then
+                    if node.name ~= "air" then
+                        local ndef = core.registered_nodes[node.name]
+                        if ndef then
+                            -- Liquid provides buoyancy support
+                            if ndef.liquidtype and ndef.liquidtype ~= "none" then
+                                return true
+                            end
+                            -- Solid walkable node provides ground support
+                            if ndef.walkable ~= false then
+                                return true
+                            end
+                        else
+                            -- Node registered or unknown fallback
+                            return true
+                        end
                     end
                 else
-                    -- Node registered or unknown fallback
+                    -- Mapblock not loaded, assume supported to avoid unnecessary physics
                     return true
                 end
             end
-        else
-            -- Mapblock not loaded, assume supported to avoid unnecessary physics
-            return true
         end
     end
 

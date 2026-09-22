@@ -9414,7 +9414,7 @@ suites[96] = function()
     print("\n--- TEST 96: Flat Ground Contact, Monotonic Orbit Yaw, Responsive Camera Collision & Slide Limbs ---")
 
     -- Corpse Flat Ground Resting Height (0.02 Contact Epsilon, Zero Hovering, Face Up / Down Parity)
-    assert(deathstats.get_pose_elevation_offset("prone") == 0.32, "Prone offset must be +0.32")
+    assert(deathstats.get_pose_elevation_offset("prone") == 0.0, "Prone offset must be 0.0 (parity with supine)")
     assert(deathstats.get_pose_elevation_offset("lateral") == 0.16, "Lateral offset must be +0.16")
     assert(deathstats.get_pose_elevation_offset("supine") == 0.0, "Supine offset must be 0.0")
 
@@ -9446,12 +9446,12 @@ suites[96] = function()
     assert(lua_prone._settled == true, "Prone corpse must settle")
     assert(lua_prone._pose_type == "prone", "Corpse must classify as prone")
     local pos_prone = corpse_prone:get_pos()
-    -- Surface is 10.5. Base is 10.52. Prone offset is +0.32 -> target is 10.84 (eliminating 0.32 sinking into ground)
-    assert(math.abs(pos_prone.y - 10.84) < 0.0001,
-        string.format("Prone resting height must lay flat at surface + 0.02 + 0.32 (expected 10.84, got: %f)", pos_prone.y))
+    -- Surface is 10.5. Base is 10.52. Prone offset is 0.0 -> target is 10.52 (body lays flat against ground, matching supine)
+    assert(math.abs(pos_prone.y - 10.52) < 0.0001,
+        string.format("Prone resting height must lay flat at surface + 0.02 (expected 10.52, got: %f)", pos_prone.y))
     local prone_props = corpse_prone:get_properties()
-    assert(prone_props.selectionbox and prone_props.selectionbox[2] == -0.45 and prone_props.selectionbox[5] == 0.15,
-        "Prone selectionbox must encompass front plane to match world bounds")
+    assert(prone_props.selectionbox and prone_props.selectionbox[2] == -0.2 and prone_props.selectionbox[5] == 0.35,
+        "Prone selectionbox must match supine ground bounds")
     corpse_prone:remove()
 
     -- Lateral (On Side - roll = pi/2)
@@ -9586,6 +9586,61 @@ suites[96] = function()
         string.format("Bounce shock must decay over ground sliding contact (got: %f)", lua_slide._bounce_shock))
 
     corpse_slide:remove()
+
+    -- Prone Head Cheek Rest Orientation Verification
+    local corpse_prone_head = core.add_entity({ x = 750, y = 11, z = 750 }, "deathstats:corpse")
+    local lua_prone_head = corpse_prone_head:get_luaentity()
+    lua_prone_head._settled = false
+    lua_prone_head._rot = { x = 0, y = 0, z = math.pi }
+    deathstats.settle_corpse_at_rest(lua_prone_head)
+    local prone_head_override = corpse_prone_head:get_bone_override("Head")
+    assert(prone_head_override ~= nil, "Prone corpse must have Head bone override")
+    assert(math.abs(prone_head_override.rotation.vec.x - math.rad(-14)) < 0.08,
+        "Prone Head must have slight upward tilt (~-14 deg) for cheek ground rest")
+    assert(math.abs(prone_head_override.rotation.vec.z) >= math.rad(40),
+        "Prone Head must turn sideways onto cheek (>= 40 deg)")
+    corpse_prone_head:remove()
+
+    -- Persistent Settled Corpse Particle Manager Verification (Proximity, Respawn & Login)
+    core.world_nodes["900,10,900"] = "default:stone"
+    local corpse_part = core.add_entity({ x = 900, y = 11, z = 900 }, "deathstats:corpse")
+    local lua_part = corpse_part:get_luaentity()
+    lua_part._settled = true
+    lua_part._settled_pos = vector.new(900, 10.52, 900)
+    lua_part._decay_time = core.get_gametime() + 180
+    lua_part._death_info = { category = "fall" }
+
+    local orig_conn = core.get_connected_players
+    local mock_conn_players = {}
+    core.get_connected_players = function() return mock_conn_players end
+
+    -- Step 1: No nearby players connected -> no particle spawners spawned
+    lua_part:on_step(3.1)
+    assert(lua_part._particle_spawners == nil, "No particle spawners should spawn when no players are nearby")
+
+    -- Step 2: Player approaches within 24 blocks -> particle spawners created
+    local p_near = create_mock_player("PersistentParticleViewer")
+    p_near.pos = vector.new(910, 10, 900) -- 10 blocks away
+    mock_conn_players = { p_near }
+    lua_part:on_step(3.1)
+    assert(lua_part._particle_spawners ~= nil and #lua_part._particle_spawners > 0,
+        "Particle spawners must spawn when player is within 24 blocks of settled corpse")
+    local created_pids = lua_part._particle_spawners
+
+    -- Step 3: Player remains near -> spawners preserved without deletion/recreation
+    lua_part:on_step(3.1)
+    assert(lua_part._particle_spawners == created_pids,
+        "Particle spawners must be preserved while player remains nearby")
+
+    -- Step 4: Player moves away (> 24 blocks) -> spawners cleanly deleted to save resources
+    p_near.pos = vector.new(950, 10, 900) -- 50 blocks away
+    lua_part:on_step(3.1)
+    assert(lua_part._particle_spawners == nil,
+        "Particle spawners must be cleaned up when players leave the 24-block vicinity")
+
+    core.get_connected_players = orig_conn
+    core.world_nodes["900,10,900"] = nil
+    corpse_part:remove()
 
     print("  [PASS] Flat Ground Contact, Monotonic Orbit Yaw, Responsive Camera Collision & Slide Limbs")
 end
@@ -10163,6 +10218,127 @@ suites[101] = function()
 end
 suites[101]()
 
-print("\nALL 101 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 102: Dead Player Reconnect, Corpse Ground Support at Negative Coordinates & Camera Anchor Safety ---
+suites[102] = function()
+    print("\n--- TEST 102: Dead Player Reconnect, Corpse Ground Support at Negative Coordinates & Camera Anchor Safety ---")
+
+    -- 1. Negative Coordinate Ground Support & Edge Footprint Probing
+    -- Mimic JohnnyBravo's death location: x = 504.099, y = 65.5, z = -555.894
+    core.world_nodes["504,65,-556"] = "default:stone"
+    core.world_nodes["504,66,-556"] = "air"
+    core.world_nodes["504,65,-555"] = "air"
+
+    local jb_pos = { x = 504.099, y = 65.5, z = -555.894 }
+    assert(deathstats.has_ground_support(jb_pos) == true,
+        "Corpse at negative coordinates must detect solid ground below without C++ rounding error")
+
+    -- Check footprint perimeter offsets
+    local jb_corner = { x = 504.099 + 0.28, y = 65.5, z = -555.894 - 0.28 }
+    assert(deathstats.has_ground_support(jb_corner) == true,
+        "Corpse corner offset must also detect solid ground support")
+
+    -- Dig out ground under corpse -> has_ground_support must now return false
+    core.world_nodes["504,65,-556"] = "air"
+    assert(deathstats.has_ground_support(jb_pos) == false,
+        "has_ground_support must return false when supporting block is dug out")
+
+    -- Restore solid node
+    core.world_nodes["504,65,-556"] = "default:stone"
+
+    -- 2. Non-physical Camera Anchor Acceleration Safety
+    -- When a ragdoll corpse is in flight with downward gravity acceleration, camera anchor must NEVER have gravity acceleration
+    local p_airborne = create_mock_player("AirborneRagdollVictim", 20, { x = 100, y = 30, z = 100 })
+    mock_players["AirborneRagdollVictim"] = p_airborne
+    p_airborne.hp = 0
+
+    core.world_nodes["100,29,100"] = "air"
+    core.world_nodes["100,0,100"] = "default:stone"
+    core.on_dieplayer(p_airborne)
+
+    local air_data = deathstats.player_camera_data["AirborneRagdollVictim"]
+    assert(air_data ~= nil and air_data.anchor ~= nil, "Camera anchor must be created for dying player")
+    local anchor_acc = air_data.anchor:get_acceleration() or vector.zero()
+    assert(anchor_acc.y == 0,
+        string.format("Camera anchor acceleration.y must be strictly 0, got %f (non-physical anchor must never free-fall)", anchor_acc.y))
+
+    -- Step camera while corpse is in active flight with negative velocity and gravity acceleration
+    if air_data.corpse then
+        air_data.corpse:set_velocity({ x = 0, y = -5.0, z = 0 })
+        air_data.corpse:set_acceleration({ x = 0, y = -9.81, z = 0 })
+    end
+    deathstats.update_death_camera(p_airborne, 0.05)
+    local step_anchor_acc = air_data.anchor:get_acceleration() or vector.zero()
+    assert(step_anchor_acc.y == 0,
+        string.format("Camera anchor acceleration.y during corpse flight step must remain 0, got %f", step_anchor_acc.y))
+
+    deathstats.reset_camera(p_airborne)
+    mock_players["AirborneRagdollVictim"] = nil
+    deathstats.players["AirborneRagdollVictim"] = nil
+    deathstats.dead_players["AirborneRagdollVictim"] = nil
+
+    -- 3. Dead Player Reconnect & Orbit Rotation
+    -- Simulate JohnnyBravo dead reconnect in world E2
+    local p_jb = create_mock_player("JohnnyBravo", 0, { x = 504.099, y = 65.5, z = -555.894 })
+    mock_players["JohnnyBravo"] = p_jb
+    local meta = p_jb:get_meta()
+    meta:set_string("deathstats:death_active", "1")
+    meta:set_string("deathstats:corpse_data", core.serialize({
+        pos = { x = 504.099, y = 65.5, z = -555.894 },
+        yaw = 1.2,
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+    }))
+
+    core.on_joinplayer(p_jb)
+
+    local jb_data = deathstats.player_camera_data["JohnnyBravo"]
+    assert(jb_data ~= nil, "player_camera_data must exist for JohnnyBravo upon dead reconnect")
+    assert(jb_data.corpse ~= nil, "Corpse entity must be spawned on reconnect")
+    local jb_corpse_ent = jb_data.corpse:get_luaentity()
+    assert(jb_corpse_ent ~= nil and jb_corpse_ent._settled == true,
+        "Corpse spawned on dead reconnect must immediately be marked settled")
+    assert(jb_data.corpse:get_properties().physical == false,
+        "Corpse entity on dead reconnect must be non-physical")
+    local jb_cvel = jb_data.corpse:get_velocity() or vector.zero()
+    assert(vector.length(jb_cvel) == 0,
+        "Corpse on dead reconnect must have 0 velocity (no fling impulse)")
+    assert(jb_data.corpse_settled == true,
+        "corpse_settled in camera data must be true on dead reconnect")
+    assert(jb_data.anchor ~= nil, "Camera anchor must exist on dead reconnect")
+    local jb_a_acc = jb_data.anchor:get_acceleration() or vector.zero()
+    assert(jb_a_acc.x == 0 and jb_a_acc.y == 0 and jb_a_acc.z == 0,
+        "Anchor acceleration on dead reconnect must be strictly vector.zero()")
+
+    -- Verify orbit angle advances on camera update steps (smooth rotation)
+    local start_angle = jb_data.orbit_angle or 0
+    deathstats.update_death_camera(p_jb, 0.1)
+    local angle_after_step = jb_data.orbit_angle or 0
+    assert(angle_after_step > start_angle,
+        string.format("Camera orbit angle must advance smoothly on reconnect! start=%f, after=%f", start_angle, angle_after_step))
+
+    local anchor_pos = jb_data.anchor:get_pos()
+    assert(math.abs(anchor_pos.y - 65.5) < 0.1,
+        string.format("Anchor position Y must stay at corpse altitude (65.5), got %f", anchor_pos.y))
+
+    -- 4. Dug-Out Wake-Up Elevation Check
+    core.world_nodes["504,65,-556"] = "air"
+    jb_corpse_ent._ground_check_timer = 0.4
+    jb_corpse_ent:on_step(0.05)
+    assert(jb_corpse_ent._settled == false, "Corpse must wake up into free-fall when ground is dug out")
+    local wake_pos = jb_data.corpse:get_pos()
+    assert(wake_pos.y >= 65.59,
+        string.format("Corpse must be elevated by +0.1 upon dug-out wake up, got y=%f", wake_pos.y))
+
+    deathstats.reset_camera(p_jb)
+    mock_players["JohnnyBravo"] = nil
+    deathstats.players["JohnnyBravo"] = nil
+    deathstats.dead_players["JohnnyBravo"] = nil
+
+    print("  [PASS] Dead Player Reconnect, Corpse Ground Support at Negative Coordinates & Camera Anchor Safety")
+end
+suites[102]()
+
+print("\nALL 102 TEST SUITES PASSED SUCCESSFULLY!")
 
 

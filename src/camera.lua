@@ -90,6 +90,7 @@ core.register_item("deathstats:camera_hand", {
 })
 
 
+--- Set of hooked external animation functions to prevent death replay looping
 deathstats.hooked_animations = {}
 
 --- Wrap an animation function to prevent death animation looping while a player is dead
@@ -242,7 +243,7 @@ function deathstats.update_death_camera(player, dtime)
     local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
     if not bones_active then
         if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
-            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player, data.death_info, data.last_blow)
+            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player, data.death_info, data.last_blow, data.corpse_settled)
             if new_corpse then
                 data.corpse = new_corpse
                 data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
@@ -322,7 +323,7 @@ function deathstats.update_death_camera(player, dtime)
                             data.anchor:set_velocity(cvel)
                         end
                         if data.anchor.set_acceleration then
-                            data.anchor:set_acceleration(cacc)
+                            data.anchor:set_acceleration(vector.zero())
                         end
                     end
                 elseif not data.corpse_settled then
@@ -431,9 +432,8 @@ function deathstats.update_death_camera(player, dtime)
             if new_anchor.set_velocity then
                 new_anchor:set_velocity(cvel)
             end
-            local cacc = data.corpse_acc or vector.zero()
             if new_anchor.set_acceleration then
-                new_anchor:set_acceleration(cacc)
+                new_anchor:set_acceleration(vector.zero())
             end
             data.anchor = new_anchor
             if player.set_pos then player:set_pos(data.orbit_center) end
@@ -1027,6 +1027,7 @@ function deathstats.set_death_camera(player, death_info)
             end
         end
     end
+    local is_reconnect_death = (saved_corpse ~= nil)
 
     local ppos = (saved_corpse and saved_corpse.pos) or player:get_pos()
     if not ppos then return end
@@ -1202,7 +1203,7 @@ function deathstats.set_death_camera(player, death_info)
     local lb = deathstats.last_blow[name]
     local corpse = nil
     if not expect_bones then
-        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb)
+        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb, is_reconnect_death)
     end
     local particle_spawners = nil
     local current_effect_type = nil
@@ -1227,7 +1228,7 @@ function deathstats.set_death_camera(player, death_info)
             local p = core.get_player_by_name(name)
             local cdata = deathstats.player_camera_data[name]
             if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse and not cdata.has_bones and not cdata.expect_bones then
-                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p, death_info, lb)
+                local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p, death_info, lb, is_reconnect_death)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
                     cdata.corpse_wielditem = deathstats.get_corpse_wielditem(retry_corpse)
@@ -1412,15 +1413,14 @@ function deathstats.set_death_camera(player, death_info)
             })
         end
         local cvel = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
-        local is_moving = vector.length(cvel) >= 0.05
+        local is_moving = (not is_reconnect_death) and (vector.length(cvel) >= 0.05)
         if is_moving then
             if anchor.set_velocity then
                 anchor:set_velocity(cvel)
             end
-            local cacc = (corpse and corpse.get_acceleration and corpse:get_acceleration()) or vector.zero()
-            if anchor.set_acceleration then
-                anchor:set_acceleration(cacc)
-            end
+        end
+        if anchor.set_acceleration then
+            anchor:set_acceleration(vector.zero())
         end
     end
     if player.set_pos then player:set_pos(orbit_center) end
@@ -1437,7 +1437,7 @@ function deathstats.set_death_camera(player, death_info)
     if player.set_look_vertical then player:set_look_vertical(initial_pitch) end
 
     local cvel_init = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
-    local has_motion = vector.length(cvel_init) >= 0.05
+    local has_motion = (not is_reconnect_death) and (vector.length(cvel_init) >= 0.05)
 
     deathstats.player_camera_data[name] = {
         has_bones = (bones_pos ~= nil),
@@ -1459,7 +1459,7 @@ function deathstats.set_death_camera(player, death_info)
         corpse = corpse,
         corpse_wielditem = deathstats.get_corpse_wielditem(corpse),
         anchor = anchor,
-        corpse_settled = (not corpse) or (not has_motion),
+        corpse_settled = (not corpse) or (not has_motion) or is_reconnect_death,
         old_armor_groups = old_armor_groups,
         old_is_visible = old_is_visible,
         old_visual_size = old_visual_size,

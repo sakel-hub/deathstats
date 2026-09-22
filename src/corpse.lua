@@ -176,7 +176,9 @@ core.register_entity("deathstats:corpse", {
                     self._timer = 0
                     self._air_timer = 0
                     self._slide_timer = 0
-                    self._bounce_count = 0
+                    if self.object.set_pos then
+                        self.object:set_pos({ x = cur_p.x, y = cur_p.y + 0.1, z = cur_p.z })
+                    end
                     if self.object.set_properties then
                         self.object:set_properties({
                             physical = true,
@@ -190,6 +192,63 @@ core.register_entity("deathstats:corpse", {
                         self.object:set_velocity(FALL_VEL)
                     end
                     return
+                end
+            end
+
+            -- Throttled persistent particle check (every 3.0s) for settled corpses
+            -- Ensures particles (e.g. flies, bubbles, fire) are visible to players walking up,
+            -- respawning, or logging in, without unnecessary CPU/network overhead when nobody is nearby.
+            if deathstats.config.enable_corpse_particles ~= false and self._decay_time then
+                self._particle_check_timer = (self._particle_check_timer or 0) + (dtime or 0)
+                if self._particle_check_timer >= 3.0 then
+                    self._particle_check_timer = 0
+                    local cpos = (self.object and self.object.get_pos and self.object:get_pos()) or self._settled_pos
+                    if cpos then
+                        local has_nearby_player = false
+                        local any_new_player = false
+                        local current_nearby = {}
+                        local last_nearby = self._nearby_particle_players or {}
+
+                        local players = core.get_connected_players and core.get_connected_players()
+                        if players then
+                            for i = 1, #players do
+                                local p = players[i]
+                                if p and (not p.is_valid or p:is_valid()) and p:is_player() then
+                                    local pp = p.get_pos and p:get_pos()
+                                    if pp and vector.distance(pp, cpos) <= 24 then
+                                        has_nearby_player = true
+                                        local pname = p:get_player_name() or ("p" .. i)
+                                        current_nearby[pname] = true
+                                        if not last_nearby[pname] then
+                                            any_new_player = true
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        self._nearby_particle_players = current_nearby
+
+                        if has_nearby_player then
+                            local needs_spawn = (not self._particle_spawners) or (#self._particle_spawners == 0) or any_new_player
+                            if needs_spawn and deathstats.spawn_corpse_particles then
+                                if self._particle_spawners then
+                                    for _, pid in ipairs(self._particle_spawners) do
+                                        core.delete_particlespawner(pid)
+                                    end
+                                    self._particle_spawners = nil
+                                end
+                                local spawners, eff = deathstats.spawn_corpse_particles(cpos, self._death_info, self.object)
+                                self._particle_spawners = spawners
+                                self._effect_type = eff
+                            end
+                        elseif self._particle_spawners then
+                            -- Zero players within range: clean up spawners to free engine/network resources
+                            for _, pid in ipairs(self._particle_spawners) do
+                                core.delete_particlespawner(pid)
+                            end
+                            self._particle_spawners = nil
+                        end
+                    end
                 end
             end
             return
@@ -1212,8 +1271,14 @@ function deathstats.get_player_visuals(player)
 end
 
 
+---@param corpse_pos Vector Position to spawn the corpse
+---@param visuals table Player visuals table (mesh, textures, visual_size, yaw, ...)
+---@param player ObjectRef|nil The dying player entity
+---@param death_info table|nil Death metadata
+---@param last_blow table|nil Last damage blow information
+---@param is_settled_override boolean|nil True if corpse should spawn directly settled without launch impulses
 ---@return ObjectRef|nil corpse The spawned corpse entity or nil if failed (e.g. mapblock not loaded)
-function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, last_blow)
+function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, last_blow, is_settled_override)
     if not corpse_pos or not visuals then return nil end
     local corpse = core.add_entity(corpse_pos, "deathstats:corpse")
     if corpse then
@@ -1224,7 +1289,7 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             visual_size = visuals.visual_size,
             selectionbox = { 0, 0, 0, 0, 0, 0 },
             pointable = false,
-            physical = ragdoll_enabled,
+            physical = ragdoll_enabled and not is_settled_override,
             collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
             stepheight = 0.6,
         })
@@ -1257,7 +1322,10 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             or deathstats.is_liquid_at({ x = corpse_pos.x, y = corpse_pos.y + 0.5, z = corpse_pos.z })
             or deathstats.is_liquid_at({ x = corpse_pos.x, y = corpse_pos.y - 0.5, z = corpse_pos.z })
 
-        if ragdoll_enabled then
+        if is_settled_override then
+            if corpse.set_velocity then corpse:set_velocity(VEC_ZERO) end
+            if corpse.set_acceleration then corpse:set_acceleration(VEC_ZERO) end
+        elseif ragdoll_enabled then
             local vel, rot_speed = deathstats.calculate_corpse_impulse(player, death_info, last_blow)
             if in_liquid_nodes and (not vel or (vel.x == 0 and vel.y == 0 and vel.z == 0)) then
                 vel = vector.new(0, 1.2, 0)
