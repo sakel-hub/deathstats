@@ -3336,12 +3336,12 @@ do
         "Category lava must map to lava effect")
     assert(deathstats.get_corpse_effect_type(test_pos, { category = "fire" }) == "fire",
         "Category fire must map to fire effect")
-    assert(deathstats.get_corpse_effect_type(test_pos, { category = "fall" }) == "impact",
-        "Category fall must map to impact node particle effect")
-    assert(deathstats.get_corpse_effect_type(test_pos, { category = "mob" }) == "impact",
-        "Category mob must map to impact node particle effect")
-    assert(deathstats.get_corpse_effect_type(test_pos, { category = "pvp" }) == "impact",
-        "Category pvp must map to impact node particle effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "fall" }) == "flies",
+        "Category fall must map to flies swarm particle effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "mob" }) == "flies",
+        "Category mob must map to flies swarm particle effect")
+    assert(deathstats.get_corpse_effect_type(test_pos, { category = "pvp" }) == "flies",
+        "Category pvp must map to flies swarm particle effect")
 
     -- Node-based environment detection fallbacks
     core.world_nodes["50,5,50"] = "default:water_source"
@@ -3393,7 +3393,24 @@ do
     assert(fire_def.vel and fire_def.vel.min.y > 0, "Smoke velocity must be upward")
     assert(fire_def.acc and fire_def.acc.min.y > 0, "Smoke acceleration must rise")
 
-    -- Impact (all others): non-continuous impact burst, default node particles, customized gravity/speed
+    -- Flies (buzzing swarm): continuous, erratic Brownian motion, jitter, drag, 5x5 frames, modern + legacy
+    local flies_def = deathstats.create_corpse_particlespawner_def("flies", test_pos)
+    assert(flies_def ~= nil, "Flies definition must not be nil")
+    assert(flies_def.time == 0, "Flies swarm must be continuous (time = 0)")
+    assert(flies_def.amount == 12, "Flies swarm rate must be 12 per second")
+    assert(flies_def.texture == "deathstats_particle_fly.png", "Flies texture must be deathstats_particle_fly.png")
+    assert(flies_def.animation and flies_def.animation.type == "vertical_frames", "Flies animation must be vertical_frames")
+    assert(flies_def.animation.aspect_w == 5 and flies_def.animation.aspect_h == 5, "Flies animation frames must be 5x5 px")
+    assert(flies_def.pos and flies_def.minpos, "Flies pos and minpos must both be defined")
+    assert(flies_def.jitter and flies_def.jitter.min and flies_def.jitter.max, "Flies must have modern 3D jitter acceleration")
+    assert(flies_def.jitter.min.x < 0 and flies_def.jitter.max.x > 0, "Jitter must span negative and positive values")
+    assert(flies_def.drag and flies_def.drag.min and flies_def.drag.max, "Flies must have modern 3D aerodynamic drag")
+    assert(flies_def.vel and flies_def.vel.min.x < 0 and flies_def.vel.max.x > 0, "Flies velocity must span both directions")
+    assert(flies_def.acc and flies_def.acc.min.x < 0 and flies_def.acc.max.x > 0, "Flies acceleration must span both directions")
+    assert(flies_def.texpool and #flies_def.texpool > 0, "Flies modern texpool must be defined")
+    assert(flies_def.texpool[1].name == "deathstats_particle_fly.png", "Flies texpool must reference deathstats_particle_fly.png")
+
+    -- Impact (fallback): non-continuous impact burst, default node particles, customized gravity/speed
     core.world_nodes["50,4,50"] = "default:stone"
     local impact_def = deathstats.create_corpse_particlespawner_def("impact", test_pos)
     assert(impact_def ~= nil, "Impact definition must not be nil")
@@ -3419,6 +3436,14 @@ do
     assert(core.active_particlespawners[spawner_id] ~= nil, "Active particle spawner must be registered in engine")
     assert(core.active_particlespawners[spawner_id].texture == "deathstats_particle_bubble.png",
         "Active spawner texture must match bubble particle")
+
+    -- Verify dry ground corpse spawns flies swarm
+    local dry_pids, eff_type = deathstats.spawn_corpse_particles(test_pos, { category = "fall" })
+    assert(#dry_pids == 1, "spawn_corpse_particles on dry ground must return 1 spawner ID")
+    assert(eff_type == "flies", "Effect type on dry ground must be flies")
+    assert(core.active_particlespawners[dry_pids[1]].texture == "deathstats_particle_fly.png",
+        "Dry ground corpse spawner must use fly texture")
+    core.delete_particlespawner(dry_pids[1])
 
     -- Clean up spawner
     core.delete_particlespawner(spawner_id)
@@ -7087,25 +7112,30 @@ local function run_test_suite_67()
         string.format("Natural splayed legs rate must be > 92%%, got %d = %.1f%%",
             natural_splay_count, (natural_splay_count / total_samples) * 100))
 
-    -- Verify lateral side-pose generates diverse organic archetypes (curled, staggered, parallel, splay)
+    -- Verify lateral side-pose generates grounded resting archetypes (flank rest, parallel, subtle stagger)
     local min_sep = 999
     local max_sep = -999
+    local max_arm_r = -999
     local distinct_angles = {}
     for _ = 1, 60 do
         test_corpse._applied_bones = nil
         deathstats.settle_ragdoll_limbs(test_corpse, 5, "lateral")
         local lat_l = test_corpse:get_bone_override("Leg_Left")
         local lat_r = test_corpse:get_bone_override("Leg_Right")
+        local lat_arm_r = test_corpse:get_bone_override("Arm_Right")
         local lat_l_deg = lat_l and math.deg(lat_l.rotation.vec.x) or 0
         local lat_r_deg = lat_r and math.deg(lat_r.rotation.vec.x) or 0
+        local arm_r_deg = lat_arm_r and math.deg(lat_arm_r.rotation.vec.x) or 0
         local lat_separation = math.abs(lat_r_deg - lat_l_deg)
         if lat_separation < min_sep then min_sep = lat_separation end
         if lat_separation > max_sep then max_sep = lat_separation end
+        if math.abs(arm_r_deg) > max_arm_r then max_arm_r = math.abs(arm_r_deg) end
         local key = string.format("%.1f,%.1f", lat_l_deg, lat_r_deg)
         distinct_angles[key] = true
     end
-    assert(min_sep < 30, string.format("Lateral poses must include close/curled resting legs (min_sep < 30, got: %.1f)", min_sep))
-    assert(max_sep >= 30, string.format("Lateral poses must include staggered/splayed legs (max_sep >= 30, got: %.1f)", max_sep))
+    assert(min_sep < 5, string.format("Lateral poses must include close resting legs (min_sep < 5, got: %.1f)", min_sep))
+    assert(max_sep < 12, string.format("Lateral legs must rest grounded together without flying in the air (max_sep < 12, got: %.1f)", max_sep))
+    assert(max_arm_r < 6, string.format("Lateral top arm must rest flat along flank without sticking in the air (max_arm_r < 6, got: %.1f)", max_arm_r))
     local count_distinct = 0
     for _ in pairs(distinct_angles) do count_distinct = count_distinct + 1 end
     assert(count_distinct >= 20, string.format("Lateral poses must be randomized and diverse (expected >= 20 distinct poses in 60 samples, got %d)", count_distinct))

@@ -302,44 +302,46 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
             custom["Leg_Right"] = math.rad(random_float(10, 22) * scale)
         end
     elseif ptype == "lateral" then
-        -- Lateral: Lying on side with organic archetypes (curled, runner, parallel, splay)
-        -- On the side (roll = +/- pi/2), local X (pitch) bends limbs forward/backward along the ground plane.
-        -- Local Z (abduction) is perpendicular to the ground, so it must be 0 to keep limbs resting flush without lifting into the sky.
+        -- Lateral: Lying on side with anatomically grounded resting archetypes (flank rest, limp parallel, gentle splay)
+        -- Limbs rest flush against the torso and floor: top arm rests along the hip/flank (pitch ~0°, roll = 0°),
+        -- bottom arm rests flat on the floor, and legs rest together (pitch 1° to 8°, separation < 8°).
+        -- Local Z is strictly 0 to prevent pointing upward into the sky.
         local arch = math.random(1, 4)
         local head_pitch
         local l_leg_pitch, r_leg_pitch, l_arm_pitch, r_arm_pitch
 
         if arch == 1 then
-            -- Semi-fetal / curled: legs resting closely together with gentle forward bend (spread only 8° to 16°)
-            l_leg_pitch = random_float(14, 24) * scale
-            r_leg_pitch = random_float(22, 36) * scale
-            l_arm_pitch = random_float(18, 35) * scale
-            r_arm_pitch = random_float(22, 42) * scale
-            head_pitch = math.rad(random_float(5, 25))
+            -- Flank rest: top arm lies flat along the hip/thigh, bottom arm under torso, legs gently curled together
+            l_leg_pitch = random_float(2, 5) * scale
+            r_leg_pitch = random_float(4, 7) * scale
+            l_arm_pitch = random_float(-4, 2) * scale
+            r_arm_pitch = random_float(-2, 2) * scale
+            head_pitch = math.rad(random_float(-6, 6))
         elseif arch == 2 then
-            -- Staggered runner: one leg forward, one trailing back (spread 30° to 45°)
-            l_leg_pitch = random_float(-24, -10) * scale
-            r_leg_pitch = random_float(15, 32) * scale
-            l_arm_pitch = random_float(-15, 10) * scale
-            r_arm_pitch = random_float(15, 35) * scale
-            head_pitch = math.rad(random_float(-15, 15))
+            -- Relaxed recovery: subtle leg bend resting together, arms along body
+            l_leg_pitch = random_float(3, 6) * scale
+            r_leg_pitch = random_float(5, 8) * scale
+            l_arm_pitch = random_float(-3, 3) * scale
+            r_arm_pitch = random_float(-1, 3) * scale
+            head_pitch = math.rad(random_float(-8, 8))
         elseif arch == 3 then
-            -- Limp parallel: legs almost straight with minimal separation (< 18°)
-            l_leg_pitch = random_float(6, 15) * scale
-            r_leg_pitch = random_float(10, 22) * scale
-            l_arm_pitch = random_float(8, 20) * scale
-            r_arm_pitch = random_float(12, 26) * scale
-            head_pitch = math.rad(random_float(-12, 12))
+            -- Limp parallel: legs almost straight with minimal separation (< 4°), arms parallel along flanks
+            l_leg_pitch = random_float(1, 4) * scale
+            r_leg_pitch = random_float(2, 5) * scale
+            l_arm_pitch = random_float(-2, 2) * scale
+            r_arm_pitch = random_float(-2, 2) * scale
+            head_pitch = math.rad(random_float(-5, 5))
         else
-            -- Relaxed splay: natural asymmetric spread along ground
-            l_leg_pitch = random_float(-14, -2) * scale
-            r_leg_pitch = random_float(18, 34) * scale
-            l_arm_pitch = random_float(10, 24) * scale
-            r_arm_pitch = random_float(20, 38) * scale
-            head_pitch = math.rad(random_float(-20, 20))
+            -- Gentle grounded splay: bottom leg slightly trailing, top leg slightly forward, both on ground
+            l_leg_pitch = random_float(-3, 0) * scale
+            r_leg_pitch = random_float(3, 6) * scale
+            l_arm_pitch = random_float(-4, 3) * scale
+            r_arm_pitch = random_float(-2, 2) * scale
+            head_pitch = math.rad(random_float(-10, 10))
         end
 
-        -- Mirror left/right symmetrically if lying on the right side
+        -- Top limb corresponds to Arm_Left / Leg_Left if lying on right side,
+        -- or Arm_Right / Leg_Right if lying on left side.
         if is_right_side then
             custom["Arm_Left"] = vector.new(math.rad(r_arm_pitch), 0, 0)
             custom["Arm_Right"] = vector.new(math.rad(l_arm_pitch), 0, 0)
@@ -424,9 +426,10 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
         end
     end
 
-    -- Add organic per-joint micro-jitter (±2.5 degrees) so no two poses are identical
+    -- Add organic per-joint micro-jitter so no two poses are identical
     for bone_name, val in pairs(custom) do
-        local jitter = math.rad(random_float(-2.5, 2.5))
+        local max_j = (ptype == "lateral") and 1.2 or 2.5
+        local jitter = math.rad(random_float(-max_j, max_j))
         if type(val) == "table" then
             if ptype == "lateral" and (bone_name:find("Arm") or bone_name:find("Leg")) then
                 -- In lateral pose, limbs bend along ground plane (local X), keeping local Z strictly 0

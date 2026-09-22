@@ -119,7 +119,7 @@ end
 --- Determine the appropriate particle effect for a corpse based on death cause and environment
 ---@param corpse_pos table The {x, y, z} position of the corpse
 ---@param death_info table|nil Optional death analysis table
----@return string effect_type "water"|"lava"|"fire"|"impact"
+---@return string effect_type "water"|"lava"|"fire"|"flies"|"impact"
 function deathstats.get_corpse_effect_type(corpse_pos, death_info)
     -- Probe the physical environment around corpse_pos first (detects settled water/lava/fire)
     if corpse_pos then
@@ -189,7 +189,8 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
         end
     end
 
-    return "impact"
+    -- Default effect for all corpses resting on dry ground: a buzzing swarm of flies
+    return "flies"
 end
 
 --- Calculates rotation-compensated particle emitter vectors for an attached entity.
@@ -468,8 +469,73 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
         }
 
+    elseif effect_type == "flies" then
+        -- Swarm of flies buzzing erratically around the resting corpse
+        local anim_def = {
+            type = "vertical_frames",
+            aspect_w = 5,
+            aspect_h = 5,
+            length = 0.08,
+        }
+        local min_p = has_attached and vector.new(-0.45, 0.15, -0.45) or vector.new(cx - 0.45, cy + 0.15, cz - 0.45)
+        local max_p = has_attached and vector.new(0.45, 0.65, 0.45) or vector.new(cx + 0.45, cy + 0.65, cz + 0.45)
+        local min_v = vector.new(-0.8, -0.3, -0.8)
+        local max_v = vector.new(0.8, 0.5, 0.8)
+        local min_a = vector.new(-1.6, -0.8, -1.6)
+        local max_a = vector.new(1.6, 0.8, 1.6)
+
+        return {
+            amount = 12,
+            time = 0, -- Continuous spawner
+            collisiondetection = false,
+            collision_removal = false,
+            attached = has_attached and attached_obj or nil,
+            -- Legacy client fields (< v5.6)
+            minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
+            maxpos = { x = max_p.x, y = max_p.y, z = max_p.z },
+            minvel = { x = min_v.x, y = min_v.y, z = min_v.z },
+            maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
+            minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
+            maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
+            minexptime = 0.5,
+            maxexptime = 1.2,
+            minsize = 0.6,
+            maxsize = 1.0,
+            texture = "deathstats_particle_fly.png",
+            animation = anim_def,
+            -- Modern Luanti fields (v5.6+ / v5.8+)
+            pos = {
+                min = min_p,
+                max = max_p,
+            },
+            vel = {
+                min = min_v,
+                max = max_v,
+            },
+            acc = {
+                min = min_a,
+                max = max_a,
+            },
+            jitter = {
+                min = vector.new(-5.0, -3.5, -5.0),
+                max = vector.new(5.0, 3.5, 5.0),
+            },
+            drag = {
+                min = vector.new(1.2, 1.2, 1.2),
+                max = vector.new(2.4, 2.4, 2.4),
+            },
+            exptime = { min = 0.5, max = 1.2 },
+            size = { min = 0.6, max = 1.0 },
+            texpool = {
+                {
+                    name = "deathstats_particle_fly.png",
+                    animation = anim_def,
+                },
+            },
+        }
+
     else
-        -- All others: Node particles around the corpse flying upwards from impact at time of death (non-continuous)
+        -- Impact / all others: Node particles around the corpse flying upwards from impact at time of death (non-continuous)
         local ground_node_name = nil
         local ground_param2 = 0
         local check_positions = {
