@@ -1,182 +1,137 @@
 # DeathStats for Luanti
 
-A cinematic, pixel art-themed death screen and lifetime player statistics mod for Luanti.
+[![AI Assisted](https://www.aihonestybadge.com/badges/ai-assisted.svg)](https://www.aihonestybadge.com)
+
+A cinematic death screen, ragdoll physics, and player statistics mod for Luanti.
 
 ![YOU DIED](screenshot.png)
 
-## Features
+When you die in Luanti, DeathStats turns what used to be an instant respawn prompt into a cinematic moment. An orbiting camera circles your fallen character as ragdoll physics take over, custom banners and screen splatters react to how you met your end, and an on-screen dossier tallies everything you did during that life.
 
-- **Cinematic Death Presentation**:
-  - **Dynamic Thematic Banners & Vignette Overlays**:
-    The "YOU DIED" banner typography and fullscreen vignette backdrop dynamically adapt to the cause of death:
-    - **Lava / Magma**: Molten glowing lava banner (`deathstats_you_died_lava.png`) and intense magma splatter with fiery embers vignette (`deathstats_lava_splatter.png`).
-    - **Fire / Burning**: Burning scorched flame banner (`deathstats_you_died_fire.png`) and charred ash smoke with flame splatter vignette (`deathstats_fire_splatter.png`).
-    - **Drowning / Water**: Submerged waterlogged banner (`deathstats_you_died_drown.png`) and underwater splash droplets with aquatic blue vignette (`deathstats_drown_splatter.png`).
-    - **Combat, Fall, Starvation, Suffocation, Void & Generic**: Iconic dripping crimson blood banner (`deathstats_you_died.png`) and visceral blood splatter with dark vignette (`deathstats_blood_splatter.png`).
-  - Visceral "slapped on screen from distance" animation: accelerates forward from distant perspective, impacts the screen glass with an overshoot bounce, settling firmly into view with synchronous subtitle reveal.
-  - Dynamic camera perspective:
-    - **Smooth Dynamic Orbit**: Smoothly follows in-flight ragdoll corpses and orbits around the fallen player corpse or bones block in a circular path in first-person mode, eliminating third-person camera offsets.
-    - **Procedural Ragdoll Physics & Lethal Blow Impulse**: Spawns an immortal corpse mesh entity that inherits realistic impulse momentum and launch lift based on the damage and nature of the fatal blow:
-      - **Cause-of-Death Profiles**: High-damage explosions fling corpses with intense radial launch and 3D tumbling; fall splats pancake with high lateral dispersion; passive environmental deaths (drowning, suffocation, starvation, poison, void) collapse limp in place without artificial knockback.
-      - **Inelastic Surface Bouncing**: Impact with hard ground produces realistic inelastic hops ($e \approx 0.25$, capped at 2 bounces) with soft-surface damping (wool, leaves, dirt, and snow absorb impact immediately).
-      - **Steep Slope Rolling & Tumbling**: Corpses landing on slopes steeper than $28^\circ$ experience downhill rolling acceleration until reaching flat terrain or water.
-      - **Dynamic Resting Poses & Ledge Hanging**: Settling evaluates landing orientation to adopt realistic resting poses (prone face-down, supine face-up, or lateral side-recovery). Torso resting on cliff edges automatically drops hanging legs $45^\circ - 60^\circ$ downward over open drops.
-      - **Bodyfall Impact Audio & Debris**: Plays localized bodyfall thuds on high-velocity ground impact alongside bursting surface node debris particles.
-    - **Multiplayer Performance & Network Bandwidth Optimization**:
-      - **Dirty-Delta Bone Packet Filtering**: Bones are only updated over the network if angular displacement exceeds a $0.05\text{ rad}$ (~$2.8^\circ$) threshold, cutting `AO_CMD_SET_BONE_POSITION` packet spam by over 70%.
-      - **Rate-Throttled Flail Updates**: Airborne limb aerodynamic flailing is throttled to 10 Hz (and 5 Hz for low-velocity slides), entirely avoiding per-step network broadcasts.
-      - **Zero-Cost Settled State**: Once settled, the corpse marks itself at rest, skipping all subsequent raycasts, collision calculations, and bone updates until cleanup.
-      - **C++ Engine Collision Delegation**: Utilizes engine-native `moveresult` collision callbacks rather than script-side tick raycasts.
-    - **Chunk Safety & Surface Friction**: Ground contact applies kinetic surface friction that decelerates sliding corpses to a clean, settled stop at rest. In water or lava, hydrodynamic drag and buoyancy take effect strictly within loaded blocks without force-loading mapblocks. Massive overkill damage is strictly clamped (`18.0` m/s horizontal, `8.0` m/s vertical) to prevent corpses launching beyond map limits.
-    - **Flattened Collisionbox & Slope Incline Pitching**: Corpse uses a flattened physical collisionbox (`{-0.4, -0.15, -0.4, 0.4, 0.25, 0.4}`) and stepheight (`0.6`) so the torso physically rests against stairs and slopes without hovering or getting snagged. Downward two-point spine probes detect terrain incline and automatically pitch the settled corpse to align with stairs and slopes.
-    - **Corpse Appearance Inheritance**: Accurately inherits the player's exact character model, broken limb poses, attached wielditem, and composite skins across 13+ appearance mods (`skinsdb`, `3d_armor`, `clothing`, `player_api`, `mcl_skins`, `simple_skins`, `wardrobe`, `edit_skin`, `collectible_skins`, `myappearance`, `nc_skins`, `u_skins`, `csm_skins`).
-    - **Atmospheric Corpse Particles**: Spawns natural particle effects from the corpse:
-      - **Water**: continuous animated bubbling air bubbles (5x5 px pixel art) floating upward through water.
-      - **Lava**: continuous animated licking fire & ember sparks (5x5 px pixel art) leaping with high glow.
-      - **Fire**: continuous animated billowing ash smoke (5x5 px pixel art) drifting upward.
-      - **All Others**: dynamic burst of surface node particles flying upward from ground impact at the moment of death with customized gravity and velocity.
-    - **Obstacle Avoidance**: Raycasts line-of-sight between camera and corpse, dynamically pulling camera in front of solid walls to eliminate clipping.
-    - **Bones Mod Compatibility**: Respects `bones_mode` setting. When `bones_mode == "bones"`, suppresses the corpse entity so the placed bones block is directly visible and fully functional (retaining stored inventory and item drop mechanics), automatically locking camera orbit directly onto the bones. When `bones` is disabled or in `drop`/`keep` mode, falls back to the cinematic corpse entity.
-    - **Early Item Drops**: If the game drops inventory on death (`bones_mode == "drop"`, etc.), items scatter around the death position with randomized velocity right as the orbit begins.
-  - Clean cinematic display: in-game hotbar and HUDs automatically hidden during death.
+---
 
-- **Intelligent Death Cause & Weapon Detection**:
-  - Identifies killers (players or mobs), weapon/tool used for the killing blow (swords, tools, bare hands).
-  - Full projectile & ranged weapon attribution: tracks kills and damage from arrows (`x_bows`), sword projectiles (`x_obsidianmese`), and custom ranged weapons directly to the shooter player.
-  - Full mob combat damage tracking: tracks all damage dealt to mobs across `mobs_redo`, `creatura`, and custom entities.
-  - Robust fallback environmental inspection when engine `reason` is `nil` or generic: detects drowning (breath/water), lava melting, burning in fire, falling impact velocity, suffocation in solid blocks, falling into the void, hunger starvation, and dehydration.
-  - **Hunger & Thirst Integration**: Seamlessly detects starvation and dehydration deaths across popular hunger and thirst frameworks including `hbhunger`, `hudbars`, `stamina`, `hunger_ng`, `mcl_hunger`, `thirsty`, and `unified_stamina` (even when damage is applied via generic `set_hp` calls).
-  - Hilarious, curated epitaph notes for every cause of death in high-contrast white text.
+## What It Does
 
-- **Interactive Death Interface (Modern Formspec v6)**:
-  - **Try Again**: Instant respawn, clean HUD removal, and camera restore.
-  - **Side-Docked Last Life Card**: Compact summary displaying time survived, blocks mined, total ores mined, damage dealt & taken with clear labels, mobs & players slain, items crafted & consumed, and distance traveled. Positioned neatly on the side of the screen so the fallen player model and death location remain completely unobstructed.
-  - **More Statistics (Lifetime Dossier)**: Comprehensive interactive dashboard with transparent backdrop and accessible tab styling, persistent across server restarts using Luanti's Mod Storage:
-    - **Overview Tab**: Total playtime, total deaths, K/D ratio, damage statistics, building and survival records.
-    - **Ores Breakdown Tab**: Dynamic scrollable 2-column grid showing every single ore variety extracted with item icons, exact counts, and sorted rankings.
-    - **Combat & Mobs Tab**: Dynamic scrollable 2-column grid of mobs and players slain with individual kill counts.
+### Cinematic Death Sequence
+- **Reactive Death Banners & Splatters**: The "YOU DIED" banner and fullscreen screen splatter adapt to your cause of death:
+  - **Lava**: Glowing magma banner with embers and lava splatter.
+  - **Fire**: Scorched flame banner with smoke and ash.
+  - **Drowning**: Waterlogged typography with submerged droplet vignettes and rising bubbles.
+  - **Combat, Falls & Hazards**: Classic blood banner with crimson splatter.
+- **Smooth Orbiting Deathcam**: Automatically circles the fallen character in first-person mode with built-in raycast wall avoidance so the camera never clips into solid blocks.
+- **Photo Mode**: Click the on-screen camera icon (or type `/stats photo`) to hide all UI elements and frame unobstructed screenshots.
+- **Vocal Death Audio**: Plays random CC0 death groans and hurt sounds on impact.
 
-- **Persistent Corpse Decay & Interactive Grave Epitaphs**:
-  - **World Persistence Post-Respawn**: Rather than vanishing the moment the player respawns, settled corpses remain resting in the world for a configurable duration (`deathstats_corpse_decay_time = 180` seconds by default; set to `0` to remove immediately).
-  - **Interactive Epitaph Plaques**: Living players can right-click any persistent corpse to view a death plaque modal with survival duration, death cause, and killer information.
-  - **Smoke & Ash Dissolution**: When the decay timer expires, the corpse dissolves cleanly with an atmospheric puff of smoke particles (`deathstats_particle_smoke.png`).
-  - **Strict Anti-Clutter Corpse Capping**: If a player dies repeatedly, any older corpse is immediately dissolved with smoke particles before spawning the new one, strictly capping corpses to 1 per player to prevent clutter.
+### Procedural Ragdoll Corpses
+- **Impulse from Fatal Blows**: Explosions launch and tumble corpses across the ground, long falls pancake on impact, and passive deaths (poison, starvation, suffocation) slump in place.
+- **Dynamic Terrain Awareness**: Bodies slide down slopes steeper than 28°, match the incline of stairs, and settle into organic resting poses (face-down, face-up, on their side, or sitting propped against a wall).
+- **Appearance & Gear Sync**: Accurately inherits your skin, equipped armor, wielded item, and custom humanoid meshes across popular skin frameworks (`skinsdb`, `3d_armor`, `clothing`, `player_api`, `mcl_skins`, etc.).
+- **Bones Mod Compatible**: When `bones_mode = "bones"` is active, DeathStats docks directly onto the placed bones block so inventory drops remain fully functional.
 
-- **Nemesis Vendetta & Revenge Bounty System**:
-  - **Automated Vendetta Tracking**: When slain by another player in PvP, the victim receives an active vendetta against their killer for their upcoming life (`deathstats_enable_revenge = true`).
-  - **Respawn Prompt**: Players receive a private chat notification upon respawn reminding them of their bounty target: `[DeathStats] Vendetta Active: Slay <killer> during this life to claim revenge!`.
-  - **Revenge Completion & Broadcast**: Slaying your nemesis during that life completes the vendetta, logs revenge statistics to active-run and lifetime profiles, and optionally broadcasts a server-wide announcement: `[DeathStats] REVENGE! <Killer> has avenged their death and slain <Victim>!` (`deathstats_announce_revenge = true`).
-  - **[RVNG] Avenger Scoreboard Badge**: Slaying your nemesis awards the prestigious `[RVNG]` **Avenger** title badge on the multiplayer scoreboard (`sneak+aux1` and `/scores`).
-  - **Single-Life Bounty Window**: Vendettas are strictly scoped to the immediate next life; dying to environmental hazards or other players clears the vendetta target.
+### Corpse Persistence & Epitaphs
+- **World Persistence**: Corpses remain resting in the world for a few minutes (configurable, default: 3 minutes) before dissolving away with an ash smoke puff.
+- **Inspectable Epitaph Plaques**: Other players can right-click any corpse to view a summary plaque with survival time, death cause, killer name, and a humorous epitaph note.
+- **Tidy Worlds**: Automatically limits each player to one active corpse at a time to prevent server clutter.
 
-- **Tactical Multiplayer Live Scoreboard**:
-  - **Hold-to-View 2D HUD**: Press and hold **Sneak + Aux1** (default, configurable to **ZOOM** or other keys) to instantly overlay a tactical, semi-transparent scoreboard table on screen (`z_index = 1000`) without opening intrusive blocking windows. Releasing the key immediately tears down all HUD elements.
-  - **Current-Life Scoped Statistics**: Tracks active life metrics (`data.current_run`) that reset upon player death:
-    - **Combined PvP / PvE Kills**: Displays combined combat records (`pvp / pve` or `pvp/pve` on compact screens) in a single column.
-    - **Damage Dealt (DMG)**: Tracks live combat damage dealt during the active life.
-    - **Blocks Mined (MINED)**: Displays nodes harvested in the current run.
-    - **Active Survival Time (TIME)**: Displays current-life survival duration formatted human-readably (e.g. `14m 20s`, `1h 05m`).
-    - **Armor & Health Points**: Live armor defense rating and current health points.
-    - **Color-Coded Ping Latency**: Network round-trip latency (`ms`) color-coded dynamically (Green `<60ms`, Yellow `60-140ms`, Red `>140ms`).
-  - **Visual Status Icons**:
-    - **Dead Status**: Deceased players (viewing death screen or `HP <= 0`) display a red skull icon (`deathstats_icon_skull.png`) in the status column next to their name.
-    - **Ultra-Efficient AFK Tracking**: Players inactive for longer than `deathstats_afk_timeout` (120s default) display an amber Zzz icon (`deathstats_icon_afk.png`). AFK tracking uses event-driven hooks and throttled position/look inspection with zero packet spam.
-  - **Pluggable Column Registration API**:
-    - Easily extend, override, or reorder scoreboard columns with `deathstats.register_scoreboard_column(id, def)` and `deathstats.unregister_scoreboard_column(id)`.
-    - Example custom column registration:
-      ```lua
-      -- Register a custom "Coins" column
-      if deathstats and deathstats.register_scoreboard_column then
-          deathstats.register_scoreboard_column("coins", {
-              order = 65,                        -- Display order (built-in orders: rank=10, player=20, kills=30, dmg=40, mined=50, time=60, armor=70, hp=80, ping=90)
-              title = "COINS",                    -- Header title for standard displays
-              title_small = "C",                  -- Shorter title for compact screens
-              pct = 0.08,                         -- Width fraction of scoreboard table (8%)
-              min_w = 45,                         -- Minimum pixel width
-              icon = "deathstats_icon_star.png",  -- Header icon texture (32x32)
-              tooltip = "Gold coins collected",   -- Header tooltip
-              get_value = function(player, item, is_small)
-                  local coins = my_economy.get_coins(item.name) or 0
-                  return string.format("%d", coins)
-              end,
-              get_color = function(player, item)
-                  return 0xFFD700                 -- Optional custom text color (gold)
-              end,
-          })
-      end
+### Cause-of-Death Tracking & Nemesis Revenge
+- **Intelligent Attribution**: Identifies killers, weapons, and ranged projectile attacks (`x_bows` arrows, spells).
+- **Environmental Fallbacks**: Detects falls, drowning, fire, lava, suffocation, void falls, and starvation/dehydration frameworks (`hbhunger`, `stamina`, `thirsty`, `unified_stamina`).
+- **Vendetta & Revenge Bounties**: Getting slain by another player marks them as your active nemesis. Slaying them during your next life triggers a revenge broadcast and unlocks the `[RVNG]` Avenger title badge.
 
-      -- Unregister an existing column (e.g. remove ping from scoreboard)
-      if deathstats and deathstats.unregister_scoreboard_column then
-          deathstats.unregister_scoreboard_column("ping")
-      end
-      ```
-  - **In-Game Time Header**: Displays real-time in-game world time in 24-hour format (`19:30`) or 12-hour format (`07:30 PM`) alongside current connected player counts.
-  - **Infographic Table Header Icons**: Header features crisp 32x32 pixel art icons before column labels (`trophy`, `player`, `sword`, `target`, `pickaxe`, `clock`, `shield`, `heart`, `ping`). On compact screen resolutions, the headers automatically collapse to show only icons to prevent text clipping.
-  - **Adaptive Line Spacing & Row Budget**: Dynamically scales line heights and row capacity based on screen resolution and HUD scaling (inspired by `waysigns`), showing only as many rows as cleanly fit your display.
-  - **Full Scrollable Formspec Roster**: Run `/deathstats scores` (or `/scores`) to toggle an interactive modal dialog displaying the full scrollable roster of all players on the server.
+### Lifetime Dossier (`/stats`)
+- **Active Life Summary**: Displays survival duration, mined ores, combat damage dealt/taken, kills, crafted items, and distance traveled.
+- **Interactive Lifetime Dashboard**: Persistent stats saved in Mod Storage across server restarts:
+  - **Overview**: Playtime, K/D ratio, deaths, total damage, survival records.
+  - **Ores Breakdown**: Full breakdown of every ore type mined with counts and icons.
+  - **Combat & Mobs**: Kill counts for every mob species and player slain.
+  - **Hall of Fame**: Server leaderboards for kills, survival time, and mining.
+
+### Tactical Multiplayer Scoreboard
+- **Hold-to-View HUD Overlay**: Press and hold **Sneak + Aux1** (or configure to **Zoom**) to display a live scoreboard overlay without opening a blocking dialog.
+- **Live Metrics**: Shows Player Name, Kills, Deaths, K/D, Damage, Mined Blocks, Survival Time, Armor, Health, and Color-Coded Ping.
+- **AFK & Status Icons**: Displays skull icons for dead players and Zzz icons for AFK players.
+- **Roster Dialog**: Use `/scores` (or `/deathstats scores`) to open a full scrollable formspec table.
+- **Pluggable Column API**: Other mods can register custom columns using `deathstats.register_scoreboard_column(id, def)`.
+
+---
+
+## Scoreboard Extension Example
+
+```lua
+-- Add a custom column to the scoreboard
+if deathstats and deathstats.register_scoreboard_column then
+    deathstats.register_scoreboard_column("coins", {
+        order = 65,
+        title = "COINS",
+        title_small = "C",
+        pct = 0.08,
+        min_w = 45,
+        icon = "deathstats_icon_star.png",
+        tooltip = "Coins collected",
+        get_value = function(player, item, is_small)
+            return tostring(my_economy.get_coins(item.name) or 0)
+        end,
+        get_color = function(player, item)
+            return 0xFFD700 -- Gold
+        end,
+    })
+end
+```
+
+---
 
 ## Configuration
 
-The following options can be customized in `luanti.conf` or the in-game Settings menu:
-- `deathstats_enable_scoreboard = true` (toggle live multiplayer scoreboard feature)
-- `deathstats_scoreboard_key = sneak_aux1` (key/combination to hold for scoreboard HUD: `sneak_aux1` / `sneak+aux1`, `zoom`, `aux1`, `sneak`)
-- `deathstats_time_format = 24h` (in-game time format in scoreboard header: `24h` or `12h`)
-- `deathstats_scoreboard_update_interval = 1.0` (scoreboard HUD live refresh rate in seconds while held)
-- `deathstats_scoreboard_suppress_chat = true` (suppress on-screen chat while the scoreboard HUD overlay is held open)
-- `deathstats_mock_scoreboard = false` (toggle mock scoreboard test data for testing large multiplayer rosters)
-- `deathstats_afk_timeout = 120` (inactivity duration in seconds before a player is marked AFK)
-- `deathstats_enable_sounds = true` (toggle death sound effects)
-- `deathstats_enable_camera = true` (toggle cinematic camera orbit on death)
-- `deathstats_orbit_radius = 3.2` (orbit circle radius in nodes)
-- `deathstats_orbit_height = 1.5` (orbit camera height above corpse in nodes)
-- `deathstats_orbit_speed = 0.4` (orbit rotation speed in rad/s, ~15.7s for full circle)
-- `deathstats_enable_animation = true` (toggle zoom & fade animation)
-- `deathstats_animation_duration = 2.4` (duration of screen slap animation in seconds)
-- `deathstats_blood_opacity = 240` (opacity of fullscreen splatter vignette overlay across all death causes, 0-255)
-- `deathstats_formspec_side = right` (`right`, `left`, or `center` screen alignment)
-- `deathstats_enable_limb_fractures = true` (enable broken/fractured limb rotations on death)
-- `deathstats_enable_corpse_particles = true` (enable corpse environmental particle effects)
-- `deathstats_enable_corpse_ragdoll = true` (toggle procedural ragdoll physics on corpse death)
-- `deathstats_ragdoll_force_multiplier = 1.0` (overall velocity scaling multiplier for corpse knockback)
-- `deathstats_ragdoll_max_velocity = 18.0` (maximum horizontal velocity clamp to prevent launching into unloaded chunks)
-- `deathstats_ragdoll_tumbling = true` (enable 3D angular rotation and tumbling during corpse flight)
-- `deathstats_enable_slope_pitch = true` (automatic terrain and stair slope detection to pitch corpse torso along terrain incline)
-- `deathstats_ragdoll_restitution = 0.25` (elasticity restitution factor for hard surface bounces, 0.0 for zero bounce)
-- `deathstats_ragdoll_flail_rate = 10.0` (ragdoll limb aerodynamic flail update rate in Hz for multiplayer network throttling)
-- `deathstats_ragdoll_resting_poses = true` (enable diverse resting poses: prone face-down, supine face-up, lateral recovery)
-- `deathstats_enable_corpse_impact_sounds = true` (enable localized bodyfall thud sound effects on surface impact)
-- `deathstats_corpse_decay_time = 180` (duration in seconds that a settled corpse persists in the world after respawn; 0 to remove immediately)
-- `deathstats_enable_corpse_inspect = true` (enable corpse right-click interaction for living players to inspect epitaph plaques)
-- `deathstats_enable_revenge = true` (enable the nemesis revenge and vendetta bounty tracking system)
-- `deathstats_announce_revenge = true` (broadcast server-wide chat announcement when a player avenges their death)
-- `deathstats_enable_mvp_badges = true` (enable MVP and title badges on the multiplayer scoreboard)
-- `deathstats_enable_hall_of_fame = true` (enable the all-time Hall of Fame tab on the scoreboard formspec)
-- `deathstats_chat_death_coords = true` (print private death coordinates and biome to player chat upon respawn)
+Settings can be changed in the in-game Settings menu or in `luanti.conf`:
 
-- **Sound Effects**:
-  - Plays authentic CC0 human death sound effects from Freesound picked at random on death (expressive death groans and hurt sounds by kreha). Automatically randomized across 5 engine audio variants (`deathstats_death.1.ogg` through `deathstats_death.5.ogg`).
+| Setting | Default | Description |
+|---|---|---|
+| `deathstats_enable_camera` | `true` | Orbiting deathcam |
+| `deathstats_orbit_radius` | `3.2` | Camera distance from corpse (nodes) |
+| `deathstats_orbit_height` | `1.5` | Camera height above corpse (nodes) |
+| `deathstats_orbit_speed` | `0.4` | Orbit rotation speed in rad/s |
+| `deathstats_enable_corpse_ragdoll` | `true` | Ragdoll physics on death |
+| `deathstats_ragdoll_force_multiplier`| `1.0` | Velocity multiplier for fatal blow knockback |
+| `deathstats_ragdoll_restitution` | `0.25` | Bounce elasticity on hard surfaces |
+| `deathstats_ragdoll_resting_poses` | `true` | Poses: prone, supine, lateral, and wall sitting |
+| `deathstats_enable_slope_pitch` | `true` | Aligns corpse pitch to hills and stairs |
+| `deathstats_corpse_decay_time` | `180` | Seconds corpses remain in world (0 for immediate) |
+| `deathstats_enable_corpse_inspect` | `true` | Right-click corpses to inspect epitaph plaques |
+| `deathstats_enable_revenge` | `true` | Nemesis vendetta and revenge bounty tracking |
+| `deathstats_announce_revenge` | `true` | Broadcast revenge kills to server chat |
+| `deathstats_enable_scoreboard` | `true` | Hold-to-view scoreboard HUD and `/scores` |
+| `deathstats_scoreboard_key` | `sneak_aux1` | Activation key (`sneak_aux1`, `zoom`, `aux1`, `sneak`) |
+| `deathstats_time_format` | `24h` | Time format on scoreboard header (`24h` or `12h`) |
+| `deathstats_afk_timeout` | `120` | Inactivity seconds before showing AFK status |
+| `deathstats_chat_death_coords` | `true` | Whispers death coords and biome upon respawn |
+| `deathstats_blood_opacity` | `240` | Screen vignette opacity (0-255) |
+| `deathstats_formspec_side` | `right` | Death stats card screen position (`right`, `left`, `center`) |
 
-- **Multiplayer Performance**:
-  - High performance, memory-efficient in-memory tracking.
-  - **Bandwidth Reduction**: Dynamic bone rotation caching (`luaent._applied_bones`) discards sub-threshold angular deltas ($<0.05\text{ rad}$), preventing network packet spamming (`AO_CMD_SET_BONE_POSITION`).
-  - **Adaptive Throttling**: Flight limb flutter updates throttled to 10 Hz ($v \ge 2\text{ m/s}$) and 5 Hz ($v < 2\text{ m/s}$).
-  - **Zero Settled Overhead**: Once resting conditions are met, entities enter an idle state skipping physical queries and raycasts.
-  - Asynchronous / zero-lag Mod Storage persistence upon death, disconnect, and server shutdown.
-  - Clean fallbacks for all engine versions.
+---
 
-## Sound Credits (Freesound CC0 / Public Domain)
-- `deathstats_death.1.ogg` – `deathstats_death.5.ogg`: by kreha (CC0, [Freesound](https://freesound.org/people/kreha))
+## Performance
+
+DeathStats is built from the ground up to keep server ticks and network bandwidth light:
+- **Bandwidth Throttling**: Ragdoll flailing updates are capped to 10 Hz in flight and 5 Hz on ground slides. Bone rotations ignore micro-movements smaller than 2.8° to avoid packet flooding.
+- **Zero-Cost Sleep**: Once a corpse stops moving, it enters an idle rest state and disables all raycasts and collision calculations.
+- **Chunk Safety**: Fluid drag and node checks use safe, non-loading queries to avoid pulling unloaded mapblocks into memory.
+
+---
 
 ## Testing
 
-DeathStats includes automated unit tests covering death reason analysis, live stat tracking, formspec layouts, corpse mechanics, hunger/thirst compatibility, appearance synchronization, and reconnect persistence:
+DeathStats comes with an extensive automated test suite:
 
 ```bash
+luacheck .
 lua test.lua
 ```
 
-## License
-- **Code**: LGPL-2.1 or later (C) 2026 SaKeL
-- **Textures & Art**: CC0 / Public Domain
-- **Sounds**: CC0 / Public Domain
 
+---
+
+## License & Credits
+
+- **Code**: LGPL-2.1 or later © 2026 SaKeL
+- **Textures & Icons**: CC0 / Public Domain
+- **Sounds**: CC0 by kreha ([Freesound](https://freesound.org/people/kreha))
