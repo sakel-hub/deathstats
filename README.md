@@ -2,8 +2,6 @@
 
 [![ContentDB](https://content.luanti.org/packages/SaKeL/deathstats/shields/title/)](https://content.luanti.org/packages/SaKeL/deathstats/)
 [![ContentDB Downloads](https://content.luanti.org/packages/SaKeL/deathstats/shields/downloads/)](https://content.luanti.org/packages/SaKeL/deathstats/)
-[![ContentDB Rating](https://content.luanti.org/packages/SaKeL/deathstats/shields/rating/)](https://content.luanti.org/packages/SaKeL/deathstats/)
-[![ContentDB Version](https://content.luanti.org/packages/SaKeL/deathstats/shields/version/)](https://content.luanti.org/packages/SaKeL/deathstats/)
 ![Luanti](https://img.shields.io/badge/Luanti-5.4%2B-5599ff.svg)
 [![Luacheck](https://img.shields.io/github/actions/workflow/status/sakel-hub/deathstats/luacheck.yml?label=Luacheck&logo=lua)](https://github.com/sakel-hub/deathstats/actions)
 [![License: LGPL 2.1](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](LICENSE.txt)
