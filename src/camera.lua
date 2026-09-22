@@ -252,6 +252,13 @@ function deathstats.update_death_camera(player, dtime)
                 if effect_type ~= "impact" then
                     data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info, data.corpse)
                     data.current_effect_type = effect_type
+                    local c_ent = data.corpse and data.corpse.get_luaentity and data.corpse:get_luaentity()
+                    local c_rot = (c_ent and c_ent._rot) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation())
+                    local r = (c_rot and c_rot.z) or 0
+                    local p = (c_rot and c_rot.x) or 0
+                    local is_p = (math.cos(r) * math.cos(p) < -0.5)
+                    data.particles_were_prone = is_p
+                    if c_ent then c_ent._particles_were_prone = is_p end
                 end
             end
         end
@@ -329,7 +336,12 @@ function deathstats.update_death_camera(player, dtime)
                         local settled_effect = deathstats.get_corpse_effect_type(cpos, data.death_info)
                         local current_effect = data.current_effect_type or deathstats.get_corpse_effect_type(data.initial_death_pos or cpos, data.death_info)
                         local has_active_spawners = data.particle_spawners and #data.particle_spawners > 0
-                        if settled_effect ~= current_effect or not has_active_spawners then
+                        local roll = (luaent._rot and luaent._rot.z) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().z) or 0
+                        local pitch = (luaent._rot and luaent._rot.x) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().x) or 0
+                        local uy = math.cos(roll) * math.cos(pitch)
+                        local is_prone = (uy < -0.5)
+                        local orientation_changed = (data.particles_were_prone ~= nil and data.particles_were_prone ~= is_prone)
+                        if settled_effect ~= current_effect or not has_active_spawners or orientation_changed then
                             if data.particle_spawners then
                                 for _, pid in ipairs(data.particle_spawners) do
                                     core.delete_particlespawner(pid)
@@ -348,6 +360,8 @@ function deathstats.update_death_camera(player, dtime)
                                 data.current_effect_type = eff
                                 luaent._particle_spawners = spawners
                                 luaent._effect_type = eff
+                                data.particles_were_prone = is_prone
+                                luaent._particles_were_prone = is_prone
                             else
                                 data.current_effect_type = settled_effect
                                 luaent._effect_type = settled_effect
@@ -1166,9 +1180,16 @@ function deathstats.set_death_camera(player, death_info)
     end
     local particle_spawners = nil
     local current_effect_type = nil
+    local initial_is_prone = false
     if deathstats.config.enable_corpse_particles ~= false then
         local particle_pos = bones_pos or corpse_pos
         particle_spawners, current_effect_type = deathstats.spawn_corpse_particles(particle_pos, death_info, corpse)
+        local c_ent = corpse and corpse.get_luaentity and corpse:get_luaentity()
+        local c_rot = (c_ent and c_ent._rot) or (corpse and corpse.get_rotation and corpse:get_rotation())
+        local r = (c_rot and c_rot.z) or 0
+        local p = (c_rot and c_rot.x) or 0
+        initial_is_prone = (math.cos(r) * math.cos(p) < -0.5)
+        if c_ent then c_ent._particles_were_prone = initial_is_prone end
     end
     if not expect_bones and not corpse and core.after then
         core.after(0.2, function()
@@ -1182,6 +1203,13 @@ function deathstats.set_death_camera(player, death_info)
                 end
                 if deathstats.config.enable_corpse_particles ~= false and not cdata.particle_spawners then
                     cdata.particle_spawners, cdata.current_effect_type = deathstats.spawn_corpse_particles(corpse_pos, death_info, retry_corpse)
+                    local rc_ent = retry_corpse and retry_corpse.get_luaentity and retry_corpse:get_luaentity()
+                    local rc_rot = (rc_ent and rc_ent._rot) or (retry_corpse and retry_corpse.get_rotation and retry_corpse:get_rotation())
+                    local rr = (rc_rot and rc_rot.z) or 0
+                    local rp = (rc_rot and rc_rot.x) or 0
+                    local ris_p = (math.cos(rr) * math.cos(rp) < -0.5)
+                    cdata.particles_were_prone = ris_p
+                    if rc_ent then rc_ent._particles_were_prone = ris_p end
                 end
             end
         end)
@@ -1419,6 +1447,7 @@ function deathstats.set_death_camera(player, death_info)
         current_effect_type = current_effect_type,
         arrows_transferred = false,
         corpse_settled_particles_checked = false,
+        particles_were_prone = initial_is_prone,
     }
 
     -- Immediately orient camera to starting orbit vantage

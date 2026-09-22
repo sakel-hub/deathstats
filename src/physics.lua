@@ -1132,7 +1132,12 @@ function deathstats.settle_corpse_at_rest(luaent)
         local has_active_spawners = (luaent._particle_spawners and #luaent._particle_spawners > 0)
             or (cdata and cdata.particle_spawners and #cdata.particle_spawners > 0)
 
-        if settled_effect and (settled_effect ~= current_effect or (not has_active_spawners and settled_effect ~= "impact")) then
+        local uy = math.cos(roll) * math.cos(pitch)
+        local is_prone = (uy < -0.5)
+        local initial_is_prone = luaent._particles_were_prone or (cdata and cdata.particles_were_prone)
+        local orientation_changed = (initial_is_prone ~= nil and initial_is_prone ~= is_prone)
+
+        if settled_effect and (settled_effect ~= current_effect or orientation_changed or (not has_active_spawners and settled_effect ~= "impact")) then
             if luaent._particle_spawners then
                 for _, pid in ipairs(luaent._particle_spawners) do
                     core.delete_particlespawner(pid)
@@ -1149,9 +1154,11 @@ function deathstats.settle_corpse_at_rest(luaent)
                 local spawners, eff = deathstats.spawn_corpse_particles(pos, dinfo, obj)
                 luaent._particle_spawners = spawners
                 luaent._effect_type = eff
+                luaent._particles_were_prone = is_prone
                 if cdata then
                     cdata.particle_spawners = spawners
                     cdata.current_effect_type = eff
+                    cdata.particles_were_prone = is_prone
                 end
             else
                 luaent._effect_type = settled_effect

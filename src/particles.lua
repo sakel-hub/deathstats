@@ -261,6 +261,12 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     if has_attached then
         local luaent = (attached_obj.get_luaentity and attached_obj:get_luaentity())
         rot = (luaent and luaent._rot) or (attached_obj.get_rotation and attached_obj:get_rotation())
+        if luaent then
+            local roll = (rot and rot.z) or 0
+            local pitch = (rot and rot.x) or 0
+            local uy = math.cos(roll) * math.cos(pitch)
+            luaent._particles_were_prone = (uy < -0.5)
+        end
     end
 
     if effect_type == "water" then
@@ -477,12 +483,29 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             aspect_h = 5,
             length = 0.08,
         }
-        local min_p = has_attached and vector.new(-0.45, 0.15, -0.45) or vector.new(cx - 0.45, cy + 0.15, cz - 0.45)
-        local max_p = has_attached and vector.new(0.45, 0.65, 0.45) or vector.new(cx + 0.45, cy + 0.65, cz + 0.45)
-        local min_v = vector.new(-0.8, -0.3, -0.8)
-        local max_v = vector.new(0.8, 0.5, 0.8)
-        local min_a = vector.new(-1.6, -0.8, -1.6)
-        local max_a = vector.new(1.6, 0.8, 1.6)
+        local pos_min_y, pos_max_y = 0.15, 0.65
+        local roll = (rot and rot.z) or 0
+        local pitch = (rot and rot.x) or 0
+        local uy = math.cos(roll) * math.cos(pitch)
+        local vel_min_y, vel_max_y = -0.3, 0.5
+        local acc_min_y, acc_max_y = -0.8, 0.8
+        if has_attached and uy < -0.5 then
+            local o_max = pos_max_y
+            pos_max_y = -pos_min_y
+            pos_min_y = -o_max
+            local o_vmax = vel_max_y
+            vel_max_y = -vel_min_y
+            vel_min_y = -o_vmax
+            local o_amax = acc_max_y
+            acc_max_y = -acc_min_y
+            acc_min_y = -o_amax
+        end
+        local min_p = has_attached and vector.new(-0.45, pos_min_y, -0.45) or vector.new(cx - 0.45, cy + 0.15, cz - 0.45)
+        local max_p = has_attached and vector.new(0.45, pos_max_y, 0.45) or vector.new(cx + 0.45, cy + 0.65, cz + 0.45)
+        local min_v = vector.new(-0.8, vel_min_y, -0.8)
+        local max_v = vector.new(0.8, vel_max_y, 0.8)
+        local min_a = vector.new(-1.6, acc_min_y, -1.6)
+        local max_a = vector.new(1.6, acc_max_y, 1.6)
 
         return {
             amount = 12,
@@ -558,6 +581,23 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
         end
 
         local fallback_tex = deathstats.get_node_tile_texture(ground_node_name)
+        local pos_min_y, pos_max_y = -0.05, 0.15
+        local vel_min_y, vel_max_y = 1.8, 3.6
+        local acc_min_y, acc_max_y = -9.81, -9.81
+        local roll = (rot and rot.z) or 0
+        local pitch = (rot and rot.x) or 0
+        local uy = math.cos(roll) * math.cos(pitch)
+        if has_attached and uy < -0.5 then
+            local o_max = pos_max_y
+            pos_max_y = -pos_min_y
+            pos_min_y = -o_max
+            local o_vmax = vel_max_y
+            vel_max_y = -vel_min_y
+            vel_min_y = -o_vmax
+            local o_amax = acc_max_y
+            acc_max_y = -acc_min_y
+            acc_min_y = -o_amax
+        end
 
         return {
             amount = 28,
@@ -568,28 +608,28 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             texture = fallback_tex,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.45, y = -0.05, z = -0.45 } or { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
-            maxpos = has_attached and { x = 0.45, y = 0.15, z = 0.45 } or { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
-            minvel = { x = -1.6, y = 1.8, z = -1.6 },
-            maxvel = { x = 1.6, y = 3.6, z = 1.6 },
-            minacc = { x = 0, y = -9.81, z = 0 },
-            maxacc = { x = 0, y = -9.81, z = 0 },
+            minpos = has_attached and { x = -0.45, y = pos_min_y, z = -0.45 } or { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
+            maxpos = has_attached and { x = 0.45, y = pos_max_y, z = 0.45 } or { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
+            minvel = { x = -1.6, y = vel_min_y, z = -1.6 },
+            maxvel = { x = 1.6, y = vel_max_y, z = 1.6 },
+            minacc = { x = 0, y = acc_min_y, z = 0 },
+            maxacc = { x = 0, y = acc_max_y, z = 0 },
             minexptime = 0.6,
             maxexptime = 1.2,
             minsize = 0,
             maxsize = 0,
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.45, -0.05, -0.45) or vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
-                max = has_attached and vector.new(0.45, 0.15, 0.45) or vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
+                min = has_attached and vector.new(-0.45, pos_min_y, -0.45) or vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
+                max = has_attached and vector.new(0.45, pos_max_y, 0.45) or vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
             },
             vel = {
-                min = vector.new(-1.6, 1.8, -1.6),
-                max = vector.new(1.6, 3.6, 1.6),
+                min = vector.new(-1.6, vel_min_y, -1.6),
+                max = vector.new(1.6, vel_max_y, 1.6),
             },
             acc = {
-                min = vector.new(0, -9.81, 0),
-                max = vector.new(0, -9.81, 0),
+                min = vector.new(0, acc_min_y, 0),
+                max = vector.new(0, acc_max_y, 0),
             },
             exptime = { min = 0.6, max = 1.2 },
             size = { min = 0, max = 0 },

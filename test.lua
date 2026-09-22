@@ -10018,6 +10018,25 @@ suites[101] = function()
     assert(fire_ps_def ~= nil, "Fire particlespawner def must be created")
     assert(fire_ps_def.maxvel.y < 0, "Attached prone fire smoke must have negative local Y velocity")
 
+    local flies_ps_def = deathstats.create_corpse_particlespawner_def("flies", { x = 50, y = 5, z = 50 }, dummy_corpse)
+    assert(flies_ps_def ~= nil, "Flies particlespawner def must be created")
+    assert(flies_ps_def.maxpos.y < 0, "Attached prone flies must have negative local Y position (so world Y is above corpse)")
+    assert(flies_ps_def.pos.max.y < 0, "Modern texpool pos.max.y must have negative local Y position")
+    assert(flies_ps_def.minpos.y < flies_ps_def.maxpos.y, "Local Y minpos must be less than maxpos")
+    assert(flies_ps_def.pos.min.y < flies_ps_def.pos.max.y, "Modern pos min.y must be less than max.y")
+
+    -- Test supine flies has positive local Y position
+    local rot_supine = { x = 0, y = 0, z = 0 }
+    d_ent._rot = rot_supine
+    dummy_corpse:set_rotation(rot_supine)
+    local supine_flies = deathstats.create_corpse_particlespawner_def("flies", { x = 50, y = 5, z = 50 }, dummy_corpse)
+    assert(supine_flies ~= nil, "Supine flies particlespawner def must be created")
+    assert(supine_flies.minpos.y > 0 and supine_flies.maxpos.y > 0, "Attached supine flies must have positive local Y position")
+    assert(supine_flies.pos.min.y > 0 and supine_flies.pos.max.y > 0, "Modern supine flies pos must have positive local Y position")
+    -- Reset to prone for remaining checks
+    d_ent._rot = rot_prone
+    dummy_corpse:set_rotation(rot_prone)
+
     dummy_corpse:remove()
 
     -- Liquid Buoyancy: Submerged Corpse Floats Upward
