@@ -368,10 +368,10 @@ end)
 
 -- Also wrap core.register_entity so any entity registered dynamically is also hooked
 local orig_register_entity = core.register_entity
-core.register_entity = function(name, prototype)
+rawset(core, "register_entity", function(name, prototype)
     hook_entity_punch(name, prototype)
     return orig_register_entity(name, prototype)
-end
+end)
 
 -- Player Join / Leave / Shutdown Handlers
 core.register_on_joinplayer(function(player)

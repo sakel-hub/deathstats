@@ -17,22 +17,7 @@ local WALL_TEST_YS = { 0.60, 0.80 }
 -- Corpse Entity, Visuals & Camera Orbit
 -- ==========================================
 
---- Calculate initial velocity and angular velocity for the ragdoll corpse based on the last blow
-local function safe_normalize(v)
-    if not v then
-        return vector.zero()
-    end
-    if vector.normalize then
-        local res = vector.normalize(v)
-        if res then return res end
-    end
-    local vx, vy, vz = v.x or 0, v.y or 0, v.z or 0
-    local len = math.sqrt(vx * vx + vy * vy + vz * vz)
-    if len == 0 then
-        return vector.zero()
-    end
-    return vector.new(vx / len, vy / len, vz / len)
-end
+local safe_normalize = deathstats.safe_normalize
 
 ---@param player ObjectRef|nil The deceased player
 ---@param death_info table|nil The death analysis table
@@ -226,10 +211,7 @@ function deathstats.calculate_corpse_impulse(player, death_info, last_blow)
     return initial_velocity, setmetatable(rot_speed, rot_mt), rot_speed.x, rot_speed.y, rot_speed.z
 end
 
---- Helper to generate a random floating point number between min_val and max_val
-local function random_float(min_val, max_val)
-    return min_val + math.random() * (max_val - min_val)
-end
+local random_float = deathstats.random_float
 
 --- Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce
 ---@param corpse ObjectRef The corpse entity object

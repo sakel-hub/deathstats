@@ -8,7 +8,6 @@
     (at your option) any later version.
 --]]
 
-local copy = table.copy
 local VEC_ZERO = vector.new(0, 0, 0)
 local GRAV_ACCEL = { x = 0, y = -9.81, z = 0 }
 local FALL_VEL = { x = 0, y = -1.2, z = 0 }
@@ -1169,259 +1168,26 @@ function deathstats.get_player_visuals(player)
     if deathstats.compat_skins and deathstats.compat_skins.get_player_visuals then
         return deathstats.compat_skins.get_player_visuals(player)
     end
-    local name = player:get_player_name()
+    if not player or not player:is_player() then
+        return {
+            mesh = "character.b3d",
+            textures = { "character.png" },
+            visual_size = { x = 1, y = 1, z = 1 },
+            yaw = 0,
+            armor_dropped = false,
+            inventory_dropped = false,
+            wield_item = "",
+        }
+    end
     local props = player:get_properties() or {}
-
-    local armor_mod = rawget(_G, "armor")
-    local skins_mod = rawget(_G, "skins")
-    local wardrobe_mod = rawget(_G, "wardrobe")
-    local player_api_mod = rawget(_G, "player_api")
-    local mcl_skins_mod = rawget(_G, "mcl_skins")
-    local clothing_mod = rawget(_G, "clothing")
-
-    local mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or props.mesh or "character.b3d"
-    local visual_size = copy(props.visual_size or { x = 1, y = 1, z = 1 })
-    local yaw = player:get_look_horizontal() or 0
-
-    if visual_size.x == 0 and visual_size.y == 0 then
-        visual_size = { x = 1, y = 1, z = 1 }
-    end
-
-    local drops_armor = deathstats.is_armor_dropped(player)
-    local drops_inventory = deathstats.is_inventory_dropped(player)
-    local wield_item = deathstats.get_player_wield_item(player)
-
-    -- Detect if using the 4-slot skinsdb model (skinsdb_3d_armor_character_5.b3d)
-    local is_skinsdb = (mesh == "skinsdb_3d_armor_character_5.b3d")
-        or (mesh and mesh:find("skinsdb") ~= nil)
-        or (skins_mod and skins_mod.armor_loaded == true)
-        or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props.textures and #props.textures >= 4)))
-
-    -- Detect if using the standard 3-slot 3d_armor model (3d_armor_character.b3d / 3d_armor_character.glb)
-    local is_3d_armor = not is_skinsdb and (
-        (mesh == "3d_armor_character.b3d" or mesh == "3d_armor_character.glb")
-        or (armor_mod and ((armor_mod.textures and armor_mod.textures[name]) or (mesh and mesh:find("3d_armor"))))
-        or (armor_mod and props.textures and #props.textures == 3)
-    )
-
-    local textures
-
-    -- skinsdb + 3d_armor support: 4 material slots
-    -- Slot 1: v10 (1.0 skin or blank.png, + cape)
-    -- Slot 2: v18 (1.8 skin or blank.png, + clothing overlays)
-    -- Slot 3: 3d_armor geometry overlay (blank.png if dropped/naked)
-    -- Slot 4: wielditem (blank.png on corpse)
-    if is_skinsdb then
-        mesh = "skinsdb_3d_armor_character_5.b3d"
-
-        local ver = "1.0"
-        local skin_tex = "character.png"
-
-        if skins_mod and skins_mod.get_player_skin then
-            local skin = skins_mod.get_player_skin(player)
-            if skin then
-                ver = (skin.get_meta and skin:get_meta("format")) or "1.0"
-                skin_tex = (skin.get_texture and skin:get_texture()) or skin_tex
-                local vs_x = skin.get_meta and skin:get_meta("visual_size_x")
-                local vs_y = skin.get_meta and skin:get_meta("visual_size_y")
-                if vs_x and vs_y then
-                    visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
-                end
-            end
-        elseif props.textures and #props.textures >= 2 then
-            if props.textures[2] and props.textures[2] ~= "blank.png" and props.textures[2] ~= "" then
-                ver = "1.8"
-                skin_tex = props.textures[2]
-            elseif props.textures[1] and props.textures[1] ~= "blank.png" and props.textures[1] ~= "" then
-                ver = "1.0"
-                skin_tex = props.textures[1]
-            end
-        end
-
-        local v10_texture = (ver == "1.8") and "blank.png" or skin_tex
-        local v18_texture = (ver == "1.8") and skin_tex or "blank.png"
-
-        -- Support for clothing on skinsdb
-        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
-            local c = clothing_mod.player_textures[name]
-            local cape = c.cape
-            local layers = {}
-            for k, v in pairs(c) do
-                if k ~= "skin" and k ~= "cape" and v and v ~= "" and v ~= "blank.png" then
-                    table.insert(layers, v)
-                end
-            end
-            if #layers > 0 then
-                local overlay = table.concat(layers, "^")
-                v18_texture = (v18_texture == "blank.png") and overlay or (v18_texture .. "^" .. overlay)
-            end
-            if cape and cape ~= "" and cape ~= "blank.png" then
-                v10_texture = (v10_texture == "blank.png") and cape or (v10_texture .. "^" .. cape)
-            end
-        end
-
-        -- Slot 3: 3D Armor mesh geometry
-        local armor_texture = "blank.png"
-        if not drops_armor and armor_mod and armor_mod.textures and armor_mod.textures[name] then
-            local a_tex = armor_mod.textures[name]
-            if a_tex.armor and a_tex.armor ~= "" and a_tex.armor ~= "blank.png" and a_tex.armor ~= "3d_armor_trans.png" then
-                armor_texture = a_tex.armor
-            end
-        elseif not drops_armor and props.textures and props.textures[3] and props.textures[3] ~= "blank.png" and props.textures[3] ~= "3d_armor_trans.png" then
-            armor_texture = props.textures[3]
-        end
-
-        -- Slot 4: Wielditem (corpse holds nothing, so keep blank.png)
-        local wielditem_texture = "blank.png"
-
-        textures = {
-            v10_texture,
-            v18_texture,
-            armor_texture,
-            wielditem_texture,
-        }
-
-    -- Standalone 3d_armor support: 3 material slots (skin, armor, wielditem)
-    elseif is_3d_armor then
-        local fallback_armor = (props.mesh and props.mesh:find("%.glb$")) and "3d_armor_character.glb" or "3d_armor_character.b3d"
-        mesh = (armor_mod and armor_mod.models and armor_mod.models[name]) or (mesh and mesh:find("3d_armor") and mesh) or fallback_armor
-        local a_tex = (armor_mod and armor_mod.textures and armor_mod.textures[name]) or {}
-        local skin_tex = a_tex.skin or (props.textures and props.textures[1]) or "character.png"
-        local armor_tex = a_tex.armor or "3d_armor_trans.png"
-        -- Keep slot 3 transparent so the attached 3D wielditem entity renders without 2D quad duplication
-        local wield_tex = "3d_armor_trans.png"
-
-        if drops_armor then
-            armor_tex = "3d_armor_trans.png"
-        end
-
-        -- Clothing support on 3d_armor
-        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
-            local c = clothing_mod.player_textures[name]
-            if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
-                skin_tex = skin_tex .. "^" .. c.clothing
-            end
-            if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
-                skin_tex = skin_tex .. "^" .. c.cape
-            end
-        end
-
-        textures = {
-            skin_tex,
-            armor_tex,
-            wield_tex,
-        }
-
-    -- Fallback skin mods: skinsdb (legacy/without armor), simple_skins, wardrobe, player_api, mcl_skins
-    else
-        textures = copy(props.textures or { "character.png" })
-
-        if skins_mod and skins_mod.get_player_skin then
-            local skin = skins_mod.get_player_skin(player)
-            if skin then
-                local skin_tex = skin.get_texture and skin:get_texture()
-                if skin_tex then
-                    textures[1] = skin_tex
-                end
-                local vs_x = skin.get_meta and skin:get_meta("visual_size_x")
-                local vs_y = skin.get_meta and skin:get_meta("visual_size_y")
-                if vs_x and vs_y then
-                    visual_size = { x = tonumber(vs_x) or 1, y = tonumber(vs_y) or 1, z = tonumber(vs_x) or 1 }
-                end
-            end
-        elseif skins_mod and skins_mod.skins and skins_mod.skins[name] then
-            textures = { skins_mod.skins[name] .. ".png" }
-        elseif wardrobe_mod and wardrobe_mod.playerSkins and wardrobe_mod.playerSkins[name] then
-            textures = { wardrobe_mod.playerSkins[name] }
-        elseif player_api_mod and player_api_mod.get_textures then
-            local p_tex = player_api_mod.get_textures(player)
-            if p_tex and #p_tex > 0 then
-                textures = copy(p_tex)
-            end
-        elseif mcl_skins_mod and mcl_skins_mod.get_player_skin then
-            local skin_data = mcl_skins_mod.get_player_skin(player)
-            if type(skin_data) == "table" and skin_data.texture then
-                textures[1] = skin_data.texture
-            elseif type(skin_data) == "string" then
-                textures[1] = skin_data
-            end
-        end
-
-        -- Clothing support
-        if clothing_mod and clothing_mod.player_textures and clothing_mod.player_textures[name] then
-            local c = clothing_mod.player_textures[name]
-            if c.clothing and c.clothing ~= "blank.png" and c.clothing ~= "" then
-                textures[1] = (textures[1] or "character.png") .. "^" .. c.clothing
-            end
-            if c.cape and c.cape ~= "blank.png" and c.cape ~= "" then
-                textures[1] = (textures[1] or "character.png") .. "^" .. c.cape
-            end
-        end
-    end
-
-    -- Fallback for transparent texture trap:
-    -- If textures only contains deathstats_transparent.png, recover original textures from metadata or default
-    local is_transparent = true
-    if type(textures) == "table" and #textures > 0 then
-        for _, tex in ipairs(textures) do
-            if tex ~= "deathstats_transparent.png" and tex ~= "blank.png" and tex ~= "" and tex ~= "3d_armor_trans.png" then
-                is_transparent = false
-                break
-            end
-        end
-    else
-        is_transparent = true
-    end
-
-    local meta = player:get_meta()
-    if is_transparent and meta then
-        local raw_orig = meta:get_string("deathstats:orig_textures")
-        if raw_orig and raw_orig ~= "" then
-            local des = core.deserialize(raw_orig)
-            if type(des) == "table" and #des > 0 then
-                textures = des
-                is_transparent = false
-            end
-        end
-    end
-    if is_transparent then
-        if is_skinsdb then
-            textures = { "character.png", "blank.png", "blank.png", "blank.png" }
-        elseif is_3d_armor then
-            textures = { "character.png", "3d_armor_trans.png", "3d_armor_trans.png" }
-        else
-            textures = { "character.png" }
-        end
-    end
-
-    if meta then
-        if not mesh or mesh == "" then
-            local raw_mesh = meta:get_string("deathstats:orig_mesh")
-            if raw_mesh and raw_mesh ~= "" then mesh = raw_mesh end
-        end
-        if visual_size.x == 0 and visual_size.y == 0 then
-            local raw_vs = meta:get_string("deathstats:orig_visual_size")
-            if raw_vs and raw_vs ~= "" then
-                local des = core.deserialize(raw_vs)
-                if type(des) == "table" then visual_size = des end
-            end
-        end
-        if yaw == 0 then
-            local raw_yaw = meta:get_string("deathstats:orig_yaw")
-            if raw_yaw and raw_yaw ~= "" then
-                yaw = tonumber(raw_yaw) or yaw
-            end
-        end
-    end
-
     return {
-        mesh = mesh,
-        textures = textures,
-        visual_size = visual_size,
-        yaw = yaw,
-        armor_dropped = drops_armor,
-        inventory_dropped = drops_inventory,
-        wield_item = wield_item,
+        mesh = props.mesh or "character.b3d",
+        textures = props.textures or { "character.png" },
+        visual_size = props.visual_size or { x = 1, y = 1, z = 1 },
+        yaw = (player.get_look_horizontal and player:get_look_horizontal()) or 0,
+        armor_dropped = deathstats.is_armor_dropped(player),
+        inventory_dropped = deathstats.is_inventory_dropped(player),
+        wield_item = deathstats.get_player_wield_item(player),
     }
 end
 

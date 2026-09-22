@@ -175,7 +175,7 @@ function deathstats.is_player_dead(player_or_name)
     local name = (type(player_or_name) == "string") and player_or_name
         or (player_or_name.get_player_name and player_or_name:get_player_name())
     if not name or name == "" then return false end
-    if deathstats.dead_players[name] or (deathstats.active_screens and deathstats.active_screens[name]) then
+    if deathstats.dead_players[name] then
         return true
     end
     local p = (type(player_or_name) ~= "string") and player_or_name or core.get_player_by_name(name)
