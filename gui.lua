@@ -15,11 +15,14 @@
 
 --- Calculate distance flight and screen slap animation parameters
 --- Uses an elastic damped sine curve trajectory for prominent zoom-in and bouncy recoil
----@param progress number from 0.0 to 1.0
----@param target_w number|nil target scale x percentage
----@param target_h number|nil target scale y percentage
----@return number scale_x, number scale_y, number alpha, boolean impact_reached
-local function calculate_slap_animation(progress, target_w, target_h)
+---@param progress number Animation progress factor from 0.0 to 1.0
+---@param target_w number|nil Target scale X percentage (default -32.0)
+---@param target_h number|nil Target scale Y percentage (default -23.0)
+---@return number scale_x Calculated X dimension scale
+---@return number scale_y Calculated Y dimension scale
+---@return number alpha Alpha transparency level (0-255)
+---@return boolean impact_reached True if animation reached or passed impact threshold
+function deathstats.calculate_slap_animation(progress, target_w, target_h)
     target_w = target_w or -32.0
     target_h = target_h or -23.0
     local start_w  = target_w * 0.15
@@ -53,7 +56,7 @@ local function calculate_slap_animation(progress, target_w, target_h)
     return scale_x, scale_y, alpha, impact_reached
 end
 
-deathstats.calculate_slap_animation = calculate_slap_animation
+local calculate_slap_animation = deathstats.calculate_slap_animation
 
 --- Globalstep animation loop for distance flight and visceral screen slap
 core.register_globalstep(function(dtime)

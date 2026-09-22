@@ -16,6 +16,7 @@ if not core.get_modpath("hudbars") and not hb_mod then
     return
 end
 
+--- Compatibility layer hooks for hudbars mod and extensions (hbhunger, hbarmor, hbsprint)
 deathstats.compat_hudbars = {
     paused_players = {},
 }

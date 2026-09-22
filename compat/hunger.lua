@@ -9,6 +9,7 @@
     (at your option) any later version.
 --]]
 
+--- Compatibility layer hooks and HUD states for external hunger, thirst, and stamina frameworks
 deathstats.compat_hunger = deathstats.compat_hunger or {}
 local ch = deathstats.compat_hunger
 
@@ -427,11 +428,59 @@ function ch.restore_standalone_huds(player)
 end
 
 -- Expose methods directly on deathstats namespace
-deathstats.get_player_satiation = ch.get_player_satiation
-deathstats.is_player_starving = ch.is_player_starving
-deathstats.get_player_hydration = ch.get_player_hydration
-deathstats.is_player_dehydrated = ch.is_player_dehydrated
-deathstats.is_player_sprint_exhausted = ch.is_player_sprint_exhausted
-deathstats.hide_standalone_huds = ch.hide_standalone_huds
-deathstats.restore_standalone_huds = ch.restore_standalone_huds
+
+--- Get player current satiation and hunger stats across supported hunger mods
+---@param player ObjectRef Luanti player object
+---@return number? current Current hunger value
+---@return number? max Maximum hunger value
+---@return number? ratio Satiation ratio (0.0 - 1.0)
+---@return string? source Identification of originating hunger mod
+---@return boolean? is_starving True if hunger value is critical (<= 1)
+function deathstats.get_player_satiation(player)
+    return ch.get_player_satiation(player)
+end
+
+--- Check if player is currently starving
+---@param player ObjectRef Luanti player object
+---@return boolean is_starving True if player is starving
+function deathstats.is_player_starving(player)
+    return ch.is_player_starving(player)
+end
+
+--- Get player current hydration and thirst stats across supported thirst mods
+---@param player ObjectRef Luanti player object
+---@return number? current Current thirst value
+---@return number? max Maximum thirst value
+---@return number? ratio Hydration ratio (0.0 - 1.0)
+---@return string? source Identification of originating thirst mod
+---@return boolean? is_dehydrated True if thirst value is critical (<= 1)
+function deathstats.get_player_hydration(player)
+    return ch.get_player_hydration(player)
+end
+
+--- Check if player is currently dehydrated
+---@param player ObjectRef Luanti player object
+---@return boolean is_dehydrated True if player is dehydrated
+function deathstats.is_player_dehydrated(player)
+    return ch.is_player_dehydrated(player)
+end
+
+--- Check if player is exhausted from sprinting
+---@param player ObjectRef Luanti player object
+---@return boolean is_exhausted True if stamina/exhaustion threshold is reached
+function deathstats.is_player_sprint_exhausted(player)
+    return ch.is_player_sprint_exhausted(player)
+end
+
+--- Hide standalone HUD statbars during death screen
+---@param player ObjectRef Luanti player object
+function deathstats.hide_standalone_huds(player)
+    ch.hide_standalone_huds(player)
+end
+
+--- Restore standalone HUD statbars upon respawn or effect reset
+---@param player ObjectRef Luanti player object
+function deathstats.restore_standalone_huds(player)
+    ch.restore_standalone_huds(player)
+end
 

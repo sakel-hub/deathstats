@@ -15,6 +15,8 @@ A cinematic death screen, ragdoll physics, and player statistics mod for Luanti.
 
 When you die in Luanti, DeathStats turns what used to be an instant respawn prompt into a cinematic moment. An orbiting camera circles your fallen character as ragdoll physics take over, custom banners and screen splatters react to how you met your end, and an on-screen dossier tallies everything you did during that life.
 
+> For the complete, exhaustive developer API reference including all class definitions, type aliases, method signatures, parameter tables, and return types, please consult **[`API.md`](API.md)**.
+
 ---
 
 ## What It Does
@@ -83,6 +85,41 @@ if deathstats and deathstats.register_scoreboard_column then
         end,
     })
 end
+```
+
+*See [Live Scoreboard HUD API in API.md](API.md#live-scoreboard-hud-api) and [ScoreboardColumnDef](API.md#scoreboardcolumndef) for full specification.*
+
+---
+
+## Developer API & Documentation
+
+All public API methods, configuration registries, types, classes, and callback signatures in `deathstats` are thoroughly annotated using standard [LuaLS Annotations](https://github.com/LuaLS/lua-language-server/wiki/Annotations) (`@class`, `@type`, `@param`, `@return`, `@field`, `@alias`).
+
+A fully compiled, exhaustive API reference is maintained in **[`API.md`](API.md)** covering:
+- **[Classes & Data Structures](API.md#classes--data-structures)**: `DeathInfo`, `PlayerLifetimeStats`, `PlayerVisuals`, `ScoreboardColumnDef`, `ScoreboardEntry`, `DeathStats`, `DeathStatsConfig`, `DeathStatsColors`.
+- **[Core & Lifecycle API](API.md#core--lifecycle-api)**: Death trigger, respawn flow, HUD clearing, and effect resets.
+- **[Statistics & Storage API](API.md#statistics--storage-api)**: Persistent stats loading/saving, achievement tallies, number/time formatters.
+- **[Death Analysis & Attribution API](API.md#death-analysis--attribution-api)**: Environmental analysis, killer resolution, mob detection, hunger/thirst integration, funny epitaphs.
+- **[Ragdoll & Terrain Physics API](API.md#ragdoll--terrain-physics-api)**: Impulse kinematics, bounce restitution, slope detection, downhill rolling, wall resting poses.
+- **[Corpse Entities & Visuals API](API.md#corpse-entities--visuals-api)**: Entity lifecycle, appearance extraction across skin mods, bone poses, limb fractures, 3D wield items.
+- **[Cinematic Camera Orbit API](API.md#cinematic-camera-orbit-api)**: 360° camera orbit, non-physical camera anchor, raycast obstacle clearance.
+- **[Particle Effects API](API.md#particle-effects-api)**: Death particle spawners, ground impact dust bursts, decay dissolution puffs.
+- **[Formspecs & UI Dossier API](API.md#formspecs--ui-dossier-api)**: Death screen cards, photo mode overlay, epitaph plaque, lifetime dossier formspecs.
+- **[Live Scoreboard HUD API](API.md#live-scoreboard-hud-api)**: Multiplayer scoreboard HUD, custom column registration, metrics calculations, Hall of Fame.
+- **[Registries & State Tables](API.md#registries--state-tables)**: Shared registries, caches, and state tables.
+
+### Compiling API Documentation
+
+To recompile `API.md` from the Lua source code annotations via `lua-language-server`:
+
+```bash
+npm run doc
+```
+
+or directly:
+
+```bash
+mkdir -p doc_build && lua-language-server --doc=. --doc_out_path=doc_build --doc_format_path=scripts/doc_format.lua && cp doc_build/doc.md API.md && rm -rf doc_build
 ```
 
 ---

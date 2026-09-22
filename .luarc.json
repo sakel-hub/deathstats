@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime": {
+    "version": "LuaJIT",
+    "pathStrict": true
+  },
+  "diagnostics": {
+    "enable": true,
+    "globals": [
+      "core",
+      "minetest",
+      "deathstats",
+      "vector",
+      "ItemStack",
+      "DIR_DELIM"
+    ],
+    "disable": [
+      "lowercase-global"
+    ],
+    "neededFileStatus": {
+      "codestyle-check": "Any"
+    },
+    "libraryFiles": "Disable"
+  },
+  "format": {
+    "enable": true,
+    "defaultConfig": {
+      "indent_style": "space",
+      "tab_width": "4"
+    }
+  },
+  "workspace": {
+    "checkThirdParty": false,
+    "userThirdParty": [],
+    "useGitIgnore": true,
+    "ignoreSubmodules": true,
+    "maxPreload": 5000,
+    "preloadFileSize": 1000,
+    "ignoreDir": [
+      ".git",
+      "textures",
+      "sounds",
+      "scratch",
+      "scripts",
+      "test.lua"
+    ],
+    "library": [
+      "/Applications/Luanti.app/Contents/Resources/builtin"
+    ]
+  },
+  "doc": {
+    "packageName": "deathstats"
+  },
+  "docScriptPath": "/scripts/doc_format.lua"
+}

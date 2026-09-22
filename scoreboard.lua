@@ -11,6 +11,7 @@
 local S = core.get_translator(core.get_current_modname())
 local F = core.formspec_escape
 
+--- Cached background formspec texture strings keyed by layout dimensions
 deathstats.scoreboard_bg_cache = deathstats.scoreboard_bg_cache or {}
 
 -- ==========================================

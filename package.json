@@ -11,6 +11,7 @@
     "scripts": {
         "test": "lua test.lua",
         "lint": "luacheck .",
+        "doc": "mkdir -p doc_build && lua-language-server --doc=. --doc_out_path=doc_build --doc_format_path=scripts/doc_format.lua && cp doc_build/doc.md API.md && rm -rf doc_build",
         "push:ci": "node ./scripts/deploy.mjs"
     },
     "repository": {

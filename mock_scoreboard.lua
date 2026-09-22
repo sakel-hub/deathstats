@@ -24,7 +24,9 @@
 
 local S = core.get_translator(core.get_current_modname())
 
+--- Whether mock player records are injected into the live scoreboard
 deathstats.mock_scoreboard_enabled = true
+--- Target count of mock players to simulate on scoreboard (nil for all)
 deathstats.mock_scoreboard_player_count = nil -- nil means all mock players
 
 -- Default template list of mock players with diverse names, combat records, and network latencies

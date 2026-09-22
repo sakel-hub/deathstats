@@ -138,6 +138,7 @@ core.register_on_item_eat(function(_hp_change, _replace_with_item, _itemstack, u
     data.lifetime.items_consumed = data.lifetime.items_consumed + 1
 end)
 
+--- Recent in-world explosion events tracked for fatal blast attribution
 deathstats.recent_explosions = deathstats.recent_explosions or {}
 
 --- Record an explosion occurrence with timestamp and coordinates
@@ -415,6 +416,7 @@ end)
 -- Distance, Fall Velocity & Altitude Tracker
 local dist_timer = 0
 local fall_timer = 0
+--- Highest recorded elevations during airborne falls for fatal fall distance tracking
 deathstats.fall_peaks = deathstats.fall_peaks or {}
 
 core.register_globalstep(function(dtime)

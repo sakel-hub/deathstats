@@ -9,6 +9,7 @@
     (at your option) any later version.
 --]]
 
+--- Compatibility layer hooks and texture resolvers for player skins and appearance frameworks
 deathstats.compat_skins = deathstats.compat_skins or {}
 local cs = deathstats.compat_skins
 
@@ -586,4 +587,10 @@ function cs.get_player_visuals(player)
 end
 
 -- Export delegation to main deathstats API
-deathstats.get_player_visuals = cs.get_player_visuals
+
+--- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
+---@param player ObjectRef Luanti player object
+---@return PlayerVisuals visuals Visual properties table
+function deathstats.get_player_visuals(player)
+    return cs.get_player_visuals(player)
+end

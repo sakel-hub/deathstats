@@ -651,10 +651,15 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
     core.show_formspec(name, "deathstats:lifetime", table.concat(fs, ""))
 end
 
-deathstats.show_lifetime_formspec = deathstats.show_lifetime_stats_formspec
+--- Display the lifetime player dossier formspec dialog (alias for show_lifetime_stats_formspec)
+---@param player ObjectRef Luanti player object
+---@param from_death_screen boolean|nil True if launched from death screen modal
+function deathstats.show_lifetime_formspec(player, from_death_screen)
+    deathstats.show_lifetime_stats_formspec(player, from_death_screen)
+end
 
 -- ============================================================================
--- Section 11: Public Scoreboard & Current-Life Leaderboard API
+-- Public Scoreboard & Current-Life Leaderboard API
 -- ============================================================================
 
 --- Register or override a scoreboard column definition
