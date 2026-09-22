@@ -226,13 +226,15 @@ function cs.extract_base_skin(player, name)
         if type(xpapi.get_textures) == "function" then
             local p_tex = xpapi.get_textures(player)
             if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
-                    and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png" then
+                    and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png"
+                    and p_tex[1] ~= "player.png" and p_tex[1] ~= "player_back.png" then
                 return p_tex[1], nil, "1.0", vs_x, vs_y
             end
         end
         local pdata = xpapi.get_player_data and xpapi.get_player_data(player)
         if pdata and pdata.textures and pdata.textures[1] and pdata.textures[1] ~= ""
-                and pdata.textures[1] ~= "blank.png" and pdata.textures[1] ~= "deathstats_transparent.png" then
+                and pdata.textures[1] ~= "blank.png" and pdata.textures[1] ~= "deathstats_transparent.png"
+                and pdata.textures[1] ~= "player.png" and pdata.textures[1] ~= "player_back.png" then
             return pdata.textures[1], nil, "1.0", vs_x, vs_y
         end
         local proxies = xpapi.get_visual_proxies and xpapi.get_visual_proxies(player)
@@ -242,29 +244,54 @@ function cs.extract_base_skin(player, name)
                 local p_props = proxy:get_properties()
                 if p_props and p_props.textures and p_props.textures[1]
                         and p_props.textures[1] ~= "blank.png" and p_props.textures[1] ~= ""
-                        and p_props.textures[1] ~= "deathstats_transparent.png" then
+                        and p_props.textures[1] ~= "deathstats_transparent.png"
+                        and p_props.textures[1] ~= "player.png" and p_props.textures[1] ~= "player_back.png" then
                     return p_props.textures[1], nil, "1.0", vs_x, vs_y
                 end
             end
         end
     end
 
-    -- player_api get_textures
+    -- player_api get_textures (verify player_api has initialized model/textures before query)
     local player_api_mod = rawget(_G, "player_api")
     if player_api_mod and type(player_api_mod.get_textures) == "function" then
-        local p_tex = player_api_mod.get_textures(player)
-        if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= "" and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png" then
-            return p_tex[1], nil, "1.0", vs_x, vs_y
+        local p_anim = player_api_mod.get_animation and player_api_mod.get_animation(player)
+        local has_model = p_anim and p_anim.model and player_api_mod.registered_models and player_api_mod.registered_models[p_anim.model]
+        if p_anim and (p_anim.textures or has_model) then
+            local p_tex = player_api_mod.get_textures(player)
+            if type(p_tex) == "table" and p_tex[1] and p_tex[1] ~= ""
+                    and p_tex[1] ~= "blank.png" and p_tex[1] ~= "deathstats_transparent.png"
+                    and p_tex[1] ~= "player.png" and p_tex[1] ~= "player_back.png" then
+                return p_tex[1], nil, "1.0", vs_x, vs_y
+            end
         end
     end
 
-    -- properties.textures fallback
+    -- Persistent metadata fallback (saved on death before disconnect)
+    local meta = player.get_meta and player:get_meta()
+    if meta then
+        local raw_orig = meta:get_string("deathstats:orig_textures")
+        if raw_orig and raw_orig ~= "" then
+            local des = core.deserialize(raw_orig)
+            if type(des) == "table" and des[1] and des[1] ~= ""
+                    and des[1] ~= "blank.png" and des[1] ~= "deathstats_transparent.png"
+                    and des[1] ~= "player.png" and des[1] ~= "player_back.png" then
+                return des[1], nil, "1.0", vs_x, vs_y
+            end
+        end
+    end
+
+    -- properties.textures fallback (reject uninitialized engine fallback textures player.png / player_back.png)
     local props = player:get_properties()
     if props and props.textures and type(props.textures) == "table" and #props.textures > 0 then
-        if props.textures[2] and props.textures[2] ~= "blank.png" and props.textures[2] ~= "" and props.textures[2] ~= "deathstats_transparent.png" then
-            return props.textures[2], nil, "1.8", vs_x, vs_y
-        elseif props.textures[1] and props.textures[1] ~= "" then
-            return props.textures[1], nil, "1.0", vs_x, vs_y
+        local t2 = props.textures[2]
+        local t1 = props.textures[1]
+        if t2 and t2 ~= "blank.png" and t2 ~= "" and t2 ~= "deathstats_transparent.png"
+                and t2 ~= "player.png" and t2 ~= "player_back.png" then
+            return t2, nil, "1.8", vs_x, vs_y
+        elseif t1 and t1 ~= "" and t1 ~= "blank.png" and t1 ~= "deathstats_transparent.png"
+                and t1 ~= "player.png" and t1 ~= "player_back.png" then
+            return t1, nil, "1.0", vs_x, vs_y
         end
     end
 
