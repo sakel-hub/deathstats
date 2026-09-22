@@ -9588,5 +9588,151 @@ suites[97] = function()
 end
 suites[97]()
 
-print("\nALL 97 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 98: Skin Assertion Safety, Corpse Cleanup Resilience, Dead Reconnect & Pose Diversity ---
+suites[98] = function()
+    print("\n--- TEST 98: Skin Assertion Safety, Corpse Cleanup Resilience, Dead Reconnect & Pose Diversity ---")
+
+    -- =========================================================================
+    -- Skin Extraction Assertion Safety & Default Texture Filtering
+    -- =========================================================================
+    local saved_papi = rawget(_G, "player_api")
+    -- Uninitialized player_api: player has no textures and no registered model
+    local uninit_papi = {
+        registered_models = {},
+        get_animation = function(_player)
+            return {} -- no model, no textures
+        end,
+        get_textures = function(_player)
+            error("assertion failed! uninitialized player_api:get_textures called")
+        end,
+    }
+    rawset(_G, "player_api", uninit_papi)
+
+    local p1 = create_mock_player("UninitPlayer")
+    p1.properties.textures = { "player.png", "player_back.png" } -- engine defaults
+    p1.properties.visual = "upright_sprite"
+
+    -- Must not error/crash on assertion, and must filter out "player.png"
+    local skin1, _, _, _, _ = deathstats.compat_skins.extract_base_skin(p1, "UninitPlayer")
+    assert(skin1 == "character.png", "Uninitialized player_api and engine default textures must fallback safely to character.png, got: " .. tostring(skin1))
+
+    -- Persistent metadata fallback when properties are engine defaults
+    p1:get_meta():set_string("deathstats:orig_textures", core.serialize({ "saved_warrior.png" }))
+    local skin_meta = deathstats.compat_skins.extract_base_skin(p1, "UninitPlayer")
+    assert(skin_meta == "saved_warrior.png", "extract_base_skin must recover skin from persistent metadata fallback, got: " .. tostring(skin_meta))
+    p1:get_meta():set_string("deathstats:orig_textures", "")
+
+    rawset(_G, "player_api", saved_papi)
+
+    -- =========================================================================
+    -- Corpse Handling on Death & Void Removal Robustness
+    -- =========================================================================
+    -- Corpse object is nil
+    deathstats.remove_corpse(nil)
+    deathstats.dissolve_corpse(nil)
+
+    -- Invalid ObjectRef handling
+    local invalid_corpse = {
+        is_valid = function() return false end,
+        remove = function() error("Should not be called on invalid object") end,
+    }
+    deathstats.remove_corpse(invalid_corpse)
+    deathstats.dissolve_corpse(invalid_corpse)
+
+    -- Corpse with get_children returning nil or empty table (void death and deleted children)
+    local child_removed = false
+    local mock_child = {
+        is_valid = function() return true end,
+        remove = function() child_removed = true end,
+    }
+    local void_corpse = {
+        is_valid = function() return true end,
+        get_children = function() return nil end,
+        remove = function() end,
+    }
+    deathstats.remove_corpse(void_corpse)
+
+    local corpse_with_children = {
+        is_valid = function() return true end,
+        get_children = function() return { mock_child } end,
+        remove = function() end,
+    }
+    deathstats.remove_corpse(corpse_with_children)
+    assert(child_removed == true, "remove_corpse must cleanly remove attached child entities")
+
+    -- =========================================================================
+    -- Reconnecting While Dead (Visual Glitch Prevention)
+    -- =========================================================================
+    local p_recon = create_mock_player("DeadReconnector")
+    p_recon.hp = 0
+    p_recon.properties.visual = "upright_sprite"
+    p_recon.properties.visual_size = { x = 1, y = 2 }
+    p_recon.properties.textures = { "player.png", "player_back.png" }
+    p_recon.properties.mesh = nil
+
+    -- Set death camera for reconnecting dead player
+    deathstats.set_death_camera(p_recon, { category = "reconnect", reason_text = "Died before disconnect" })
+    local suite98_cam_data = deathstats.player_camera_data["DeadReconnector"]
+    assert(suite98_cam_data ~= nil, "Camera data must exist for reconnecting player")
+    assert(suite98_cam_data.old_visual_size.y == 1, "old_visual_size.y must not be 2 (stretched sprite bug), got: " .. tostring(suite98_cam_data.old_visual_size.y))
+    assert(suite98_cam_data.old_textures[1] ~= "player.png", "old_textures must not be engine default player.png, got: " .. tostring(suite98_cam_data.old_textures[1]))
+    assert(suite98_cam_data.old_mesh == "character.b3d", "old_mesh must be character.b3d, got: " .. tostring(suite98_cam_data.old_mesh))
+
+    -- Reset camera (respawn)
+    deathstats.reset_camera(p_recon)
+    assert(p_recon.properties.visual == "mesh", "Player visual must be restored to 'mesh', got: " .. tostring(p_recon.properties.visual))
+    assert(p_recon.properties.mesh == "character.b3d", "Player mesh must be restored to 'character.b3d', got: " .. tostring(p_recon.properties.mesh))
+    assert(p_recon.properties.visual_size.y == 1, "Player visual_size.y must be restored to 1, got: " .. tostring(p_recon.properties.visual_size.y))
+    assert(p_recon.properties.textures[1] ~= "player.png", "Player texture must not be player.png, got: " .. tostring(p_recon.properties.textures[1]))
+
+    -- =========================================================================
+    -- Corpse Anti-Snag & Diverse Resting Poses (Wall Sitting & Slouching)
+    -- =========================================================================
+    -- Anti-snag: stuck airborne corpse with low velocity settles immediately
+    local snag_corpse = core.add_entity({ x = 15, y = 20, z = 15 }, "deathstats:corpse")
+    local snag_lua = snag_corpse:get_luaentity()
+    snag_lua._timer = 0.5
+    snag_lua._air_timer = 0.5
+    snag_lua._settled = false
+    snag_corpse:set_velocity({ x = 0.04, y = -0.05, z = 0.04 })
+    core.world_nodes["15,20,15"] = "air"
+
+    -- on_step with touching_ground = false (airborne)
+    snag_lua:on_step(0.05, { touching_ground = false })
+    assert(snag_lua._settled == true, "Airborne corpse snagged at low velocity must settle via anti-snag safeguard")
+    snag_corpse:remove()
+
+    -- Wall Detection
+    core.world_nodes["5,10,5"] = "air"
+    core.world_nodes["5,11,5"] = "air"
+    -- Solid wall node 1 block behind (pos.x=5, pos.y=10, pos.z=5, yaw=0 -> behind is z=4)
+    core.world_nodes["5,11,4"] = "default:stone"
+    local has_wall = deathstats.detect_wall_behind(vector.new(5, 10, 5), 0)
+    assert(has_wall == true, "detect_wall_behind must detect solid wall behind corpse")
+    core.world_nodes["5,11,4"] = nil
+    local no_wall = deathstats.detect_wall_behind(vector.new(5, 10, 5), 0)
+    assert(no_wall == false, "detect_wall_behind must return false when no wall behind")
+
+    -- Pose Selection Box and Elevation Offsets for Wall Poses
+    assert(deathstats.get_pose_elevation_offset("wall_sit") == 0.0, "wall_sit elevation offset must be 0.0")
+    assert(deathstats.get_pose_elevation_offset("slouch") == 0.0, "slouch elevation offset must be 0.0")
+    local sbox_sit = deathstats.get_pose_selectionbox("wall_sit")
+    assert(sbox_sit[5] >= 0.85, "wall_sit selection box max y must accommodate upright torso, got: " .. tostring(sbox_sit[5]))
+    local sbox_slouch = deathstats.get_pose_selectionbox("slouch")
+    assert(sbox_slouch[5] >= 0.80, "slouch selection box max y must accommodate slouched torso, got: " .. tostring(sbox_slouch[5]))
+
+    -- Pose Corpse Sit Animation
+    local pose_test_corpse = core.add_entity({ x = 0, y = 10, z = 0 }, "deathstats:corpse")
+    deathstats.pose_corpse(pose_test_corpse, "character.b3d", "sit")
+    -- Settle ragdoll limbs in wall_sit and slouch postures
+    deathstats.settle_ragdoll_limbs(pose_test_corpse, 5, "wall_sit")
+    deathstats.settle_ragdoll_limbs(pose_test_corpse, 5, "slouch")
+    deathstats.settle_ragdoll_limbs(pose_test_corpse, 5, "supine")
+    pose_test_corpse:remove()
+
+    print("  [PASS] Skin Assertion Safety, Corpse Cleanup Resilience, Dead Reconnect & Pose Diversity")
+end
+suites[98]()
+
+print("\nALL 98 TEST SUITES PASSED SUCCESSFULLY!")
 
