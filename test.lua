@@ -3437,13 +3437,29 @@ do
     assert(core.active_particlespawners[spawner_id].texture == "deathstats_particle_bubble.png",
         "Active spawner texture must match bubble particle")
 
-    -- Verify dry ground corpse spawns flies swarm
+    -- Verify dry ground corpse spawns both ground impact debris burst and flies swarm
     local dry_pids, eff_type = deathstats.spawn_corpse_particles(test_pos, { category = "fall" })
-    assert(#dry_pids == 1, "spawn_corpse_particles on dry ground must return 1 spawner ID")
+    assert(#dry_pids == 2, "spawn_corpse_particles on dry ground must return 2 spawner IDs (impact burst + fly swarm)")
     assert(eff_type == "flies", "Effect type on dry ground must be flies")
-    assert(core.active_particlespawners[dry_pids[1]].texture == "deathstats_particle_fly.png",
-        "Dry ground corpse spawner must use fly texture")
-    core.delete_particlespawner(dry_pids[1])
+
+    local has_impact_spawner = false
+    local has_flies_spawner = false
+    for _, pid in ipairs(dry_pids) do
+        local spawner = core.active_particlespawners[pid]
+        assert(spawner ~= nil, "Active particle spawner must be registered in engine")
+        if spawner.texture == "deathstats_particle_fly.png" then
+            has_flies_spawner = true
+            assert(spawner.time == 0, "Flies spawner must be continuous (time = 0)")
+        elseif spawner.time == 0.15 then
+            has_impact_spawner = true
+            assert(spawner.amount == 28, "Impact spawner must spawn 28 debris particles")
+        end
+        core.delete_particlespawner(pid)
+    end
+    assert(has_impact_spawner, "Dry ground corpse must spawn impact burst spawner")
+    assert(has_flies_spawner, "Dry ground corpse must spawn flies swarm spawner")
+    assert(core.active_particlespawners[dry_pids[1]] == nil, "Impact spawner must be cleaned up")
+    assert(core.active_particlespawners[dry_pids[2]] == nil, "Flies spawner must be cleaned up")
 
     -- Clean up spawner
     core.delete_particlespawner(spawner_id)

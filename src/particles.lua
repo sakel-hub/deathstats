@@ -189,7 +189,7 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
         end
     end
 
-    -- Default effect for all corpses resting on dry ground: a buzzing swarm of flies
+    -- Default effect for all corpses resting on dry ground: a buzzing swarm of flies (spawned alongside impact particles)
     return "flies"
 end
 
@@ -249,7 +249,7 @@ function deathstats.calc_oriented_particle_bounds(rot, min_val, max_val, spread_
 end
 
 --- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti clients
----@param effect_type string "water"|"lava"|"fire"|"impact"
+---@param effect_type string "water"|"lava"|"fire"|"flies"|"impact"
 ---@param corpse_pos table The {x, y, z} position of the corpse
 ---@param attached_obj ObjectRef|nil Optional corpse ObjectRef to attach particles to
 ---@return table|nil def ParticleSpawner definition table
@@ -656,20 +656,44 @@ end
 ---@param death_info table|nil Optional death analysis table
 ---@param attached_obj ObjectRef|nil Optional corpse ObjectRef to attach particles to
 ---@return number[] spawner_ids Array of active particle spawner IDs
----@return string|nil effect_type The type of effect spawned (e.g. "water", "lava", "fire", "impact")
+---@return string|nil effect_type The type of effect spawned (e.g. "water", "lava", "fire", "flies", "impact")
 function deathstats.spawn_corpse_particles(corpse_pos, death_info, attached_obj)
     if not corpse_pos then return {}, nil end
     if deathstats.config.enable_corpse_particles == false then return {}, nil end
 
     local effect_type = deathstats.get_corpse_effect_type(corpse_pos, death_info)
+    local spawner_ids = {}
+
+    if effect_type == "flies" then
+        -- Spawn moment-of-death node debris impact burst
+        local impact_def = deathstats.create_corpse_particlespawner_def("impact", corpse_pos, attached_obj)
+        if impact_def then
+            local imp_id = core.add_particlespawner(impact_def)
+            if imp_id and imp_id > 0 then
+                table.insert(spawner_ids, imp_id)
+            end
+        end
+
+        -- Spawn continuous buzzing swarm of flies around the corpse
+        local flies_def = deathstats.create_corpse_particlespawner_def("flies", corpse_pos, attached_obj)
+        if flies_def then
+            local fly_id = core.add_particlespawner(flies_def)
+            if fly_id and fly_id > 0 then
+                table.insert(spawner_ids, fly_id)
+            end
+        end
+
+        return spawner_ids, effect_type
+    end
+
     local def = deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, attached_obj)
     if not def then return {}, effect_type end
 
     local spawner_id = core.add_particlespawner(def)
-    local spawner_ids = {}
     if spawner_id and spawner_id > 0 then
         table.insert(spawner_ids, spawner_id)
     end
     return spawner_ids, effect_type
 end
+
 
