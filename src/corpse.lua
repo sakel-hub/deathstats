@@ -153,6 +153,26 @@ core.register_entity("deathstats:corpse", {
                     -- Wake up into ragdoll free-fall if ground beneath was dug out
                     self._settled = false
                     self._settled_pos = nil
+                    if self._particle_spawners then
+                        for _, pid in ipairs(self._particle_spawners) do
+                            core.delete_particlespawner(pid)
+                        end
+                        self._particle_spawners = nil
+                    end
+                    self._effect_type = nil
+                    local pname = self._player_name
+                    local cdata = pname and deathstats.player_camera_data and deathstats.player_camera_data[pname]
+                    if cdata then
+                        if cdata.particle_spawners then
+                            for _, pid in ipairs(cdata.particle_spawners) do
+                                core.delete_particlespawner(pid)
+                            end
+                            cdata.particle_spawners = nil
+                        end
+                        cdata.current_effect_type = nil
+                        cdata.corpse_settled = false
+                        cdata.corpse_settled_particles_checked = false
+                    end
                     self._timer = 0
                     self._air_timer = 0
                     self._slide_timer = 0

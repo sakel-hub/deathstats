@@ -3524,8 +3524,13 @@ do
     deathstats.set_death_camera(mock_player, { category = "lava", reason_text = "Melted in lava" })
     local cdata = deathstats.player_camera_data["ParticleTester"]
     assert(cdata ~= nil, "Camera data must be established")
+    assert(cdata.particle_spawners == nil, "Particles must not be active while corpse is in flight")
+
+    -- Settle the corpse at rest
+    local c_ent = cdata.corpse and cdata.corpse:get_luaentity()
+    deathstats.settle_corpse_at_rest(c_ent)
     assert(cdata.particle_spawners and #cdata.particle_spawners == 1,
-        "Camera data must track active particle spawner ID")
+        "Camera data must track active particle spawner ID once corpse has settled")
     local active_pid = cdata.particle_spawners[1]
     assert(core.active_particlespawners[active_pid] ~= nil, "Engine must have active spawner running")
     assert(core.active_particlespawners[active_pid].texture == "deathstats_particle_fire.png",
@@ -10069,6 +10074,63 @@ suites[101] = function()
     sub_corpse:remove()
     mock_players["SubmergedPlayer"] = nil
     deathstats.players["SubmergedPlayer"] = nil
+
+    -- Death Particles Deferred Until Corpse Settles (Flies/Bubbles/Smoke absent during flight)
+    local p_flight = create_mock_player("FlightParticleTester", 0, { x = 80, y = 15, z = 80 })
+    mock_players["FlightParticleTester"] = p_flight
+    deathstats.dead_players["FlightParticleTester"] = true
+    core.world_nodes["80,15,80"] = "air"
+    core.world_nodes["80,0,80"] = "default:dirt"
+    deathstats.last_blow["FlightParticleTester"] = { damage = 10, pos = { x = 79, y = 15, z = 80 } }
+
+    deathstats.set_death_camera(p_flight, { category = "fall", damage = 10 })
+    local flt_cdata = deathstats.player_camera_data["FlightParticleTester"]
+    assert(flt_cdata ~= nil, "Flight tester camera data must exist")
+    assert(flt_cdata.corpse ~= nil, "Flight tester corpse entity must exist")
+    local flt_ent = flt_cdata.corpse:get_luaentity()
+    assert(flt_ent ~= nil, "Flight tester corpse luaentity must exist")
+    assert(flt_ent._settled == false, "Corpse with knockback must start unsettled in flight")
+    assert(flt_cdata.particle_spawners == nil, "Death particles (flies) must NOT be spawned while corpse is in flight")
+    assert(flt_ent._particle_spawners == nil, "Corpse entity must have zero particle spawners while in flight")
+
+    -- Step camera while still in flight: particles must remain nil
+    deathstats.update_death_camera(p_flight, 0.05)
+    assert(flt_cdata.particle_spawners == nil, "Particles must remain nil during subsequent flight steps")
+
+    -- Corpse settles at rest on dry ground
+    flt_cdata.corpse:set_pos({ x = 80, y = 1, z = 80 })
+    deathstats.settle_corpse_at_rest(flt_ent)
+    assert(flt_ent._settled == true, "Corpse must now be marked settled")
+    assert(flt_cdata.particle_spawners ~= nil and #flt_cdata.particle_spawners > 0,
+        "Flies particle spawner must be added after corpse settles")
+    assert(flt_ent._particle_spawners ~= nil and #flt_ent._particle_spawners > 0,
+        "Corpse entity must track particle spawners after settling")
+    local settled_fly_spawner = core.active_particlespawners[flt_cdata.particle_spawners[#flt_cdata.particle_spawners]]
+    assert(settled_fly_spawner ~= nil, "Settled fly particlespawner must exist in core.active_particlespawners")
+    assert(settled_fly_spawner.texture == "deathstats_particle_fly.png",
+        "Settled dry ground particle must be deathstats_particle_fly.png")
+
+    -- Wake up into free-fall if ground beneath is dug out: particles must disappear
+    core.world_nodes["80,0,80"] = "air"
+    flt_ent._ground_check_timer = 0.4
+    flt_ent:on_step(0.05)
+    assert(flt_ent._settled == false, "Corpse must wake up into free-fall when ground is dug out")
+    assert(flt_cdata.particle_spawners == nil, "Particle spawners must be deleted when corpse wakes up into free-fall")
+    assert(flt_ent._particle_spawners == nil, "Corpse entity spawners must be nil during renewed free-fall")
+
+    -- Re-settle at lower ground level: particles are restored
+    core.world_nodes["80,-5,80"] = "default:dirt"
+    flt_cdata.corpse:set_pos({ x = 80, y = -4, z = 80 })
+    deathstats.settle_corpse_at_rest(flt_ent)
+    assert(flt_ent._settled == true, "Corpse must settle at new floor")
+    assert(flt_cdata.particle_spawners ~= nil and #flt_cdata.particle_spawners > 0,
+        "Flies must be recreated once corpse settles at new resting position")
+
+    deathstats.reset_camera(p_flight)
+    mock_players["FlightParticleTester"] = nil
+    deathstats.players["FlightParticleTester"] = nil
+    deathstats.dead_players["FlightParticleTester"] = nil
+    deathstats.last_blow["FlightParticleTester"] = nil
 
     -- Server Shutdown & Offline Player Warning Safety
     deathstats.is_shutting_down = true

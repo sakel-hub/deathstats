@@ -1159,10 +1159,16 @@ function deathstats.settle_corpse_at_rest(luaent)
                     cdata.particle_spawners = spawners
                     cdata.current_effect_type = eff
                     cdata.particles_were_prone = is_prone
+                    cdata.corpse_settled = true
+                    cdata.corpse_settled_particles_checked = true
                 end
             else
                 luaent._effect_type = settled_effect
-                if cdata then cdata.current_effect_type = settled_effect end
+                if cdata then
+                    cdata.current_effect_type = settled_effect
+                    cdata.corpse_settled = true
+                    cdata.corpse_settled_particles_checked = true
+                end
             end
         end
     end
