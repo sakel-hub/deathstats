@@ -1183,9 +1183,9 @@ print("  [PASS] Player join HP check, death screen recovery & comprehensive effe
 
 -- TEST 14: Engine Death Screen Override & Delegate
 assert(type(core.show_death_screen) == "function", "core.show_death_screen must be defined and overridden")
--- Verify legacy `minetest` alias is synchronized with `core` (backward compat shim)
-if minetest then
-    assert(type(minetest.show_death_screen) == "function", "minetest.show_death_screen must be synchronized with core")
+-- Verify legacy engine global alias is synchronized with `core` (backward compat shim)
+if rawget(_G, "minetest") then
+    assert(type(minetest.show_death_screen) == "function", "show_death_screen must be synchronized with core")
 end
 local test_reason = { type = "fall" }
 core.show_death_screen(player1, test_reason)
@@ -9827,5 +9827,63 @@ suites[99] = function()
 end
 suites[99]()
 
-print("\nALL 99 TEST SUITES PASSED SUCCESSFULLY!")
+suites[100] = function()
+    print("\n--- TEST 100: Corpse on_step Scratch Velocity, Collision Array Iteration & LuaJIT Optimization ---")
+    local c_obj = core.add_entity({ x = 0, y = 15, z = 0 }, "deathstats:corpse")
+    local c_ent = c_obj:get_luaentity()
+    assert(c_ent ~= nil, "corpse luaentity must be created")
+
+    -- 1. In-air physics step: test scratch_vel and aerodynamic drag
+    c_obj:set_velocity({ x = 4.0, y = -12.0, z = 4.0 })
+    c_ent:on_step(0.05, { touching_ground = false, collisions = {} })
+    local v_air = c_obj:get_velocity()
+    assert(type(v_air) == "table" and v_air.x ~= nil and v_air.y ~= nil and v_air.z ~= nil,
+        "get_velocity must return valid table after in-air step")
+    assert(v_air.x < 4.0 and v_air.z < 4.0, "air drag must dampen horizontal velocity")
+
+    -- 2. Multi-collision moveresult iteration: tests numeric 1..#moveresult.collisions
+    local multi_mr = {
+        touching_ground = false,
+        collisions = {
+            { axis = "y", old_velocity = { x = 0, y = -14.0, z = 0 }, node_pos = { x = 0, y = 14, z = 0 } },
+            { axis = "x", old_velocity = { x = 6.0, y = 0, z = 0 } },
+            { axis = "z", old_velocity = { x = 0, y = 0, z = 5.0 } },
+        },
+    }
+    c_ent:on_step(0.05, multi_mr)
+    assert(c_ent._bounce_count == 1, "vertical collision in multi-collision array must trigger bounce")
+    assert(c_ent._had_wall_collision == true, "wall collision in multi-collision array must register")
+    local v_bounce = c_obj:get_velocity()
+    assert(v_bounce.y > 0, "rebound velocity must be positive upward")
+
+    -- 3. Ground sliding & kinetic friction step
+    c_obj:set_velocity({ x = 3.0, y = 0, z = 3.0 })
+    c_ent:on_step(0.05, { touching_ground = true, collisions = {} })
+    local v_ground = c_obj:get_velocity()
+    assert(v_ground.x < 3.0 and v_ground.z < 3.0, "kinetic ground friction must slow horizontal velocity")
+
+    -- 4. Liquid drag step (lava and water)
+    local lava_obj = core.add_entity({ x = 0, y = 5, z = 0 }, "deathstats:corpse")
+    local lava_ent = lava_obj:get_luaentity()
+    core.set_node({ x = 0, y = 5, z = 0 }, { name = "default:lava_source" })
+    lava_obj:set_velocity({ x = 2.0, y = -1.0, z = 2.0 })
+    lava_ent:on_step(0.05)
+    local v_lava = lava_obj:get_velocity()
+    assert(v_lava.x < 2.0 and v_lava.z < 2.0, "lava viscous drag must dampen velocity")
+    lava_obj:remove()
+
+    -- 5. Airborne failsafe pos update via scratch_pos
+    local fail_obj = core.add_entity({ x = 0, y = 20, z = 0 }, "deathstats:corpse")
+    local fail_ent = fail_obj:get_luaentity()
+    fail_ent._air_timer = 10.5
+    fail_ent:on_step(0.05, { touching_ground = false })
+    assert(fail_ent._settled == true, "airborne failsafe must settle corpse")
+    fail_obj:remove()
+
+    c_obj:remove()
+    print("  [PASS] Corpse on_step Scratch Velocity, Collision Array Iteration & LuaJIT Optimization")
+end
+suites[100]()
+
+print("\nALL 100 TEST SUITES PASSED SUCCESSFULLY!")
 

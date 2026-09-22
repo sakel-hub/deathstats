@@ -16,6 +16,7 @@ local VEC_ZERO = vector.new(0, 0, 0)
 local GRAV_ACCEL = { x = 0, y = -9.81, z = 0 }
 local FALL_VEL = { x = 0, y = -1.2, z = 0 }
 local scratch_pos = { x = 0, y = 0, z = 0 }
+local scratch_vel = { x = 0, y = 0, z = 0 }
 local DOWNWARD_PROBE_DYS = { 0.25, 0.65, 1.15, 1.65, 2.15 }
 local WALL_TEST_DISTS = { 0.65, 0.85 }
 local WALL_TEST_YS = { 0.75, 1.1 }
@@ -3333,7 +3334,7 @@ core.register_entity("deathstats:corpse", {
             return
         end
 
-        local cur_v = (self.object.get_velocity and self.object:get_velocity()) or vector.zero()
+        local cur_v = (self.object.get_velocity and self.object:get_velocity()) or VEC_ZERO
         local vx, vy, vz = cur_v.x or 0, cur_v.y or 0, cur_v.z or 0
         -- Sanity check: prevent NaN physics corruption
         if vx ~= vx or vy ~= vy or vz ~= vz then
@@ -3354,7 +3355,10 @@ core.register_entity("deathstats:corpse", {
                     self.object:set_acceleration({ x = 0, y = -1.5, z = 0 })
                 end
                 if self.object.set_velocity then
-                    self.object:set_velocity(vector.new(cur_v.x * drag, cur_v.y * drag, cur_v.z * drag))
+                    scratch_vel.x = cur_v.x * drag
+                    scratch_vel.y = cur_v.y * drag
+                    scratch_vel.z = cur_v.z * drag
+                    self.object:set_velocity(scratch_vel)
                 end
             else
                 -- Water / liquid buoyancy
@@ -3375,7 +3379,10 @@ core.register_entity("deathstats:corpse", {
                     target_vy = 0.1
                 end
                 if self.object.set_velocity then
-                    self.object:set_velocity(vector.new(cur_v.x * drag, target_vy, cur_v.z * drag))
+                    scratch_vel.x = cur_v.x * drag
+                    scratch_vel.y = target_vy
+                    scratch_vel.z = cur_v.z * drag
+                    self.object:set_velocity(scratch_vel)
                 end
             end
 
@@ -3396,7 +3403,8 @@ core.register_entity("deathstats:corpse", {
             if moveresult and type(moveresult) == "table" then
                 touching_ground = moveresult.touching_ground or false
                 if moveresult.collisions and type(moveresult.collisions) == "table" then
-                    for _, col in ipairs(moveresult.collisions) do
+                    for i = 1, #moveresult.collisions do
+                        local col = moveresult.collisions[i]
                         if col.axis == "y" and col.old_velocity and col.old_velocity.y < -0.6 then
                             had_vertical_collision = true
                             collision_old_vy = col.old_velocity.y
@@ -3498,8 +3506,11 @@ core.register_entity("deathstats:corpse", {
                     self._bounce_count = self._bounce_count + 1
                     local rebound_vx = cur_v.x * 0.65
                     local rebound_vz = cur_v.z * 0.65
+                    scratch_vel.x = rebound_vx
+                    scratch_vel.y = rebound_vy
+                    scratch_vel.z = rebound_vz
                     if self.object.set_velocity then
-                        self.object:set_velocity(vector.new(rebound_vx, rebound_vy, rebound_vz))
+                        self.object:set_velocity(scratch_vel)
                     end
                     if self.object.set_acceleration then
                         self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
@@ -3532,8 +3543,7 @@ core.register_entity("deathstats:corpse", {
                     end
 
                     -- Apply immediate physical impact reaction to corpse limbs on bounce
-                    local rebound_v = vector.new(rebound_vx, rebound_vy, rebound_vz)
-                    deathstats.apply_corpse_bounce_impact(self.object, old_impact_vy, rebound_v, self._rot, self._bounce_count)
+                    deathstats.apply_corpse_bounce_impact(self.object, old_impact_vy, scratch_vel, self._rot, self._bounce_count)
 
                     -- Record shock state for decaying rebound flight oscillation
                     self._bounce_shock = math.min(1.6, math.max(0.35, old_impact_vy / 5.5))
@@ -3549,7 +3559,10 @@ core.register_entity("deathstats:corpse", {
                 local defl_vx = cur_v.x * -0.2
                 local defl_vz = cur_v.z * -0.2
                 if self.object.set_velocity then
-                    self.object:set_velocity(vector.new(defl_vx, cur_v.y, defl_vz))
+                    scratch_vel.x = defl_vx
+                    scratch_vel.y = cur_v.y
+                    scratch_vel.z = defl_vz
+                    self.object:set_velocity(scratch_vel)
                 end
                 -- Inelastic angular braking: vertical surface absorbs spinning momentum
                 if self._rot_speed then
@@ -3602,15 +3615,18 @@ core.register_entity("deathstats:corpse", {
                     local new_vz = cur_v.z + down_z * accel_mag * dtime
                     local new_vy = math.min(-1.5, cur_v.y)
                     if self.object.set_velocity then
-                        self.object:set_velocity(vector.new(new_vx, new_vy, new_vz))
+                        scratch_vel.x = new_vx
+                        scratch_vel.y = new_vy
+                        scratch_vel.z = new_vz
+                        self.object:set_velocity(scratch_vel)
                     end
                     if self.object.set_acceleration then
                         self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
                     end
                     if self._rot and deathstats.config.ragdoll_tumbling ~= false then
                         -- Keep pitch aligned with slope incline so torso lays flush with slope face
-                        self._rot.x = pitch_slope
                         -- Roll like a barrel/log along longitudinal spine axis (Roll Z) to avoid dipping head/feet into ground
+                        self._rot.x = pitch_slope
                         self._rot.z = (self._rot.z or 0) + accel_mag * 1.0 * dtime
                         if self.object.set_rotation then
                             self.object:set_rotation(self._rot)
@@ -3622,7 +3638,10 @@ core.register_entity("deathstats:corpse", {
                     local new_vx = cur_v.x * friction
                     local new_vz = cur_v.z * friction
                     if self.object.set_velocity then
-                        self.object:set_velocity(vector.new(new_vx, cur_v.y, new_vz))
+                        scratch_vel.x = new_vx
+                        scratch_vel.y = cur_v.y
+                        scratch_vel.z = new_vz
+                        self.object:set_velocity(scratch_vel)
                     end
                     -- Keep downward gravity active so corpse rests firmly on ground and drops over edges
                     if self.object.set_acceleration then
@@ -3663,7 +3682,10 @@ core.register_entity("deathstats:corpse", {
                         end
                         if self._flail_timer >= flail_interval then
                             self._flail_timer = 0
-                            deathstats.update_ragdoll_slide_limbs(self.object, vector.new(new_vx, cur_v.y, new_vz), self._base_yaw or 0, self._bounce_shock, self._slide_timer)
+                            scratch_vel.x = new_vx
+                            scratch_vel.y = cur_v.y
+                            scratch_vel.z = new_vz
+                            deathstats.update_ragdoll_slide_limbs(self.object, scratch_vel, self._base_yaw or 0, self._bounce_shock, self._slide_timer)
                         end
                     end
 
@@ -3682,7 +3704,10 @@ core.register_entity("deathstats:corpse", {
                 end
                 local air_drag = math.exp(-0.25 * dtime)
                 if self.object.set_velocity then
-                    self.object:set_velocity(vector.new(cur_v.x * air_drag, cur_v.y, cur_v.z * air_drag))
+                    scratch_vel.x = cur_v.x * air_drag
+                    scratch_vel.y = cur_v.y
+                    scratch_vel.z = cur_v.z * air_drag
+                    self.object:set_velocity(scratch_vel)
                 end
 
                 -- Tumbling rotation with aerodynamic angular damping
@@ -3746,7 +3771,10 @@ core.register_entity("deathstats:corpse", {
                     local ground_y = deathstats.find_ground_surface(pos, nil, self._death_info or { category = "fall" })
                     if ground_y and (pos.y - ground_y) <= 40.0 then
                         if self.object.set_pos then
-                            self.object:set_pos(vector.new(pos.x, ground_y + 0.02, pos.z))
+                            scratch_pos.x = pos.x
+                            scratch_pos.y = ground_y + 0.02
+                            scratch_pos.z = pos.z
+                            self.object:set_pos(scratch_pos)
                         end
                     end
                     deathstats.settle_corpse_at_rest(self)
