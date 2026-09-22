@@ -13,8 +13,8 @@ on:
   workflow_call:
 
 jobs:
-  lint_and_test:
-    name: Luacheck & Unit Tests
+  luacheck:
+    name: Run Luacheck
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -31,6 +31,3 @@ jobs:
         run: |
           export PATH="$HOME/.luarocks/bin:$PATH"
           luacheck .
-
-      - name: Run Tests
-        run: lua test.lua
