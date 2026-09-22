@@ -18,8 +18,8 @@ local FALL_VEL = { x = 0, y = -1.2, z = 0 }
 local scratch_pos = { x = 0, y = 0, z = 0 }
 local scratch_vel = { x = 0, y = 0, z = 0 }
 local DOWNWARD_PROBE_DYS = { 0.25, 0.65, 1.15, 1.65, 2.15 }
-local WALL_TEST_DISTS = { 0.65, 0.85 }
-local WALL_TEST_YS = { 0.75, 1.1 }
+local WALL_TEST_DISTS = { 0.55, 0.65 }
+local WALL_TEST_YS = { 0.60, 0.80 }
 local CAMERA_PROBE_STEPS = { 0, 0.06 }
 
 deathstats = {
@@ -2785,7 +2785,7 @@ function deathstats.detect_wall_behind(pos, yaw)
 
     -- Ensure space at corpse torso itself is not inside a solid block
     scratch_pos.x = pos.x
-    scratch_pos.y = pos.y + 0.8
+    scratch_pos.y = pos.y + 0.75
     scratch_pos.z = pos.z
     local torso_self = core.get_node_or_nil(scratch_pos)
     if torso_self and torso_self.name ~= "air" and torso_self.name ~= "ignore" then
@@ -2795,7 +2795,8 @@ function deathstats.detect_wall_behind(pos, yaw)
         end
     end
 
-    -- Probe behind at torso and shoulder height (y + 0.75 to y + 1.1) so ground blocks/slopes are never confused with walls
+    -- Probe behind at torso and shoulder height (y + 0.60 to y + 0.80) so ground blocks
+    -- and overhead arches/ceilings are never confused with walls behind the back.
     for i = 1, #WALL_TEST_DISTS do
         local dist = WALL_TEST_DISTS[i]
         local px = pos.x + b_x * dist
@@ -2882,9 +2883,12 @@ function deathstats.settle_corpse_at_rest(luaent)
     local pose_type = "supine"
     local pos = obj.get_pos and obj:get_pos()
 
-    -- Determine resting orientation (supine, prone, lateral, wall_sit, slouch)
+    -- Determine resting orientation (supine, prone, lateral, wall_sit, slouch).
+    -- Wall-sitting postures (wall_sit, slouch) strictly require an actual solid wall
+    -- directly behind the corpse's back (is_wall_behind). A prior mid-air wall collision
+    -- must never trigger sitting if the corpse landed out in the open or away from a wall.
     local is_wall_behind = pos and deathstats.detect_wall_behind(pos, base_yaw)
-    if (is_wall_behind or luaent._had_wall_collision) and deathstats.config.ragdoll_resting_poses ~= false then
+    if is_wall_behind and deathstats.config.ragdoll_resting_poses ~= false then
         local w_pick = math.random()
         if w_pick < 0.55 then
             pose_type = "wall_sit"

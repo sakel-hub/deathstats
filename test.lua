@@ -9713,6 +9713,23 @@ suites[98] = function()
     local no_wall = deathstats.detect_wall_behind(vector.new(5, 10, 5), 0)
     assert(no_wall == false, "detect_wall_behind must return false when no wall behind")
 
+    -- Overhead ceiling / tree canopy test: leaves at Y=12 must NOT trigger wall detection for corpse at Y=10
+    core.world_nodes["5,11,4"] = "air"
+    core.world_nodes["5,12,4"] = "default:leaves"
+    local overhead_wall = deathstats.detect_wall_behind(vector.new(5, 10, 5), 0)
+    assert(overhead_wall == false, "detect_wall_behind must not treat overhead canopy/ceiling as wall behind back")
+    core.world_nodes["5,12,4"] = nil
+
+    -- Corpse with prior wall collision but no wall behind at rest must NOT sit or slouch
+    local open_corpse = core.add_entity({ x = 5, y = 10, z = 5 }, "deathstats:corpse")
+    local open_lua = open_corpse:get_luaentity()
+    open_lua._had_wall_collision = true
+    open_lua._settled = false
+    deathstats.settle_corpse_at_rest(open_lua)
+    assert(open_lua._pose_type ~= "wall_sit" and open_lua._pose_type ~= "slouch",
+        "Corpse without wall behind must never choose wall_sit or slouch even if it had a prior wall collision, got: " .. tostring(open_lua._pose_type))
+    open_corpse:remove()
+
     -- Pose Selection Box and Elevation Offsets for Wall Poses
     assert(deathstats.get_pose_elevation_offset("wall_sit") == 0.0, "wall_sit elevation offset must be 0.0")
     assert(deathstats.get_pose_elevation_offset("slouch") == 0.0, "slouch elevation offset must be 0.0")
