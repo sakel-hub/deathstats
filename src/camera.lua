@@ -217,10 +217,11 @@ function deathstats.update_death_camera(player, dtime)
                 if data.anchor.set_acceleration then
                     data.anchor:set_acceleration(vector.zero())
                 end
+                if data.anchor.set_pos then
+                    data.anchor:set_pos(new_center)
+                end
                 if data.anchor.move_to then
                     data.anchor:move_to(new_center, false)
-                elseif data.anchor.set_pos then
-                    data.anchor:set_pos(new_center)
                 end
             end
             if player.set_detach then player:set_detach() end
@@ -277,7 +278,7 @@ function deathstats.update_death_camera(player, dtime)
             end
         end
 
-        -- Dynamic corpse tracking: smoothly update orbit_center to follow the moving ragdoll corpse
+        -- Dynamic corpse tracking: smoothly update orbit_center and anchor to lock 1:1 to corpse
         if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) and data.corpse.get_pos then
             local cpos = data.corpse:get_pos()
             if cpos then
@@ -288,12 +289,13 @@ function deathstats.update_death_camera(player, dtime)
                 local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
                 local is_settled = (luaent and luaent._settled) or (vel_len < 0.05 and pos_diff < 0.02)
 
+                data.corpse_pos = cpos
+                data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
+
                 if not is_settled then
                     -- Ragdoll corpse is actively moving/falling: translate orbit center and move anchor
                     data.corpse_settled = false
                     data.corpse_settled_particles_checked = false
-                    data.corpse_pos = cpos
-                    data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
                     data.corpse_vel = cvel
                     data.corpse_acc = cacc
 
@@ -314,39 +316,43 @@ function deathstats.update_death_camera(player, dtime)
                     if luaent then luaent._effect_type = nil end
 
                     if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-                        if data.anchor.move_to then
-                            data.anchor:move_to(data.orbit_center, false)
-                        elseif data.anchor.set_pos then
+                        if data.anchor.set_pos then
                             data.anchor:set_pos(data.orbit_center)
                         end
-                        if data.anchor.set_velocity then
-                            data.anchor:set_velocity(cvel)
+                        if data.anchor.move_to then
+                            data.anchor:move_to(data.orbit_center, false)
                         end
-                        if data.anchor.set_acceleration then
-                            data.anchor:set_acceleration(vector.zero())
-                        end
-                    end
-                elseif not data.corpse_settled then
-                    -- Ragdoll corpse has settled: lock final stationary position and zero out velocity once
-                    data.corpse_settled = true
-                    data.corpse_pos = cpos
-                    data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
-                    data.corpse_vel = VEC_ZERO
-                    data.corpse_acc = VEC_ZERO
-
-                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
                         if data.anchor.set_velocity then
                             data.anchor:set_velocity(VEC_ZERO)
                         end
                         if data.anchor.set_acceleration then
                             data.anchor:set_acceleration(VEC_ZERO)
                         end
-                        if data.anchor.set_pos then
-                            data.anchor:set_pos(data.orbit_center)
+                    end
+                else
+                    -- Ragdoll corpse has settled: lock final stationary position and ensure anchor is zeroed
+                    if not data.corpse_settled then
+                        data.corpse_settled = true
+                        data.corpse_vel = VEC_ZERO
+                        data.corpse_acc = VEC_ZERO
+                    end
+
+                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                        local cur_apos = data.anchor.get_pos and data.anchor:get_pos()
+                        if not cur_apos or vector.distance(cur_apos, data.orbit_center) > 0.01 then
+                            if data.anchor.set_pos then
+                                data.anchor:set_pos(data.orbit_center)
+                            end
+                        end
+                        if data.anchor.set_velocity then
+                            data.anchor:set_velocity(VEC_ZERO)
+                        end
+                        if data.anchor.set_acceleration then
+                            data.anchor:set_acceleration(VEC_ZERO)
                         end
                     end
                 end
-                -- When corpse_settled is true, anchor is NEVER touched: zero packets sent, 100% calm stationary scene node!
+                -- When corpse_settled is true, anchor is stationary at orbit_center with zero velocity
 
                 -- Re-evaluate environment effect once corpse has settled
                 if luaent and luaent._settled and not data.corpse_settled_particles_checked then
@@ -428,9 +434,8 @@ function deathstats.update_death_camera(player, dtime)
                     show_on_minimap = false,
                 })
             end
-            local cvel = data.corpse_vel or vector.zero()
             if new_anchor.set_velocity then
-                new_anchor:set_velocity(cvel)
+                new_anchor:set_velocity(vector.zero())
             end
             if new_anchor.set_acceleration then
                 new_anchor:set_acceleration(vector.zero())
@@ -802,10 +807,11 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
             if data.anchor.set_acceleration then
                 data.anchor:set_acceleration(vector.zero())
             end
+            if data.anchor.set_pos then
+                data.anchor:set_pos(new_center)
+            end
             if data.anchor.move_to then
                 data.anchor:move_to(new_center, false)
-            elseif data.anchor.set_pos then
-                data.anchor:set_pos(new_center)
             end
         end
         if player.set_detach then player:set_detach() end
@@ -1204,6 +1210,13 @@ function deathstats.set_death_camera(player, death_info)
     local corpse = nil
     if not expect_bones then
         corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb, is_reconnect_death)
+        if corpse and corpse.get_pos then
+            local actual_pos = corpse:get_pos()
+            if actual_pos then
+                orbit_center = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
+                corpse_pos = orbit_center
+            end
+        end
     end
     local particle_spawners = nil
     local current_effect_type = nil
@@ -1232,6 +1245,16 @@ function deathstats.set_death_camera(player, death_info)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
                     cdata.corpse_wielditem = deathstats.get_corpse_wielditem(retry_corpse)
+                    if retry_corpse.get_pos then
+                        local actual_pos = retry_corpse:get_pos()
+                        if actual_pos then
+                            cdata.orbit_center = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
+                            cdata.corpse_pos = cdata.orbit_center
+                            if cdata.anchor and (not cdata.anchor.is_valid or cdata.anchor:is_valid()) and cdata.anchor.set_pos then
+                                cdata.anchor:set_pos(cdata.orbit_center)
+                            end
+                        end
+                    end
                 end
                 local rc_ent = retry_corpse and retry_corpse.get_luaentity and retry_corpse:get_luaentity()
                 if deathstats.config.enable_corpse_particles ~= false and not cdata.particle_spawners and rc_ent and rc_ent._settled then
@@ -1412,12 +1435,8 @@ function deathstats.set_death_camera(player, death_info)
                 show_on_minimap = false,
             })
         end
-        local cvel = (corpse and corpse.get_velocity and corpse:get_velocity()) or vector.zero()
-        local is_moving = (not is_reconnect_death) and (vector.length(cvel) >= 0.05)
-        if is_moving then
-            if anchor.set_velocity then
-                anchor:set_velocity(cvel)
-            end
+        if anchor.set_velocity then
+            anchor:set_velocity(vector.zero())
         end
         if anchor.set_acceleration then
             anchor:set_acceleration(vector.zero())

@@ -5899,8 +5899,8 @@ local function run_test_suite_54()
         "Anchor pos must be stationed directly at corpse orbit_center")
     assert(sim_cam_data.anchor.last_move_continuous == false,
         "Anchor must use continuous = false for unthrottled position updates")
-    assert(vector.length(sim_cam_data.anchor:get_velocity()) > 0.1,
-        "Anchor must have non-zero velocity tracking corpse")
+    assert(vector.length(sim_cam_data.anchor:get_velocity()) == 0,
+        "Anchor velocity must remain zero to prevent drifting or falling through nodes")
     assert(p.eye_offset ~= nil and p.eye_offset[1].z < 0 and p.eye_offset[1].y > 0,
         "Player eye offset must project backwards and upwards from stationed anchor")
     deathstats.reset_camera(p)
@@ -7202,8 +7202,8 @@ local function run_test_suite_68()
         assert(cam_corpse_dist < 0.001,
             "Anchor must track moving corpse stationed at orbit center")
         local anchor_vel = cdata.anchor:get_velocity()
-        assert(anchor_vel and anchor_vel.y == -4,
-            "Anchor must inherit corpse velocity for client-side extrapolation")
+        assert(anchor_vel and vector.length(anchor_vel) == 0,
+            "Anchor velocity must remain zero to prevent drifting or falling through nodes")
 
         -- Settled corpse tranquility: once corpse rests, anchor must become completely stationary
         cdata.corpse:set_velocity(vector.zero())
@@ -10318,8 +10318,11 @@ suites[102] = function()
         string.format("Camera orbit angle must advance smoothly on reconnect! start=%f, after=%f", start_angle, angle_after_step))
 
     local anchor_pos = jb_data.anchor:get_pos()
-    assert(math.abs(anchor_pos.y - 65.5) < 0.1,
-        string.format("Anchor position Y must stay at corpse altitude (65.5), got %f", anchor_pos.y))
+    local corpse_pos = jb_data.corpse:get_pos()
+    assert(vector.distance(anchor_pos, corpse_pos) < 0.001,
+        string.format("Anchor position must match corpse position exactly, got anchor.y=%f, corpse.y=%f", anchor_pos.y, corpse_pos.y))
+    assert(math.abs(anchor_pos.y - 65.5) < 0.4,
+        string.format("Anchor position Y must stay within ground elevation offset of 65.5, got %f", anchor_pos.y))
 
     -- 4. Dug-Out Wake-Up Elevation Check
     core.world_nodes["504,65,-556"] = "air"
@@ -10334,6 +10337,66 @@ suites[102] = function()
     mock_players["JohnnyBravo"] = nil
     deathstats.players["JohnnyBravo"] = nil
     deathstats.dead_players["JohnnyBravo"] = nil
+
+    -- 5. Camera Anchor Centering & Zero-Velocity Invariant (Zero-Drift / Zero-Spiral)
+    local p_center = create_mock_player("CenterCheckVictim", 20, { x = 20, y = 5, z = 20 })
+    mock_players["CenterCheckVictim"] = p_center
+    p_center.hp = 0
+    core.world_nodes["20,4,20"] = "default:stone"
+    core.world_nodes["20,5,20"] = "air"
+    deathstats.last_blow["CenterCheckVictim"] = { damage = 10, hitter_name = "Dragon", hitter_type = "mob", velocity = { x = 2, y = 3, z = -1 } }
+    core.on_dieplayer(p_center)
+
+    local center_data = deathstats.player_camera_data["CenterCheckVictim"]
+    assert(center_data ~= nil and center_data.anchor ~= nil and center_data.corpse ~= nil,
+        "Camera session, anchor, and corpse must be initialized on death")
+
+    -- Verify anchor pos matches corpse pos exactly from initial spawn (post-clearance & post-slope offset)
+    local c_pos_init = center_data.corpse:get_pos()
+    local a_pos_init = center_data.anchor:get_pos()
+    assert(vector.distance(a_pos_init, c_pos_init) < 0.001,
+        string.format("Initial anchor position must match corpse position exactly, dist=%f", vector.distance(a_pos_init, c_pos_init)))
+    assert(vector.distance(center_data.orbit_center, c_pos_init) < 0.001,
+        "Initial orbit_center must match corpse position exactly (no pre-elevation offset)")
+
+    -- Verify anchor velocity and acceleration are strictly zero on spawn
+    local a_vel_init = center_data.anchor:get_velocity()
+    assert(vector.length(a_vel_init) == 0,
+        "Camera anchor must have zero velocity on spawn even when corpse has ragdoll impulse")
+    local a_acc_init = center_data.anchor:get_acceleration()
+    assert(vector.length(a_acc_init) == 0,
+        "Camera anchor must have zero acceleration on spawn")
+
+    -- Simulate corpse moving through flight steps and verify anchor remains locked 1:1 with zero autonomous velocity
+    for i = 1, 5 do
+        center_data.corpse:set_pos({ x = 20 + i * 0.5, y = 5 + i * 0.2, z = 20 - i * 0.3 })
+        deathstats.update_death_camera(p_center, 0.05)
+        local cur_cpos = center_data.corpse:get_pos()
+        local cur_apos = center_data.anchor:get_pos()
+        assert(vector.distance(cur_apos, cur_cpos) < 0.001,
+            string.format("Anchor must track moving corpse pos 1:1 at step %d, dist=%f", i, vector.distance(cur_apos, cur_cpos)))
+        assert(vector.length(center_data.anchor:get_velocity()) == 0,
+            string.format("Anchor velocity must remain strictly zero at step %d", i))
+    end
+
+    -- Settle corpse and verify anchor remains locked at final rest position without spiraling away
+    local c_ent_center = center_data.corpse:get_luaentity()
+    if c_ent_center then c_ent_center._settled = true end
+    center_data.corpse:set_velocity(vector.zero())
+    for _ = 1, 10 do
+        deathstats.update_death_camera(p_center, 0.1)
+    end
+    local settled_cpos = center_data.corpse:get_pos()
+    local settled_apos = center_data.anchor:get_pos()
+    assert(vector.distance(settled_apos, settled_cpos) < 0.001,
+        "Anchor must remain stationed exactly at settled corpse center (zero drift / zero spiral)")
+    assert(vector.length(center_data.anchor:get_velocity()) == 0,
+        "Anchor velocity must remain zero on settled corpse")
+
+    deathstats.reset_camera(p_center)
+    mock_players["CenterCheckVictim"] = nil
+    deathstats.players["CenterCheckVictim"] = nil
+    deathstats.dead_players["CenterCheckVictim"] = nil
 
     print("  [PASS] Dead Player Reconnect, Corpse Ground Support at Negative Coordinates & Camera Anchor Safety")
 end
