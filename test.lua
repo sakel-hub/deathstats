@@ -7096,8 +7096,8 @@ local function run_test_suite_67()
         deathstats.settle_ragdoll_limbs(test_corpse, 5, "lateral")
         local lat_l = test_corpse:get_bone_override("Leg_Left")
         local lat_r = test_corpse:get_bone_override("Leg_Right")
-        local lat_l_deg = lat_l and math.deg(lat_l.rotation.vec.z) or 0
-        local lat_r_deg = lat_r and math.deg(lat_r.rotation.vec.z) or 0
+        local lat_l_deg = lat_l and math.deg(lat_l.rotation.vec.x) or 0
+        local lat_r_deg = lat_r and math.deg(lat_r.rotation.vec.x) or 0
         local lat_separation = math.abs(lat_r_deg - lat_l_deg)
         if lat_separation < min_sep then min_sep = lat_separation end
         if lat_separation > max_sep then max_sep = lat_separation end
@@ -9286,17 +9286,34 @@ suites[95] = function()
             assert(leg_l ~= nil and leg_r ~= nil and arm_l ~= nil and arm_r ~= nil,
                 "Settled limbs must all receive bone overrides")
 
-            -- Strict anatomical planar constraint: legs must not point upward into the sky on flat ground
-            assert(leg_l.rotation.vec.x == 0,
-                string.format("Leg_Left local X pitch must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_l.rotation.vec.x))
-            assert(leg_r.rotation.vec.x == 0,
-                string.format("Leg_Right local X pitch must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_r.rotation.vec.x))
+            -- Strict anatomical planar constraint: limbs must not point upward into the sky on flat ground
+            if ptype == "lateral" then
+                -- In lateral pose (roll = +/- pi/2), local Z is the vertical sky axis:
+                -- limbs must not point upward into the sky, so local Z must be 0!
+                assert(leg_l.rotation.vec.z == 0,
+                    string.format("Leg_Left local Z roll must be strictly 0 in lateral pose to prevent pointing into the sky, got: %f", leg_l.rotation.vec.z))
+                assert(leg_r.rotation.vec.z == 0,
+                    string.format("Leg_Right local Z roll must be strictly 0 in lateral pose to prevent pointing into the sky, got: %f", leg_r.rotation.vec.z))
+                assert(arm_l.rotation.vec.z == 0,
+                    string.format("Arm_Left local Z roll must be strictly 0 in lateral pose to prevent pointing into the sky, got: %f", arm_l.rotation.vec.z))
+                assert(arm_r.rotation.vec.z == 0,
+                    string.format("Arm_Right local Z roll must be strictly 0 in lateral pose to prevent pointing into the sky, got: %f", arm_r.rotation.vec.z))
+            else
+                -- In supine / prone, local X is the vertical sky axis:
+                assert(leg_l.rotation.vec.x == 0,
+                    string.format("Leg_Left local X pitch must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_l.rotation.vec.x))
+                assert(leg_r.rotation.vec.x == 0,
+                    string.format("Leg_Right local X pitch must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_r.rotation.vec.x))
+            end
             assert(leg_l.rotation.vec.y == 0,
                 string.format("Leg_Left local Y yaw must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_l.rotation.vec.y))
             assert(leg_r.rotation.vec.y == 0,
                 string.format("Leg_Right local Y yaw must be strictly 0 on ground in pose '%s', got: %f", ptype, leg_r.rotation.vec.y))
 
-            local sample_key = string.format("%.1f_%.1f_%.1f_%.1f",
+            local sample_key = (ptype == "lateral") and string.format("%.1f_%.1f_%.1f_%.1f",
+                math.deg(arm_l.rotation.vec.x), math.deg(arm_r.rotation.vec.x),
+                math.deg(leg_l.rotation.vec.x), math.deg(leg_r.rotation.vec.x))
+                or string.format("%.1f_%.1f_%.1f_%.1f",
                 math.deg(arm_l.rotation.vec.z), math.deg(arm_r.rotation.vec.z),
                 math.deg(leg_l.rotation.vec.z), math.deg(leg_r.rotation.vec.z))
             distinct_samples[sample_key] = true

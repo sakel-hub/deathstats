@@ -303,53 +303,55 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
         end
     elseif ptype == "lateral" then
         -- Lateral: Lying on side with organic archetypes (curled, runner, parallel, splay)
+        -- On the side (roll = +/- pi/2), local X (pitch) bends limbs forward/backward along the ground plane.
+        -- Local Z (abduction) is perpendicular to the ground, so it must be 0 to keep limbs resting flush without lifting into the sky.
         local arch = math.random(1, 4)
-        local head_tilt
-        local l_arm, r_arm, l_leg, r_leg
+        local head_pitch
+        local l_leg_pitch, r_leg_pitch, l_arm_pitch, r_arm_pitch
 
         if arch == 1 then
-            -- Semi-fetal / curled: legs resting closely together (spread only 8° to 16°)
-            l_leg = random_float(-24, -14) * scale
-            r_leg = random_float(-12, -2) * scale
-            l_arm = random_float(-35, -18) * scale
-            r_arm = random_float(18, 38) * scale
-            head_tilt = random_float(-25, -5)
+            -- Semi-fetal / curled: legs resting closely together with gentle forward bend (spread only 8° to 16°)
+            l_leg_pitch = random_float(14, 24) * scale
+            r_leg_pitch = random_float(22, 36) * scale
+            l_arm_pitch = random_float(18, 35) * scale
+            r_arm_pitch = random_float(22, 42) * scale
+            head_pitch = math.rad(random_float(5, 25))
         elseif arch == 2 then
             -- Staggered runner: one leg forward, one trailing back (spread 30° to 45°)
-            l_leg = random_float(-32, -20) * scale
-            r_leg = random_float(10, 24) * scale
-            l_arm = random_float(-35, -15) * scale
-            r_arm = random_float(-10, 20) * scale
-            head_tilt = random_float(-15, 15)
+            l_leg_pitch = random_float(-24, -10) * scale
+            r_leg_pitch = random_float(15, 32) * scale
+            l_arm_pitch = random_float(-15, 10) * scale
+            r_arm_pitch = random_float(15, 35) * scale
+            head_pitch = math.rad(random_float(-15, 15))
         elseif arch == 3 then
             -- Limp parallel: legs almost straight with minimal separation (< 18°)
-            l_leg = random_float(-15, -6) * scale
-            r_leg = random_float(6, 15) * scale
-            l_arm = random_float(-20, -8) * scale
-            r_arm = random_float(8, 20) * scale
-            head_tilt = random_float(-12, 12)
+            l_leg_pitch = random_float(6, 15) * scale
+            r_leg_pitch = random_float(10, 22) * scale
+            l_arm_pitch = random_float(8, 20) * scale
+            r_arm_pitch = random_float(12, 26) * scale
+            head_pitch = math.rad(random_float(-12, 12))
         else
-            -- Relaxed splay: natural asymmetric spread
-            l_leg = random_float(-35, -20) * scale
-            r_leg = random_float(15, 32) * scale
-            l_arm = random_float(-35, -15) * scale
-            r_arm = random_float(20, 38) * scale
-            head_tilt = random_float(-20, 20)
+            -- Relaxed splay: natural asymmetric spread along ground
+            l_leg_pitch = random_float(-14, -2) * scale
+            r_leg_pitch = random_float(18, 34) * scale
+            l_arm_pitch = random_float(10, 24) * scale
+            r_arm_pitch = random_float(20, 38) * scale
+            head_pitch = math.rad(random_float(-20, 20))
         end
 
         -- Mirror left/right symmetrically if lying on the right side
         if is_right_side then
-            custom["Arm_Left"] = math.rad(-r_arm)
-            custom["Arm_Right"] = math.rad(-l_arm)
-            custom["Leg_Left"] = math.rad(-r_leg)
-            custom["Leg_Right"] = math.rad(-l_leg)
-            custom["Head"] = math.rad(-head_tilt)
+            custom["Arm_Left"] = vector.new(math.rad(r_arm_pitch), 0, 0)
+            custom["Arm_Right"] = vector.new(math.rad(l_arm_pitch), 0, 0)
+            custom["Leg_Left"] = vector.new(math.rad(r_leg_pitch), 0, 0)
+            custom["Leg_Right"] = vector.new(math.rad(l_leg_pitch), 0, 0)
+            custom["Head"] = vector.new(-head_pitch, 0, 0)
         else
-            custom["Arm_Left"] = math.rad(l_arm)
-            custom["Arm_Right"] = math.rad(r_arm)
-            custom["Leg_Left"] = math.rad(l_leg)
-            custom["Leg_Right"] = math.rad(r_leg)
-            custom["Head"] = math.rad(head_tilt)
+            custom["Arm_Left"] = vector.new(math.rad(l_arm_pitch), 0, 0)
+            custom["Arm_Right"] = vector.new(math.rad(r_arm_pitch), 0, 0)
+            custom["Leg_Left"] = vector.new(math.rad(l_leg_pitch), 0, 0)
+            custom["Leg_Right"] = vector.new(math.rad(r_leg_pitch), 0, 0)
+            custom["Head"] = vector.new(head_pitch, 0, 0)
         end
     elseif ptype == "wall_sit" or ptype == "slouch" then
         -- Wall sit / slouch: sitting upright against a wall with relaxed or slouched limbs
@@ -426,7 +428,12 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
     for bone_name, val in pairs(custom) do
         local jitter = math.rad(random_float(-2.5, 2.5))
         if type(val) == "table" then
-            custom[bone_name] = vector.new(val.x or 0, val.y or 0, (val.z or 0) + jitter)
+            if ptype == "lateral" and (bone_name:find("Arm") or bone_name:find("Leg")) then
+                -- In lateral pose, limbs bend along ground plane (local X), keeping local Z strictly 0
+                custom[bone_name] = vector.new((val.x or 0) + jitter, val.y or 0, 0)
+            else
+                custom[bone_name] = vector.new(val.x or 0, val.y or 0, (val.z or 0) + jitter)
+            end
         else
             custom[bone_name] = val + jitter
         end
@@ -434,13 +441,23 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
 
     -- If legs hang over a ledge/cliff, flex them downward toward the drop (except when sitting)
     if hanging_legs and ptype ~= "wall_sit" and ptype ~= "slouch" then
-        local hang_pitch = (ptype == "prone") and math.rad(45)
-            or (ptype == "supine") and math.rad(-45)
-            or math.rad(-30)
-        local cur_left_z = (type(custom["Leg_Left"]) == "number" and custom["Leg_Left"]) or math.rad(-25 * scale)
-        local cur_right_z = (type(custom["Leg_Right"]) == "number" and custom["Leg_Right"]) or math.rad(25 * scale)
-        custom["Leg_Left"] = vector.new(hang_pitch, 0, cur_left_z)
-        custom["Leg_Right"] = vector.new(hang_pitch, 0, cur_right_z)
+        if ptype == "lateral" then
+            local hang_roll = is_right_side and math.rad(35) or math.rad(-35)
+            local cur_l_x = (type(custom["Leg_Left"]) == "table" and custom["Leg_Left"].x) or 0
+            local cur_r_x = (type(custom["Leg_Right"]) == "table" and custom["Leg_Right"].x) or 0
+            custom["Leg_Left"] = vector.new(cur_l_x, 0, hang_roll)
+            custom["Leg_Right"] = vector.new(cur_r_x, 0, hang_roll)
+        else
+            local hang_pitch = (ptype == "prone") and math.rad(45)
+                or (ptype == "supine") and math.rad(-45)
+                or math.rad(-30)
+            local cur_left_z = (type(custom["Leg_Left"]) == "number" and custom["Leg_Left"])
+                or (type(custom["Leg_Left"]) == "table" and custom["Leg_Left"].z) or math.rad(-25 * scale)
+            local cur_right_z = (type(custom["Leg_Right"]) == "number" and custom["Leg_Right"])
+                or (type(custom["Leg_Right"]) == "table" and custom["Leg_Right"].z) or math.rad(25 * scale)
+            custom["Leg_Left"] = vector.new(hang_pitch, 0, cur_left_z)
+            custom["Leg_Right"] = vector.new(hang_pitch, 0, cur_right_z)
+        end
     end
 
     deathstats.fracture_corpse_limbs(corpse, custom)
