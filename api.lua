@@ -15,6 +15,11 @@ local copy = table.copy
 local VEC_ZERO = vector.new(0, 0, 0)
 local GRAV_ACCEL = { x = 0, y = -9.81, z = 0 }
 local FALL_VEL = { x = 0, y = -1.2, z = 0 }
+local scratch_pos = { x = 0, y = 0, z = 0 }
+local DOWNWARD_PROBE_DYS = { 0.25, 0.65, 1.15, 1.65, 2.15 }
+local WALL_TEST_DISTS = { 0.65, 0.85 }
+local WALL_TEST_YS = { 0.75, 1.1 }
+local CAMERA_PROBE_STEPS = { 0, 0.06 }
 
 deathstats = {
     modpath = core.get_modpath("deathstats") or ".",
@@ -2351,6 +2356,34 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
             custom["Leg_Right"] = math.rad(r_leg)
             custom["Head"] = math.rad(head_tilt)
         end
+    elseif ptype == "wall_sit" or ptype == "slouch" then
+        -- Wall sit / slouch: sitting upright against a wall with relaxed or slouched limbs
+        local head_sign = (math.random() < 0.5) and -1 or 1
+        local head_pitch = math.rad(random_float(12, 26))
+        local head_yaw = math.rad(head_sign * random_float(4, 18))
+        custom["Head"] = vector.new(head_pitch, head_yaw, 0)
+
+        if ptype == "slouch" then
+            -- Slouch: torso slightly tilted back or sideways, one arm fallen outward, legs loose
+            local l_splay = (math.random() < 0.5)
+            if l_splay then
+                custom["Arm_Left"] = vector.new(math.rad(random_float(15, 35)), 0, math.rad(random_float(-25, -10)))
+                custom["Arm_Right"] = vector.new(math.rad(random_float(5, 20)), 0, math.rad(random_float(5, 15)))
+                custom["Leg_Left"] = math.rad(random_float(-22, -10) * scale)
+                custom["Leg_Right"] = math.rad(random_float(4, 14) * scale)
+            else
+                custom["Arm_Left"] = vector.new(math.rad(random_float(5, 20)), 0, math.rad(random_float(-15, -5)))
+                custom["Arm_Right"] = vector.new(math.rad(random_float(15, 35)), 0, math.rad(random_float(10, 25)))
+                custom["Leg_Left"] = math.rad(random_float(-14, -4) * scale)
+                custom["Leg_Right"] = math.rad(random_float(10, 22) * scale)
+            end
+        else
+            -- Wall sit: balanced resting posture, arms resting downward toward lap
+            custom["Arm_Left"] = vector.new(math.rad(random_float(8, 22)), 0, math.rad(random_float(-12, -4)))
+            custom["Arm_Right"] = vector.new(math.rad(random_float(8, 22)), 0, math.rad(random_float(4, 12)))
+            custom["Leg_Left"] = math.rad(random_float(-12, -2) * scale)
+            custom["Leg_Right"] = math.rad(random_float(2, 12) * scale)
+        end
     else
         -- Supine: Lying flat on back with organic archetypes (sprawl, relaxed, folded, impact)
         local arch = math.random(1, 4)
@@ -2395,18 +2428,22 @@ function deathstats.settle_ragdoll_limbs(corpse, impact_damage, pose_type, hangi
     end
 
     -- Add organic per-joint micro-jitter (±2.5 degrees) so no two poses are identical
-    for bone_name, angle in pairs(custom) do
+    for bone_name, val in pairs(custom) do
         local jitter = math.rad(random_float(-2.5, 2.5))
-        custom[bone_name] = angle + jitter
+        if type(val) == "table" then
+            custom[bone_name] = vector.new(val.x or 0, val.y or 0, (val.z or 0) + jitter)
+        else
+            custom[bone_name] = val + jitter
+        end
     end
 
-    -- If legs hang over a ledge/cliff, flex them downward toward the drop
-    if hanging_legs then
+    -- If legs hang over a ledge/cliff, flex them downward toward the drop (except when sitting)
+    if hanging_legs and ptype ~= "wall_sit" and ptype ~= "slouch" then
         local hang_pitch = (ptype == "prone") and math.rad(45)
             or (ptype == "supine") and math.rad(-45)
             or math.rad(-30)
-        local cur_left_z = custom["Leg_Left"] or math.rad(-25 * scale)
-        local cur_right_z = custom["Leg_Right"] or math.rad(25 * scale)
+        local cur_left_z = (type(custom["Leg_Left"]) == "number" and custom["Leg_Left"]) or math.rad(-25 * scale)
+        local cur_right_z = (type(custom["Leg_Right"]) == "number" and custom["Leg_Right"]) or math.rad(25 * scale)
         custom["Leg_Left"] = vector.new(hang_pitch, 0, cur_left_z)
         custom["Leg_Right"] = vector.new(hang_pitch, 0, cur_right_z)
     end
@@ -2544,10 +2581,12 @@ function deathstats.probe_ground_elevation(probe_x, probe_z, start_y)
     -- Discrete node scan fallback (checks down to 4 nodes below start_y)
     local check_x = math.floor(probe_x + 0.5)
     local check_z = math.floor(probe_z + 0.5)
+    scratch_pos.x = check_x
+    scratch_pos.z = check_z
     for dy = 1, -4, -1 do
         local ny = math.floor(start_y + dy + 0.5)
-        local npos = vector.new(check_x, ny, check_z)
-        local node = core.get_node_or_nil(npos)
+        scratch_pos.y = ny
+        local node = core.get_node_or_nil(scratch_pos)
         local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
         if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
             return ny + 0.5
@@ -2712,9 +2751,12 @@ function deathstats.detect_hanging_legs(pos, yaw)
     local function probe_elevation(px, pz)
         local cx = math.floor(px + 0.5)
         local cz = math.floor(pz + 0.5)
+        scratch_pos.x = cx
+        scratch_pos.z = cz
         for dy = 0, -2, -1 do
             local ny = math.floor(pos.y + dy - 0.2)
-            local node = core.get_node_or_nil(vector.new(cx, ny, cz))
+            scratch_pos.y = ny
+            local node = core.get_node_or_nil(scratch_pos)
             local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
             if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
                 return ny
@@ -2730,14 +2772,59 @@ function deathstats.detect_hanging_legs(pos, yaw)
     return (not y_feet) or (y_pelvis - y_feet >= 1)
 end
 
+--- Detect if there is a solid walkable wall or obstruction behind the corpse
+---@param pos Vector Position of the corpse
+---@param yaw number Facing yaw of the corpse in radians
+---@return boolean is_wall True if a solid node is detected behind
+function deathstats.detect_wall_behind(pos, yaw)
+    if not pos or not yaw then return false end
+    -- Behind vector: in Luanti forward is (-sin(yaw), 0, cos(yaw)), so behind is (sin(yaw), 0, -cos(yaw))
+    local b_x = math.sin(yaw)
+    local b_z = -math.cos(yaw)
+
+    -- Ensure space at corpse torso itself is not inside a solid block
+    scratch_pos.x = pos.x
+    scratch_pos.y = pos.y + 0.8
+    scratch_pos.z = pos.z
+    local torso_self = core.get_node_or_nil(scratch_pos)
+    if torso_self and torso_self.name ~= "air" and torso_self.name ~= "ignore" then
+        local ndef_self = core.registered_nodes[torso_self.name]
+        if ndef_self and ndef_self.walkable then
+            return false
+        end
+    end
+
+    -- Probe behind at torso and shoulder height (y + 0.75 to y + 1.1) so ground blocks/slopes are never confused with walls
+    for i = 1, #WALL_TEST_DISTS do
+        local dist = WALL_TEST_DISTS[i]
+        local px = pos.x + b_x * dist
+        local pz = pos.z + b_z * dist
+        for j = 1, #WALL_TEST_YS do
+            local dy = WALL_TEST_YS[j]
+            scratch_pos.x = px
+            scratch_pos.y = pos.y + dy
+            scratch_pos.z = pz
+            local node = core.get_node_or_nil(scratch_pos)
+            if node and node.name ~= "air" and node.name ~= "ignore" then
+                local ndef = core.registered_nodes[node.name]
+                if ndef and (ndef.walkable ~= false) and (not ndef.liquidtype or ndef.liquidtype == "none") then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 --- Return the vertical position offset required to keep different resting poses
---- (supine, prone, lateral) resting flat on top of the ground.
+--- (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.
 --- In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed
 --- along the back plane (Y min = -0.108, Y max = +0.427).
 --- Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face
 --- 0.32 blocks into the ground if not offset.
 --- Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.
----@param pose_type string|nil "supine", "prone", or "lateral"
+--- Wall sit and slouch maintain upright origin contact (0.0).
+---@param pose_type string|nil "supine", "prone", "lateral", "wall_sit", or "slouch"
 ---@return number offset Vertical offset in nodes
 function deathstats.get_pose_elevation_offset(pose_type)
     if pose_type == "prone" then
@@ -2750,13 +2837,17 @@ end
 
 --- Return the interaction selectionbox bounding box for a given resting pose
 --- to match the physical mesh contact bounds in world space.
----@param pose_type string|nil "supine", "prone", or "lateral"
+---@param pose_type string|nil "supine", "prone", "lateral", "wall_sit", or "slouch"
 ---@return number[] selectionbox Bounding box table { minx, miny, minz, maxx, maxy, maxz }
 function deathstats.get_pose_selectionbox(pose_type)
     if pose_type == "prone" then
         return { -0.5, -0.45, -0.5, 0.5, 0.15, 0.5 }
     elseif pose_type == "lateral" then
         return { -0.5, -0.30, -0.5, 0.5, 0.30, 0.5 }
+    elseif pose_type == "wall_sit" then
+        return { -0.4, -0.10, -0.4, 0.4, 0.95, 0.4 }
+    elseif pose_type == "slouch" then
+        return { -0.4, -0.15, -0.4, 0.4, 0.85, 0.4 }
     end
     return { -0.5, -0.20, -0.5, 0.5, 0.35, 0.5 }
 end
@@ -2790,8 +2881,23 @@ function deathstats.settle_corpse_at_rest(luaent)
     local pose_type = "supine"
     local pos = obj.get_pos and obj:get_pos()
 
-    -- Determine resting orientation (supine, prone, lateral) from current tumbling roll
-    if deathstats.config.ragdoll_resting_poses ~= false and luaent._rot and luaent._rot.z then
+    -- Determine resting orientation (supine, prone, lateral, wall_sit, slouch)
+    local is_wall_behind = pos and deathstats.detect_wall_behind(pos, base_yaw)
+    if (is_wall_behind or luaent._had_wall_collision) and deathstats.config.ragdoll_resting_poses ~= false then
+        local w_pick = math.random()
+        if w_pick < 0.55 then
+            pose_type = "wall_sit"
+            roll = 0
+            pitch = 0
+        elseif w_pick < 0.85 then
+            pose_type = "slouch"
+            roll = math.rad(random_float(-8, 8))
+            pitch = math.rad(-8)
+        else
+            pose_type = "supine"
+            roll = 0
+        end
+    elseif deathstats.config.ragdoll_resting_poses ~= false and luaent._rot and luaent._rot.z then
         local r = (luaent._rot.z % (2 * math.pi))
         if r > math.pi then r = r - 2 * math.pi end
         local abs_r = math.abs(r)
@@ -2809,9 +2915,13 @@ function deathstats.settle_corpse_at_rest(luaent)
     end
     luaent._pose_type = pose_type
 
+    if pose_type == "wall_sit" or pose_type == "slouch" then
+        deathstats.pose_corpse(obj, luaent._mesh, "sit")
+    end
+
     if pos and not deathstats.is_in_liquid(pos) then
         local target_y = nil
-        if deathstats.config.enable_slope_pitch ~= false then
+        if deathstats.config.enable_slope_pitch ~= false and pose_type ~= "wall_sit" and pose_type ~= "slouch" then
             local detected_pitch, slope_target_y, ground_found = deathstats.detect_corpse_slope_pitch(pos, base_yaw)
             pitch = detected_pitch or 0
             if slope_target_y and (ground_found or (ground_found == nil and math.abs(slope_target_y - pos.y) > 0.001))
@@ -2839,7 +2949,7 @@ function deathstats.settle_corpse_at_rest(luaent)
             obj:set_pos(vector.new(pos.x, target_y, pos.z))
             pos = (obj.get_pos and obj:get_pos()) or vector.new(pos.x, target_y, pos.z)
             -- Re-evaluate slope pitch at exact ground position if slope pitch is enabled
-            if deathstats.config.enable_slope_pitch ~= false then
+            if deathstats.config.enable_slope_pitch ~= false and pose_type ~= "wall_sit" and pose_type ~= "slouch" then
                 pitch = deathstats.detect_corpse_slope_pitch(pos, base_yaw) or pitch
             end
         end
@@ -2852,7 +2962,7 @@ function deathstats.settle_corpse_at_rest(luaent)
     end
 
     local hanging_legs = false
-    if pos and deathstats.detect_hanging_legs then
+    if pos and deathstats.detect_hanging_legs and pose_type ~= "wall_sit" and pose_type ~= "slouch" then
         hanging_legs = deathstats.detect_hanging_legs(pos, base_yaw)
     end
 
@@ -3249,7 +3359,10 @@ core.register_entity("deathstats:corpse", {
             else
                 -- Water / liquid buoyancy
                 local drag = math.exp(-3.5 * dtime)
-                local node_above = core.get_node_or_nil(vector.new(pos.x, pos.y + 0.6, pos.z))
+                scratch_pos.x = pos.x
+                scratch_pos.y = pos.y + 0.6
+                scratch_pos.z = pos.z
+                local node_above = core.get_node_or_nil(scratch_pos)
                 local ndef_above = node_above and node_above.name ~= "ignore" and core.registered_nodes[node_above.name]
                 local above_is_air = not ndef_above or ndef_above.liquidtype == "none"
 
@@ -3284,7 +3397,7 @@ core.register_entity("deathstats:corpse", {
                 touching_ground = moveresult.touching_ground or false
                 if moveresult.collisions and type(moveresult.collisions) == "table" then
                     for _, col in ipairs(moveresult.collisions) do
-                        if col.axis == "y" and col.old_velocity and col.old_velocity.y < -1.8 then
+                        if col.axis == "y" and col.old_velocity and col.old_velocity.y < -0.6 then
                             had_vertical_collision = true
                             collision_old_vy = col.old_velocity.y
                             if col.node_pos then
@@ -3297,6 +3410,7 @@ core.register_entity("deathstats:corpse", {
                             local h_old = math.sqrt((col.old_velocity.x or 0)^2 + (col.old_velocity.z or 0)^2)
                             if h_old > 0.8 then
                                 had_wall_collision = true
+                                self._had_wall_collision = true
                                 wall_collision_axis = col.axis
                             end
                         end
@@ -3305,19 +3419,24 @@ core.register_entity("deathstats:corpse", {
             end
 
             -- Discrete node scan check for solid ground beneath corpse
-            local node_below1 = core.get_node_or_nil(vector.new(pos.x, pos.y - 0.25, pos.z))
+            scratch_pos.x = pos.x
+            scratch_pos.y = pos.y - 0.25
+            scratch_pos.z = pos.z
+            local node_below1 = core.get_node_or_nil(scratch_pos)
             local def1 = node_below1 and node_below1.name ~= "ignore" and core.registered_nodes[node_below1.name]
             local has_ground = (def1 and def1.walkable and node_below1.name ~= "air")
             local ground_node_y = has_ground and math.floor(pos.y - 0.25 + 0.5) or nil
             if not has_ground then
-                local node_below2 = core.get_node_or_nil(vector.new(pos.x, pos.y - 0.65, pos.z))
+                scratch_pos.y = pos.y - 0.65
+                local node_below2 = core.get_node_or_nil(scratch_pos)
                 local def2 = node_below2 and node_below2.name ~= "ignore" and core.registered_nodes[node_below2.name]
                 has_ground = (def2 and def2.walkable and node_below2.name ~= "air")
                 if has_ground and node_below2 then
                     ground_node_name = ground_node_name or node_below2.name
                     ground_node_y = math.floor(pos.y - 0.65 + 0.5)
                 else
-                    local node_below3 = core.get_node_or_nil(vector.new(pos.x, pos.y - 1.15, pos.z))
+                    scratch_pos.y = pos.y - 1.15
+                    local node_below3 = core.get_node_or_nil(scratch_pos)
                     local def3 = node_below3 and node_below3.name ~= "ignore" and core.registered_nodes[node_below3.name]
                     if def3 and def3.walkable and node_below3.name ~= "air" then
                         ground_node_name = ground_node_name or node_below3.name
@@ -3345,8 +3464,12 @@ core.register_entity("deathstats:corpse", {
 
             -- If ground collision occurred but node wasn't in collision list, check downward
             if not ground_node_name and (had_vertical_collision or touching_ground) then
-                for _, dy in ipairs({ 0.25, 0.65, 1.15, 1.65, 2.15 }) do
-                    local n = core.get_node_or_nil(vector.new(pos.x, pos.y - dy, pos.z))
+                for i = 1, #DOWNWARD_PROBE_DYS do
+                    local dy = DOWNWARD_PROBE_DYS[i]
+                    scratch_pos.x = pos.x
+                    scratch_pos.y = pos.y - dy
+                    scratch_pos.z = pos.z
+                    local n = core.get_node_or_nil(scratch_pos)
                     if n and n.name ~= "air" and n.name ~= "ignore" then
                         local d = core.registered_nodes[n.name]
                         if d and d.walkable then
@@ -3612,6 +3735,12 @@ core.register_entity("deathstats:corpse", {
                     end
                 end
 
+                -- Anti-snag: if corpse has stopped moving even without touching_ground flag (e.g. caught on ledge/corner/wall)
+                if (self._timer or 0) > 0.35 and speed_3d < 0.12 and math.abs(cur_v.y) < 0.15 then
+                    deathstats.settle_corpse_at_rest(self)
+                    return
+                end
+
                 -- Airborne failsafe: if falling for over 10 seconds (e.g. huge drop or snagged geometry)
                 if self._air_timer > 10.0 then
                     local ground_y = deathstats.find_ground_surface(pos, nil, self._death_info or { category = "fall" })
@@ -3619,9 +3748,9 @@ core.register_entity("deathstats:corpse", {
                         if self.object.set_pos then
                             self.object:set_pos(vector.new(pos.x, ground_y + 0.02, pos.z))
                         end
-                        deathstats.settle_corpse_at_rest(self)
-                        return
                     end
+                    deathstats.settle_corpse_at_rest(self)
+                    return
                 end
             end
         end
@@ -3737,18 +3866,24 @@ core.register_item("deathstats:camera_hand", {
     on_drop = function() return end,
 })
 
---- Set the corpse entity into a flat fallen pose matching the active model
+--- Set the corpse entity into a pose matching the active model
 ---@param corpse ObjectRef The corpse entity object
 ---@param mesh_name string|nil The model mesh name
-function deathstats.pose_corpse(corpse, mesh_name)
+---@param anim_name string|nil "lay" (default) or "sit"
+function deathstats.pose_corpse(corpse, mesh_name, anim_name)
     if not corpse then return end
+    local req_anim = anim_name or "lay"
 
     local anim_def = nil
     local papi = rawget(_G, "player_api")
     if papi and papi.registered_models and mesh_name and papi.registered_models[mesh_name] then
         local model_def = papi.registered_models[mesh_name]
         if model_def.animations then
-            anim_def = model_def.animations.lay or model_def.animations.die
+            if req_anim == "sit" then
+                anim_def = model_def.animations.sit
+            else
+                anim_def = model_def.animations.lay or model_def.animations.die
+            end
         end
     end
 
@@ -3756,17 +3891,21 @@ function deathstats.pose_corpse(corpse, mesh_name)
     if not anim_def and def_mod and def_mod.registered_player_models and mesh_name and def_mod.registered_player_models[mesh_name] then
         local model_def = def_mod.registered_player_models[mesh_name]
         if model_def.animations then
-            anim_def = model_def.animations.lay or model_def.animations.die
+            if req_anim == "sit" then
+                anim_def = model_def.animations.sit
+            else
+                anim_def = model_def.animations.lay or model_def.animations.die
+            end
         end
     end
 
     local mcl_p = rawget(_G, "mcl_player")
     if not anim_def and mcl_p and mcl_p.registered_players then
-        anim_def = { x = 162, y = 166 }
+        anim_def = (req_anim == "sit") and { x = 81, y = 160 } or { x = 162, y = 166 }
     end
 
     if not anim_def then
-        anim_def = { x = 162, y = 166 }
+        anim_def = (req_anim == "sit") and { x = 81, y = 160 } or { x = 162, y = 166 }
     end
 
     -- Multi-track glTF support (track name string or { track = "lay", ... })
@@ -3781,9 +3920,10 @@ function deathstats.pose_corpse(corpse, mesh_name)
         return
     end
 
-    -- Freeze pose on the final frame of the lay animation so corpse lies completely flat
-    -- Note: frame_speed must be non-zero (1) for the Luanti engine to seek to the frame; loop must be false
-    local target_frame = (type(anim_def) == "table" and (anim_def.y or anim_def[2])) or 166
+    -- Freeze pose on the final frame (lay frame 166 or sit frame 81)
+    local target_frame = (req_anim == "sit") and ((type(anim_def) == "table" and (anim_def.x or anim_def[1])) or 81)
+        or ((type(anim_def) == "table" and (anim_def.y or anim_def[2])) or 166)
+
     if corpse.set_animation then
         corpse:set_animation({ x = target_frame, y = target_frame }, 1, 0, false)
     end
@@ -3972,16 +4112,20 @@ end
 --- Safely remove a corpse entity and any attached wielditem entity
 ---@param corpse ObjectRef|nil The corpse object reference
 function deathstats.remove_corpse(corpse)
-    if not corpse then return end
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local xbows_mod = rawget(_G, "XBows")
-    if xbows_mod and type(xbows_mod.cleanup_corpse_arrows) == "function" then
+    if xbows_mod and type(xbows_mod.cleanup_corpse_arrows) == "function" and corpse.get_luaentity then
         xbows_mod.cleanup_corpse_arrows(corpse)
     end
     -- Also remove any attached child entities (arrows, custom objects) to prevent orphans
     if corpse.get_children then
-        for _, child in ipairs(corpse:get_children()) do
-            if child and (not child.is_valid or child:is_valid()) and child.remove then
-                child:remove()
+        local children = corpse:get_children()
+        if type(children) == "table" then
+            for i = 1, #children do
+                local child = children[i]
+                if child and (not child.is_valid or child:is_valid()) and child.remove then
+                    child:remove()
+                end
             end
         end
     end
@@ -3991,9 +4135,9 @@ function deathstats.remove_corpse(corpse)
     end
     local luaent = corpse.get_luaentity and corpse:get_luaentity()
     if luaent then
-        if luaent._particle_spawners then
-            for _, pid in ipairs(luaent._particle_spawners) do
-                core.delete_particlespawner(pid)
+        if type(luaent._particle_spawners) == "table" then
+            for i = 1, #luaent._particle_spawners do
+                core.delete_particlespawner(luaent._particle_spawners[i])
             end
             luaent._particle_spawners = nil
         end
@@ -4078,7 +4222,7 @@ end
 --- Dissolve and cleanly remove a persistent corpse with dissipation particles
 ---@param corpse ObjectRef|nil The corpse object reference
 function deathstats.dissolve_corpse(corpse)
-    if not corpse then return end
+    if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local pos = corpse.get_pos and corpse:get_pos()
     if pos then
         deathstats.spawn_decay_particles(pos)
@@ -4144,6 +4288,7 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
         local luaent = corpse.get_luaentity and corpse:get_luaentity()
         if luaent then
             luaent._base_yaw = visuals.yaw or 0
+            luaent._mesh = visuals.mesh
             local pname = player and player.get_player_name and player:get_player_name()
             luaent._player_name = pname
             if pname and deathstats.player_corpses and deathstats.player_corpses[pname] then
@@ -4208,25 +4353,44 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
         if not is_moving then
             local roll = 0
             local pose_type = "supine"
+            local is_wall = deathstats.detect_wall_behind(corpse_pos, visuals.yaw or 0)
             if deathstats.config.ragdoll_resting_poses ~= false then
-                local pick = math.random()
-                if pick < 0.30 then
-                    pose_type = "prone"
-                    roll = math.pi
-                elseif pick < 0.60 then
-                    pose_type = "lateral"
-                    roll = (math.random() < 0.5) and (math.pi / 2) or (-math.pi / 2)
+                if is_wall then
+                    local w_pick = math.random()
+                    if w_pick < 0.55 then
+                        pose_type = "wall_sit"
+                        roll = 0
+                    elseif w_pick < 0.85 then
+                        pose_type = "slouch"
+                        roll = math.rad(random_float(-8, 8))
+                    else
+                        pose_type = "supine"
+                        roll = 0
+                    end
                 else
-                    pose_type = "supine"
-                    roll = 0
+                    local pick = math.random()
+                    if pick < 0.30 then
+                        pose_type = "prone"
+                        roll = math.pi
+                    elseif pick < 0.60 then
+                        pose_type = "lateral"
+                        roll = (math.random() < 0.5) and (math.pi / 2) or (-math.pi / 2)
+                    else
+                        pose_type = "supine"
+                        roll = 0
+                    end
                 end
             end
 
-            local pitch = 0
+            if pose_type == "wall_sit" or pose_type == "slouch" then
+                deathstats.pose_corpse(corpse, visuals.mesh, "sit")
+            end
+
+            local pitch = (pose_type == "slouch") and math.rad(-8) or 0
             local in_liquid = deathstats.is_in_liquid(corpse_pos, death_info)
             if not in_liquid then
                 local pose_offset = deathstats.get_pose_elevation_offset(pose_type)
-                if deathstats.config.enable_slope_pitch ~= false then
+                if deathstats.config.enable_slope_pitch ~= false and pose_type ~= "wall_sit" and pose_type ~= "slouch" then
                     local detected_pitch, target_y, ground_found = deathstats.detect_corpse_slope_pitch(corpse_pos, visuals.yaw or 0)
                     pitch = detected_pitch or 0
                     if (ground_found or ground_found == nil) and target_y and math.abs(target_y - corpse_pos.y) <= 1.2 then
@@ -5293,12 +5457,16 @@ function deathstats.is_in_liquid(pos, death_info)
         return true
     end
     -- Check surrounding node levels (feet, torso, head, bottom)
-    if deathstats.is_liquid_at(vector.new(pos.x, pos.y + 0.5, pos.z))
-        or deathstats.is_liquid_at(vector.new(pos.x, pos.y + 1.0, pos.z))
-        or deathstats.is_liquid_at(vector.new(pos.x, pos.y - 0.5, pos.z))
-        or deathstats.is_liquid_at(vector.new(pos.x, pos.y - 1.0, pos.z)) then
-        return true
-    end
+    scratch_pos.x = pos.x
+    scratch_pos.z = pos.z
+    scratch_pos.y = pos.y + 0.5
+    if deathstats.is_liquid_at(scratch_pos) then return true end
+    scratch_pos.y = pos.y + 1.0
+    if deathstats.is_liquid_at(scratch_pos) then return true end
+    scratch_pos.y = pos.y - 0.5
+    if deathstats.is_liquid_at(scratch_pos) then return true end
+    scratch_pos.y = pos.y - 1.0
+    if deathstats.is_liquid_at(scratch_pos) then return true end
     return false
 end
 
@@ -5361,9 +5529,11 @@ function deathstats.find_ground_surface(pos, bones_pos, death_info)
     local check_x = math.floor(pos.x + 0.5)
     local check_z = math.floor(pos.z + 0.5)
     local min_y = math.floor(pos.y - max_depth + 0.5)
+    scratch_pos.x = check_x
+    scratch_pos.z = check_z
     for y = start_y, min_y, -1 do
-        local npos = vector.new(check_x, y, check_z)
-        local node = core.get_node_or_nil(npos)
+        scratch_pos.y = y
+        local node = core.get_node_or_nil(scratch_pos)
         local def = node and node.name ~= "ignore" and core.registered_nodes[node.name]
         if def and def.walkable and node.name ~= "air" and def.drawtype ~= "airlike" then
             return y + 0.5
@@ -5811,8 +5981,8 @@ function deathstats.update_death_camera(player, dtime)
 
         -- Directional lookahead probing: check primary camera sightline plus forward lookahead (+0.06 rad)
         -- to detect approaching walls before camera sweeps into them while avoiding phantom drag from past obstacles
-        local probe_steps = { 0, 0.06 }
-        for _, offset_angle in ipairs(probe_steps) do
+        for i = 1, #CAMERA_PROBE_STEPS do
+            local offset_angle = CAMERA_PROBE_STEPS[i]
             local p_angle = angle + offset_angle
             local cam_x = data.orbit_center.x + probe_radius * math.sin(p_angle)
             local cam_y = data.orbit_center.y + probe_height
@@ -6233,6 +6403,7 @@ function deathstats.set_death_camera(player, death_info)
     local old_collisionbox = copy(props.collisionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 })
     local old_selectionbox = copy(props.selectionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 })
     local old_textures = copy(props.textures or { "character.png" })
+    local old_mesh = props.mesh
     local old_pointable = (props.pointable ~= nil and props.pointable or true)
     local old_is_visible = (props.is_visible ~= nil and props.is_visible or true)
     local old_interaction_range = props.interaction_range or 4
@@ -6244,6 +6415,56 @@ function deathstats.set_death_camera(player, death_info)
         local nta = player:get_nametag_attributes()
         if nta then
             old_nametag_attributes = copy(nta)
+        end
+    end
+
+    -- Detect uninitialized engine default upright sprite properties (e.g. reconnecting while dead)
+    local is_upright_default = (props.visual == "upright_sprite")
+        or (props.visual_size and props.visual_size.y == 2 and props.visual_size.x == 1)
+        or (props.textures and (props.textures[1] == "player.png" or props.textures[1] == "player_back.png"))
+
+    if is_upright_default then
+        if meta then
+            local raw_vs = meta:get_string("deathstats:orig_visual_size")
+            if raw_vs and raw_vs ~= "" then
+                local des_vs = core.deserialize(raw_vs)
+                if type(des_vs) == "table" and (des_vs.y ~= 2 or des_vs.x ~= 1) then
+                    old_visual_size = des_vs
+                else
+                    old_visual_size = { x = 1, y = 1, z = 1 }
+                end
+            else
+                old_visual_size = { x = 1, y = 1, z = 1 }
+            end
+            local raw_tex = meta:get_string("deathstats:orig_textures")
+            if raw_tex and raw_tex ~= "" then
+                local des_tex = core.deserialize(raw_tex)
+                if type(des_tex) == "table" and des_tex[1] and des_tex[1] ~= "player.png" and des_tex[1] ~= "player_back.png" then
+                    old_textures = des_tex
+                else
+                    old_textures = nil
+                end
+            else
+                old_textures = nil
+            end
+            local raw_mesh = meta:get_string("deathstats:orig_mesh")
+            if raw_mesh and raw_mesh ~= "" then
+                old_mesh = raw_mesh
+            end
+        else
+            old_visual_size = { x = 1, y = 1, z = 1 }
+            old_textures = nil
+        end
+    elseif meta then
+        -- Normal death with valid model: persist clean visual properties for future reconnects
+        if old_visual_size and (old_visual_size.y ~= 2 or old_visual_size.x ~= 1) then
+            meta:set_string("deathstats:orig_visual_size", core.serialize(old_visual_size))
+        end
+        if old_textures and old_textures[1] ~= "player.png" and old_textures[1] ~= "player_back.png" then
+            meta:set_string("deathstats:orig_textures", core.serialize(old_textures))
+        end
+        if old_mesh and old_mesh ~= "" then
+            meta:set_string("deathstats:orig_mesh", old_mesh)
         end
     end
 
@@ -6305,6 +6526,13 @@ function deathstats.set_death_camera(player, death_info)
 
     -- Extract player visuals across skin mods and spawn corpse placeholder entity
     local visuals = deathstats.get_player_visuals(player)
+    if not old_textures or old_textures[1] == "player.png" or old_textures[1] == "player_back.png" then
+        old_textures = copy(visuals.textures or { "character.png" })
+    end
+    if not old_mesh or old_mesh == "" then
+        old_mesh = visuals.mesh or "character.b3d"
+    end
+
     if saved_corpse then
         if saved_corpse.mesh then visuals.mesh = saved_corpse.mesh end
         if saved_corpse.textures then visuals.textures = saved_corpse.textures end
@@ -6576,6 +6804,7 @@ function deathstats.set_death_camera(player, death_info)
         old_collisionbox = old_collisionbox,
         old_selectionbox = old_selectionbox,
         old_textures = old_textures,
+        old_mesh = old_mesh,
         old_pointable = old_pointable,
         old_interaction_range = old_interaction_range,
         old_physics_override = old_physics,
@@ -6672,67 +6901,88 @@ function deathstats.reset_camera(player, is_leaving)
     deathstats.restore_player_inventory_and_hand(player)
 
     -- Restore player physical and visual properties & nametag
-    if data then
-        if player.set_nametag_attributes then
-            if data.old_nametag_attributes then
-                player:set_nametag_attributes(data.old_nametag_attributes)
-            else
-                player:set_nametag_attributes({
-                    text = name,
-                    color = { a = 255, r = 255, g = 255, b = 255 },
-                    bgcolor = { a = 0, r = 0, g = 0, b = 0 },
-                })
+    local meta = player:get_meta()
+    local vs = (data and data.old_visual_size) or { x = 1, y = 1, z = 1 }
+    if vs.y == 2 and vs.x == 1 then
+        vs = { x = 1, y = 1, z = 1 }
+    end
+    local tex = data and data.old_textures
+    if not tex or tex[1] == "player.png" or tex[1] == "player_back.png" or tex[1] == "deathstats_transparent.png" then
+        tex = nil
+    end
+    if not tex and meta then
+        local raw = meta:get_string("deathstats:orig_textures")
+        if raw and raw ~= "" then
+            local des = core.deserialize(raw)
+            if type(des) == "table" and des[1] and des[1] ~= "player.png" and des[1] ~= "player_back.png" then
+                tex = des
             end
         end
-        if player.set_properties then
-            player:set_properties({
-                is_visible = (data.old_is_visible ~= nil and data.old_is_visible or true),
-                visual_size = data.old_visual_size or { x = 1, y = 1, z = 1 },
-                collisionbox = data.old_collisionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
-                selectionbox = data.old_selectionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
-                pointable = (data.old_pointable ~= nil and data.old_pointable or true),
-                interaction_range = data.old_interaction_range or 4,
-                textures = data.old_textures or { "character.png" },
-                show_on_minimap = true,
-            })
+    end
+    if not tex then
+        tex = { "character.png" }
+    end
+    local mesh_name = data and data.old_mesh
+    if not mesh_name or mesh_name == "" then
+        if meta then
+            local raw_m = meta:get_string("deathstats:orig_mesh")
+            if raw_m and raw_m ~= "" then
+                mesh_name = raw_m
+            end
         end
-        if player.set_physics_override then
-            player:set_physics_override(data.old_physics_override or { speed = 1, jump = 1, gravity = 1 })
-        end
-    else
-        if player.set_nametag_attributes then
+    end
+    if not mesh_name or mesh_name == "" then
+        mesh_name = "character.b3d"
+    end
+
+    if player.set_nametag_attributes then
+        if data and data.old_nametag_attributes then
+            player:set_nametag_attributes(data.old_nametag_attributes)
+        else
             player:set_nametag_attributes({
                 text = name,
                 color = { a = 255, r = 255, g = 255, b = 255 },
                 bgcolor = { a = 0, r = 0, g = 0, b = 0 },
             })
         end
-        if player.set_properties then
-            local orig_tex = nil
-            local meta = player:get_meta()
-            if meta then
-                local raw_orig = meta:get_string("deathstats:orig_textures")
-                if raw_orig and raw_orig ~= "" then
-                    local des = core.deserialize(raw_orig)
-                    if type(des) == "table" and #des > 0 then
-                        orig_tex = des
-                    end
-                end
-            end
-            player:set_properties({
-                is_visible = true,
-                visual_size = { x = 1, y = 1, z = 1 },
-                collisionbox = { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
-                selectionbox = { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
-                interaction_range = 4,
-                pointable = true,
-                textures = orig_tex or { "character.png" },
-                show_on_minimap = true,
-            })
-        end
-        if player.set_physics_override then
-            player:set_physics_override({ speed = 1, jump = 1, gravity = 1 })
-        end
+    end
+    if player.set_properties then
+        player:set_properties({
+            is_visible = (data and data.old_is_visible ~= nil and data.old_is_visible or true),
+            visual = "mesh",
+            mesh = mesh_name,
+            visual_size = vs,
+            collisionbox = (data and data.old_collisionbox) or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
+            selectionbox = (data and data.old_selectionbox) or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
+            pointable = (data and data.old_pointable ~= nil and data.old_pointable or true),
+            interaction_range = (data and data.old_interaction_range) or 4,
+            textures = tex,
+            show_on_minimap = true,
+        })
+    end
+    if player.set_physics_override then
+        player:set_physics_override((data and data.old_physics_override) or { speed = 1, jump = 1, gravity = 1 })
+    end
+
+    -- Reapply model and skins to player_api and compatible skin frameworks
+    local papi = rawget(_G, "player_api")
+    if papi and papi.set_model then
+        papi.set_model(player, mesh_name)
+    end
+    if papi and papi.set_textures and tex then
+        papi.set_textures(player, tex)
+    end
+    local x_papi = rawget(_G, "x_player_api")
+    if x_papi and x_papi.set_model then
+        x_papi.set_model(player, mesh_name)
+    end
+    local skins_mod = rawget(_G, "skins")
+    if skins_mod and skins_mod.update_player_skin then
+        skins_mod.update_player_skin(player)
+    end
+    local armor_mod = rawget(_G, "armor")
+    if armor_mod and armor_mod.set_player_armor then
+        armor_mod:set_player_armor(player)
     end
 
     deathstats.player_camera_data[name] = nil
@@ -6762,15 +7012,21 @@ function deathstats.reset_camera(player, is_leaving)
         if not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
         if not p or not p:is_player() then return end
-        local papi = rawget(_G, "player_api")
+        local player_papi = rawget(_G, "player_api")
         local def_mod = rawget(_G, "default")
         local mcl_p = rawget(_G, "mcl_player")
-        if papi and papi.set_animation then
-            papi.set_animation(p, "stand", 30)
+        if player_papi and player_papi.set_animation then
+            player_papi.set_animation(p, "stand", 30)
         elseif def_mod and def_mod.player_set_animation then
             def_mod.player_set_animation(p, "stand", 30)
         elseif mcl_p and mcl_p.player_set_animation then
             mcl_p.player_set_animation(p, "stand", 30)
+        end
+        if player_papi and player_papi.set_model then
+            player_papi.set_model(p, mesh_name)
+        end
+        if player_papi and player_papi.set_textures and tex then
+            player_papi.set_textures(p, tex)
         end
     end
     restore_stand()
@@ -7291,7 +7547,7 @@ function deathstats.on_player_respawn(player)
         end
     end
 
-    -- Deferred reinforcement ticks to guarantee full health across engine/client respawn handshake
+    -- Deferred reinforcement ticks to guarantee full health and correct model/skin across engine/client respawn handshake
     core.after(0.05, function()
         local p = core.get_player_by_name(name)
         if p and p:is_player() then
@@ -7302,6 +7558,19 @@ function deathstats.on_player_respawn(player)
             end
             if deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar() then
                 p:hud_set_flags({ healthbar = false, breathbar = false })
+            end
+            local p_props = p:get_properties()
+            if p_props and (p_props.visual == "upright_sprite" or (p_props.visual_size and p_props.visual_size.y == 2 and p_props.visual_size.x == 1) or (p_props.textures and p_props.textures[1] == "player.png")) then
+                local papi = rawget(_G, "player_api")
+                if papi and papi.set_model then
+                    papi.set_model(p, "character.b3d")
+                else
+                    p:set_properties({ visual = "mesh", mesh = "character.b3d", visual_size = { x = 1, y = 1, z = 1 }, textures = { "character.png" } })
+                end
+                local skins_mod = rawget(_G, "skins")
+                if skins_mod and skins_mod.update_player_skin then
+                    skins_mod.update_player_skin(p)
+                end
             end
         end
     end)
@@ -7315,6 +7584,19 @@ function deathstats.on_player_respawn(player)
             end
             if deathstats.compat_hudbars and deathstats.compat_hudbars.manages_healthbar and deathstats.compat_hudbars.manages_healthbar() then
                 p:hud_set_flags({ healthbar = false, breathbar = false })
+            end
+            local p_props = p:get_properties()
+            if p_props and (p_props.visual == "upright_sprite" or (p_props.visual_size and p_props.visual_size.y == 2 and p_props.visual_size.x == 1) or (p_props.textures and p_props.textures[1] == "player.png")) then
+                local papi = rawget(_G, "player_api")
+                if papi and papi.set_model then
+                    papi.set_model(p, "character.b3d")
+                else
+                    p:set_properties({ visual = "mesh", mesh = "character.b3d", visual_size = { x = 1, y = 1, z = 1 }, textures = { "character.png" } })
+                end
+                local skins_mod = rawget(_G, "skins")
+                if skins_mod and skins_mod.update_player_skin then
+                    skins_mod.update_player_skin(p)
+                end
             end
         end
     end)
