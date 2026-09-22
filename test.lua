@@ -9413,8 +9413,8 @@ suites[95]()
 suites[96] = function()
     print("\n--- TEST 96: Flat Ground Contact, Monotonic Orbit Yaw, Responsive Camera Collision & Slide Limbs ---")
 
-    -- Corpse Flat Ground Resting Height (0.02 Contact Epsilon, Zero Hovering, Face Up / Down Parity)
-    assert(deathstats.get_pose_elevation_offset("prone") == 0.0, "Prone offset must be 0.0 (parity with supine)")
+    -- Corpse Flat Ground Resting Height (0.02 Contact Epsilon, Zero Hovering, Anatomical Elevation Offsets)
+    assert(deathstats.get_pose_elevation_offset("prone") == 0.32, "Prone offset must be +0.32 so chest rests flat on ground")
     assert(deathstats.get_pose_elevation_offset("lateral") == 0.16, "Lateral offset must be +0.16")
     assert(deathstats.get_pose_elevation_offset("supine") == 0.0, "Supine offset must be 0.0")
 
@@ -9446,12 +9446,12 @@ suites[96] = function()
     assert(lua_prone._settled == true, "Prone corpse must settle")
     assert(lua_prone._pose_type == "prone", "Corpse must classify as prone")
     local pos_prone = corpse_prone:get_pos()
-    -- Surface is 10.5. Base is 10.52. Prone offset is 0.0 -> target is 10.52 (body lays flat against ground, matching supine)
-    assert(math.abs(pos_prone.y - 10.52) < 0.0001,
-        string.format("Prone resting height must lay flat at surface + 0.02 (expected 10.52, got: %f)", pos_prone.y))
+    -- Surface is 10.5. Base is 10.52. Prone offset is +0.32 -> target is 10.84 (chest rests flat on top of ground)
+    assert(math.abs(pos_prone.y - 10.84) < 0.0001,
+        string.format("Prone resting height must lay flat at surface + 0.02 + 0.32 (expected 10.84, got: %f)", pos_prone.y))
     local prone_props = corpse_prone:get_properties()
-    assert(prone_props.selectionbox and prone_props.selectionbox[2] == -0.2 and prone_props.selectionbox[5] == 0.35,
-        "Prone selectionbox must match supine ground bounds")
+    assert(prone_props.selectionbox and prone_props.selectionbox[2] == -0.45 and prone_props.selectionbox[5] == 0.15,
+        "Prone selectionbox must match elevated chest bounds")
     corpse_prone:remove()
 
     -- Lateral (On Side - roll = pi/2)

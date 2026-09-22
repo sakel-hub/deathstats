@@ -1600,9 +1600,9 @@ function deathstats.get_node_impact_sound(ndef: table|nil)
 Return the vertical position offset required to keep different resting poses
  (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.
  In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed
- along the central torso plane.
- Supine and prone both rest flat on the ground with zero vertical offset (0.0),
- keeping the body (torso and legs) flush against the ground.
+ along the back plane (Y min = -0.108, Y max = +0.427).
+ Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face
+ 0.32 blocks into the ground if not offset.
  Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.
  Wall sit and slouch maintain upright origin contact (0.0).
 

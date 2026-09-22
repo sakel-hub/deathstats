@@ -837,15 +837,17 @@ end
 --- Return the vertical position offset required to keep different resting poses
 --- (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.
 --- In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed
---- along the central torso plane.
---- Supine and prone both rest flat on the ground with zero vertical offset (0.0),
---- keeping the body (torso and legs) flush against the ground.
+--- along the back plane (Y min = -0.108, Y max = +0.427).
+--- Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face
+--- 0.32 blocks into the ground if not offset.
 --- Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.
 --- Wall sit and slouch maintain upright origin contact (0.0).
 ---@param pose_type string|nil "supine", "prone", "lateral", "wall_sit", or "slouch"
 ---@return number offset Vertical offset in nodes
 function deathstats.get_pose_elevation_offset(pose_type)
-    if pose_type == "lateral" then
+    if pose_type == "prone" then
+        return 0.32
+    elseif pose_type == "lateral" then
         return 0.16
     end
     return 0.0
@@ -857,7 +859,7 @@ end
 ---@return number[] selectionbox Bounding box table { minx, miny, minz, maxx, maxy, maxz }
 function deathstats.get_pose_selectionbox(pose_type)
     if pose_type == "prone" then
-        return { -0.5, -0.20, -0.5, 0.5, 0.35, 0.5 }
+        return { -0.5, -0.45, -0.5, 0.5, 0.15, 0.5 }
     elseif pose_type == "lateral" then
         return { -0.5, -0.30, -0.5, 0.5, 0.30, 0.5 }
     elseif pose_type == "wall_sit" then
