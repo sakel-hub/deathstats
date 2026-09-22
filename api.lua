@@ -162,10 +162,15 @@ deathstats = {
     last_death_reason = {},
     respawn_immunity = {},
     left_players = {},
+    player_corpses = {},
+    is_shutting_down = false,
     compat_hunger = {},
     compat_skins = {},
-    player_corpses = {},
 }
+
+core.register_on_shutdown(function()
+    deathstats.is_shutting_down = true
+end)
 
 -- ==========================================
 -- Internal Helper Utilities
@@ -180,6 +185,17 @@ function deathstats.is_player_online(player_or_name)
         (player_or_name.get_player_name and player_or_name:get_player_name())
     if not name or name == "" then return false end
     if deathstats.left_players[name] then return false end
+    if deathstats.is_shutting_down then return false end
+
+    -- Check if player_api registered_players knows this player (avoids offline player warnings)
+    local papi = rawget(_G, "player_api")
+    if type(papi) == "table" and type(papi.registered_players) == "table" and not papi.registered_players[name] then
+        return false
+    end
+    local xpapi = rawget(_G, "x_player_api")
+    if type(xpapi) == "table" and type(xpapi.registered_players) == "table" and not xpapi.registered_players[name] then
+        return false
+    end
 
     local p = core.get_player_by_name(name)
     if not p or not p:is_player() then return false end
@@ -2854,6 +2870,112 @@ function deathstats.get_pose_selectionbox(pose_type)
     return { -0.5, -0.20, -0.5, 0.5, 0.35, 0.5 }
 end
 
+--- Ensures corpse position does not clip into solid walkable blocks or boundaries
+--- Nudges wall-sitting corpses forward away from the wall behind them and resolves solid collisions
+---@param pos table The position vector of the corpse
+---@param yaw number Facing yaw of the corpse in radians
+---@param is_wall_sitting boolean True if pose is wall_sit or slouch
+---@return table adjusted_pos Vector position cleared of solid obstructions
+function deathstats.ensure_corpse_clearance(pos, yaw, is_wall_sitting)
+    if not pos then return pos end
+    local px, py, pz = pos.x, pos.y, pos.z
+
+    -- 1. If resting against a wall (wall_sit, slouch), nudge forward away from the wall behind
+    if is_wall_sitting and yaw then
+        local f_x = -math.sin(yaw)
+        local f_z = math.cos(yaw)
+        local nudge_dist = 0.18
+        local cand_x = px + f_x * nudge_dist
+        local cand_z = pz + f_z * nudge_dist
+
+        scratch_pos.x = cand_x
+        scratch_pos.y = py + 0.5
+        scratch_pos.z = cand_z
+        local cand_node = core.get_node_or_nil(scratch_pos)
+        local ndef = cand_node and core.registered_nodes[cand_node.name]
+        if not ndef or not ndef.walkable then
+            px = cand_x
+            pz = cand_z
+        end
+    end
+
+    -- 2. General check: if corpse torso is inside a walkable solid block, push to nearest open air
+    scratch_pos.x = px
+    scratch_pos.y = py + 0.5
+    scratch_pos.z = pz
+    local torso_node = core.get_node_or_nil(scratch_pos)
+    local torso_def = torso_node and core.registered_nodes[torso_node.name]
+    if torso_def and torso_def.walkable and torso_node.name ~= "air" and torso_node.name ~= "ignore" then
+        local dirs = {
+            { x = 0.45, z = 0 },
+            { x = -0.45, z = 0 },
+            { x = 0, z = 0.45 },
+            { x = 0, z = -0.45 },
+        }
+        for i = 1, #dirs do
+            local d = dirs[i]
+            scratch_pos.x = px + d.x
+            scratch_pos.y = py + 0.5
+            scratch_pos.z = pz + d.z
+            local check_n = core.get_node_or_nil(scratch_pos)
+            local check_def = check_n and core.registered_nodes[check_n.name]
+            if not check_def or not check_def.walkable then
+                px = px + d.x
+                pz = pz + d.z
+                break
+            end
+        end
+    end
+
+    return vector.new(px, py, pz)
+end
+
+--- Samples ambient illumination of the open space around a corpse
+---@param pos table Position vector of the corpse
+---@param yaw number|nil Facing yaw in radians
+---@return number|nil light Ambient light value (0-14) or nil if unavailable
+function deathstats.sample_corpse_ambient_light(pos, yaw)
+    if not pos or not core.get_node_light then return nil end
+    local base_yaw = yaw or 0
+
+    scratch_pos.x = pos.x
+    scratch_pos.y = pos.y + 0.5
+    scratch_pos.z = pos.z
+    local l = core.get_node_light(scratch_pos)
+    if l and l > 0 then
+        return math.min(14, l)
+    end
+
+    local sample_offsets = {
+        { x = 0, y = 1.0, z = 0 },
+        { x = -math.sin(base_yaw) * 0.5, y = 0.5, z = math.cos(base_yaw) * 0.5 },
+        { x = 0, y = 1.5, z = 0 },
+        { x = 0.5, y = 0.5, z = 0 },
+        { x = -0.5, y = 0.5, z = 0 },
+        { x = 0, y = 0.5, z = 0.5 },
+        { x = 0, y = 0.5, z = -0.5 },
+    }
+    local max_l = 0
+    for i = 1, #sample_offsets do
+        local so = sample_offsets[i]
+        scratch_pos.x = pos.x + so.x
+        scratch_pos.y = pos.y + so.y
+        scratch_pos.z = pos.z + so.z
+        local n = core.get_node_or_nil(scratch_pos)
+        local ndef = n and core.registered_nodes[n.name]
+        if not ndef or not ndef.walkable or (ndef.liquidtype and ndef.liquidtype ~= "none") then
+            local sl = core.get_node_light(scratch_pos)
+            if sl and sl > max_l then
+                max_l = sl
+            end
+        end
+    end
+    if max_l > 0 then
+        return math.min(14, max_l)
+    end
+    return (l and math.min(14, l)) or nil
+end
+
 --- Settle the corpse entity to a complete rest at its final position
 ---@param luaent table|ObjectRef The corpse Lua entity table or ObjectRef
 function deathstats.settle_corpse_at_rest(luaent)
@@ -2960,6 +3082,18 @@ function deathstats.settle_corpse_at_rest(luaent)
         end
     end
 
+    -- Ensure corpse does not clip through solid nodes or boundaries (especially against walls)
+    if pos then
+        local is_wall_sitting = (pose_type == "wall_sit" or pose_type == "slouch")
+        local cleared_pos = deathstats.ensure_corpse_clearance(pos, base_yaw, is_wall_sitting)
+        if cleared_pos and (cleared_pos.x ~= pos.x or cleared_pos.y ~= pos.y or cleared_pos.z ~= pos.z) then
+            pos = cleared_pos
+            if obj.set_pos then
+                obj:set_pos(pos)
+            end
+        end
+    end
+
     if obj.set_rotation then
         obj:set_rotation({ x = pitch, y = base_yaw, z = roll })
     elseif obj.set_yaw then
@@ -2976,12 +3110,18 @@ function deathstats.settle_corpse_at_rest(luaent)
 
     luaent._settled_pos = pos and vector.new(pos.x, pos.y, pos.z)
 
+    local ambient_light = pos and deathstats.sample_corpse_ambient_light(pos, base_yaw)
+    local corpse_props = {
+        physical = false,
+        pointable = (deathstats.config.enable_corpse_inspect ~= false),
+        selectionbox = deathstats.get_pose_selectionbox(pose_type),
+    }
+    if ambient_light and ambient_light > 0 then
+        corpse_props.glow = ambient_light
+    end
+
     if obj.set_properties then
-        obj:set_properties({
-            physical = false,
-            pointable = (deathstats.config.enable_corpse_inspect ~= false),
-            selectionbox = deathstats.get_pose_selectionbox(pose_type),
-        })
+        obj:set_properties(corpse_props)
     end
 
     -- Re-evaluate environment effects once corpse has settled (e.g. rolled into water/lava)
@@ -3352,34 +3492,42 @@ core.register_entity("deathstats:corpse", {
         local is_lava = is_liquid and ((node.name:find("lava") ~= nil) or (ndef and ndef.groups and ndef.groups.lava))
 
         if is_liquid then
+            local drag
+            local target_acc_y
+            scratch_pos.x = pos.x
+            scratch_pos.y = pos.y + 0.6
+            scratch_pos.z = pos.z
+            local node_above = core.get_node_or_nil(scratch_pos)
+            local ndef_above = node_above and node_above.name ~= "ignore" and core.registered_nodes[node_above.name]
+            local above_is_air = not ndef_above or ndef_above.liquidtype == "none"
+            local above_is_solid = ndef_above and ndef_above.walkable and ndef_above.liquidtype == "none"
+
             if is_lava then
-                -- Dense viscous lava drag
-                local drag = math.exp(-6.0 * dtime)
+                -- Dense viscous lava buoyancy & drag
+                drag = math.exp(-4.5 * dtime)
+                target_acc_y = above_is_air and -3.0 or 5.5
                 if self.object.set_acceleration then
-                    self.object:set_acceleration({ x = 0, y = -1.5, z = 0 })
+                    self.object:set_acceleration({ x = 0, y = target_acc_y, z = 0 })
+                end
+                local target_vy = (cur_v.y + target_acc_y * dtime) * drag
+                if above_is_air and target_vy > 0.3 then
+                    target_vy = 0.05
                 end
                 if self.object.set_velocity then
                     scratch_vel.x = cur_v.x * drag
-                    scratch_vel.y = cur_v.y * drag
+                    scratch_vel.y = target_vy
                     scratch_vel.z = cur_v.z * drag
                     self.object:set_velocity(scratch_vel)
                 end
             else
                 -- Water / liquid buoyancy
-                local drag = math.exp(-3.5 * dtime)
-                scratch_pos.x = pos.x
-                scratch_pos.y = pos.y + 0.6
-                scratch_pos.z = pos.z
-                local node_above = core.get_node_or_nil(scratch_pos)
-                local ndef_above = node_above and node_above.name ~= "ignore" and core.registered_nodes[node_above.name]
-                local above_is_air = not ndef_above or ndef_above.liquidtype == "none"
-
-                local target_acc_y = above_is_air and -1.0 or 2.5
+                drag = math.exp(-2.8 * dtime)
+                target_acc_y = above_is_air and -3.0 or 4.5
                 if self.object.set_acceleration then
                     self.object:set_acceleration({ x = 0, y = target_acc_y, z = 0 })
                 end
-                local target_vy = cur_v.y * drag
-                if above_is_air and cur_v.y > 0.4 then
+                local target_vy = (cur_v.y + target_acc_y * dtime) * drag
+                if above_is_air and target_vy > 0.4 then
                     target_vy = 0.1
                 end
                 if self.object.set_velocity then
@@ -3391,7 +3539,7 @@ core.register_entity("deathstats:corpse", {
             end
 
             local speed_liq = math.sqrt(cur_v.x * cur_v.x + cur_v.z * cur_v.z)
-            if speed_liq < 0.2 and math.abs(cur_v.y) < 0.3 and self._timer > 0.6 then
+            if (above_is_air or above_is_solid or self._timer > 8.0) and speed_liq < 0.2 and math.abs(cur_v.y) < 0.25 and self._timer > 1.2 then
                 deathstats.settle_corpse_at_rest(self)
                 return
             end
@@ -4334,13 +4482,23 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             luaent._last_life = pdata and pdata.last_life
         end
         local is_moving = false
+        local in_liquid = deathstats.is_in_liquid(corpse_pos, death_info)
+        local in_liquid_nodes = deathstats.is_liquid_at(corpse_pos)
+            or deathstats.is_liquid_at({ x = corpse_pos.x, y = corpse_pos.y + 0.5, z = corpse_pos.z })
+            or deathstats.is_liquid_at({ x = corpse_pos.x, y = corpse_pos.y - 0.5, z = corpse_pos.z })
 
         if ragdoll_enabled then
             local vel, rot_speed = deathstats.calculate_corpse_impulse(player, death_info, last_blow)
+            if in_liquid_nodes and (not vel or (vel.x == 0 and vel.y == 0 and vel.z == 0)) then
+                vel = vector.new(0, 1.2, 0)
+                rot_speed = vector.zero()
+            end
             if vel and (vel.x ~= 0 or vel.y ~= 0 or vel.z ~= 0) then
                 is_moving = true
                 if corpse.set_velocity then corpse:set_velocity(vel) end
-                if corpse.set_acceleration then corpse:set_acceleration({ x = 0, y = -9.81, z = 0 }) end
+                if corpse.set_acceleration then
+                    corpse:set_acceleration(in_liquid_nodes and { x = 0, y = 3.5, z = 0 } or { x = 0, y = -9.81, z = 0 })
+                end
                 local initial_roll = 0
                 if deathstats.config.ragdoll_resting_poses ~= false then
                     local yaw = visuals.yaw or 0
@@ -4419,8 +4577,9 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             end
 
             local pitch = (pose_type == "slouch") and math.rad(-8) or 0
-            local in_liquid = deathstats.is_in_liquid(corpse_pos, death_info)
             if not in_liquid then
+                local is_wall_sitting = (pose_type == "wall_sit" or pose_type == "slouch")
+                corpse_pos = deathstats.ensure_corpse_clearance(corpse_pos, visuals.yaw or 0, is_wall_sitting)
                 local pose_offset = deathstats.get_pose_elevation_offset(pose_type)
                 if deathstats.config.enable_slope_pitch ~= false and pose_type ~= "wall_sit" and pose_type ~= "slouch" then
                     local detected_pitch, target_y, ground_found = deathstats.detect_corpse_slope_pitch(corpse_pos, visuals.yaw or 0)
@@ -4432,9 +4591,13 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
                         end
                     elseif pose_offset > 0 and corpse.set_pos then
                         corpse:set_pos(vector.new(corpse_pos.x, corpse_pos.y + pose_offset, corpse_pos.z))
+                    elseif corpse.set_pos then
+                        corpse:set_pos(corpse_pos)
                     end
                 elseif pose_offset > 0 and corpse.set_pos then
                     corpse:set_pos(vector.new(corpse_pos.x, corpse_pos.y + pose_offset, corpse_pos.z))
+                elseif corpse.set_pos then
+                    corpse:set_pos(corpse_pos)
                 end
             end
             if corpse.set_rotation then
@@ -4447,14 +4610,20 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
                 local cur_p = (corpse.get_pos and corpse:get_pos()) or corpse_pos
                 luaent._settled_pos = cur_p and vector.new(cur_p.x, cur_p.y, cur_p.z)
             end
+            local cur_p = (corpse.get_pos and corpse:get_pos()) or corpse_pos
+            local ambient_light = cur_p and deathstats.sample_corpse_ambient_light(cur_p, visuals.yaw or 0)
+            local corpse_props = {
+                physical = false,
+                pointable = (deathstats.config.enable_corpse_inspect ~= false),
+                selectionbox = deathstats.get_pose_selectionbox(pose_type),
+                collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
+                stepheight = 0.6,
+            }
+            if ambient_light and ambient_light > 0 then
+                corpse_props.glow = ambient_light
+            end
             if corpse.set_properties then
-                corpse:set_properties({
-                    physical = false,
-                    pointable = (deathstats.config.enable_corpse_inspect ~= false),
-                    selectionbox = deathstats.get_pose_selectionbox(pose_type),
-                    collisionbox = { -0.4, -0.15, -0.4, 0.4, 0.25, 0.4 },
-                    stepheight = 0.6,
-                })
+                corpse:set_properties(corpse_props)
             end
             deathstats.settle_ragdoll_limbs(corpse, (last_blow and last_blow.damage) or 5, pose_type, nil, roll)
         elseif fractures_enabled then
@@ -4611,6 +4780,61 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
     return "impact"
 end
 
+--- Calculates rotation-compensated particle emitter vectors for an attached entity.
+--- Computes the local direction matching world +Y (straight up) so that particles
+--- always rise upward in world space regardless of whether the corpse is prone, supine, or tilted.
+---@param rot table|nil Rotation { x = pitch, y = yaw, z = roll } in radians
+---@param min_val number Minimum scalar magnitude (e.g. min vertical velocity or acceleration)
+---@param max_val number Maximum scalar magnitude (e.g. max vertical velocity or acceleration)
+---@param spread_h number Horizontal spread magnitude
+---@return table min_v Vector { x, y, z }
+---@return table max_v Vector { x, y, z }
+function deathstats.calc_oriented_particle_bounds(rot, min_val, max_val, spread_h)
+    local pitch = (rot and rot.x) or 0
+    local roll = (rot and rot.z) or 0
+    local cp = math.cos(pitch)
+    local sp = math.sin(pitch)
+    local cr = math.cos(roll)
+    local sr = math.sin(roll)
+
+    -- Local unit vector that transforms into world +Y (straight UP) under Z-X-Y rotation:
+    local ux = sr * cp
+    local uy = cr * cp
+    local uz = -sp
+
+    -- Helper to determine min and max along an axis given directional component
+    local function axis_range(u_comp, min_s, max_s, spread)
+        local a = u_comp * min_s
+        local b = u_comp * max_s
+        local low = math.min(a, b) - (math.abs(u_comp) < 0.8 and spread or 0)
+        local high = math.max(a, b) + (math.abs(u_comp) < 0.8 and spread or 0)
+        return low, high
+    end
+
+    local min_x, max_x = axis_range(ux, min_val, max_val, spread_h)
+    local min_y, max_y = axis_range(uy, min_val, max_val, spread_h)
+    local min_z, max_z = axis_range(uz, min_val, max_val, spread_h)
+
+    if math.abs(uy) >= 0.7 then
+        min_x = -spread_h
+        max_x = spread_h
+        min_z = -spread_h
+        max_z = spread_h
+    elseif math.abs(ux) >= 0.7 then
+        min_y = -spread_h
+        max_y = spread_h
+        min_z = -spread_h
+        max_z = spread_h
+    elseif math.abs(uz) >= 0.7 then
+        min_x = -spread_h
+        max_x = spread_h
+        min_y = -spread_h
+        max_y = spread_h
+    end
+
+    return vector.new(min_x, min_y, min_z), vector.new(max_x, max_y, max_z)
+end
+
 --- Create a modern ParticleSpawner definition table with graceful fallback to older Luanti clients
 ---@param effect_type string "water"|"lava"|"fire"|"impact"
 ---@param corpse_pos table The {x, y, z} position of the corpse
@@ -4620,8 +4844,24 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     if not corpse_pos then return nil end
     local cx, cy, cz = corpse_pos.x, corpse_pos.y, corpse_pos.z
     local has_attached = attached_obj and (not attached_obj.is_valid or attached_obj:is_valid())
+    local rot = nil
+    if has_attached then
+        local luaent = (attached_obj.get_luaentity and attached_obj:get_luaentity())
+        rot = (luaent and luaent._rot) or (attached_obj.get_rotation and attached_obj:get_rotation())
+    end
 
     if effect_type == "water" then
+        local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.35, 0.85, 0.15)
+        local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.20, 0.45, 0.05)
+        local pos_min_y, pos_max_y = 0.05, 0.25
+        local roll = (rot and rot.z) or 0
+        local pitch = (rot and rot.x) or 0
+        local uy = math.cos(roll) * math.cos(pitch)
+        if has_attached and uy < -0.5 then
+            local o_max = pos_max_y
+            pos_max_y = -pos_min_y
+            pos_min_y = -o_max
+        end
         -- Bubbles floating upwards through water continuously from random positions on the submerged corpse
         return {
             amount = 8,
@@ -4631,12 +4871,12 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             glow = 3,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = 0.25, z = 0.35 } or { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
-            minvel = { x = -0.15, y = 0.35, z = -0.15 },
-            maxvel = { x = 0.15, y = 0.85, z = 0.15 },
-            minacc = { x = -0.05, y = 0.20, z = -0.05 },
-            maxacc = { x = 0.05, y = 0.45, z = 0.05 },
+            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
+            minvel = has_attached and min_v or { x = -0.15, y = 0.35, z = -0.15 },
+            maxvel = has_attached and max_v or { x = 0.15, y = 0.85, z = 0.15 },
+            minacc = has_attached and min_a or { x = -0.05, y = 0.20, z = -0.05 },
+            maxacc = has_attached and max_a or { x = 0.05, y = 0.45, z = 0.05 },
             minexptime = 1.2,
             maxexptime = 2.4,
             minsize = 1.0,
@@ -4650,16 +4890,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, 0.25, 0.35) or vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
+                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
             },
             vel = {
-                min = vector.new(-0.15, 0.35, -0.15),
-                max = vector.new(0.15, 0.85, 0.15),
+                min = has_attached and min_v or vector.new(-0.15, 0.35, -0.15),
+                max = has_attached and max_v or vector.new(0.15, 0.85, 0.15),
             },
             acc = {
-                min = vector.new(-0.05, 0.20, -0.05),
-                max = vector.new(0.05, 0.45, 0.05),
+                min = has_attached and min_a or vector.new(-0.05, 0.20, -0.05),
+                max = has_attached and max_a or vector.new(0.05, 0.45, 0.05),
             },
             exptime = { min = 1.2, max = 2.4 },
             size = { min = 1.0, max = 1.6 },
@@ -4680,6 +4920,17 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
         }
 
     elseif effect_type == "lava" then
+        local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.50, 1.40, 0.25)
+        local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.30, 0.80, 0.10)
+        local pos_min_y, pos_max_y = 0.05, 0.30
+        local roll = (rot and rot.z) or 0
+        local pitch = (rot and rot.x) or 0
+        local uy = math.cos(roll) * math.cos(pitch)
+        if has_attached and uy < -0.5 then
+            local o_max = pos_max_y
+            pos_max_y = -pos_min_y
+            pos_min_y = -o_max
+        end
         -- Fire and glowing ember sparks leaping continuously from random positions on the burning corpse
         return {
             amount = 12,
@@ -4689,12 +4940,12 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             glow = 14,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = 0.30, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
-            minvel = { x = -0.25, y = 0.50, z = -0.25 },
-            maxvel = { x = 0.25, y = 1.40, z = 0.25 },
-            minacc = { x = -0.10, y = 0.30, z = -0.10 },
-            maxacc = { x = 0.10, y = 0.80, z = 0.10 },
+            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minvel = has_attached and min_v or { x = -0.25, y = 0.50, z = -0.25 },
+            maxvel = has_attached and max_v or { x = 0.25, y = 1.40, z = 0.25 },
+            minacc = has_attached and min_a or { x = -0.10, y = 0.30, z = -0.10 },
+            maxacc = has_attached and max_a or { x = 0.10, y = 0.80, z = 0.10 },
             minexptime = 0.5,
             maxexptime = 1.2,
             minsize = 1.0,
@@ -4708,16 +4959,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, 0.30, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
             },
             vel = {
-                min = vector.new(-0.25, 0.50, -0.25),
-                max = vector.new(0.25, 1.40, 0.25),
+                min = has_attached and min_v or vector.new(-0.25, 0.50, -0.25),
+                max = has_attached and max_v or vector.new(0.25, 1.40, 0.25),
             },
             acc = {
-                min = vector.new(-0.10, 0.30, -0.10),
-                max = vector.new(0.10, 0.80, 0.10),
+                min = has_attached and min_a or vector.new(-0.10, 0.30, -0.10),
+                max = has_attached and max_a or vector.new(0.10, 0.80, 0.10),
             },
             exptime = { min = 0.5, max = 1.2 },
             size = { min = 1.0, max = 1.8 },
@@ -4737,6 +4988,17 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
         }
 
     elseif effect_type == "fire" then
+        local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.30, 0.80, 0.15)
+        local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.15, 0.40, 0.05)
+        local pos_min_y, pos_max_y = 0.05, 0.30
+        local roll = (rot and rot.z) or 0
+        local pitch = (rot and rot.x) or 0
+        local uy = math.cos(roll) * math.cos(pitch)
+        if has_attached and uy < -0.5 then
+            local o_max = pos_max_y
+            pos_max_y = -pos_min_y
+            pos_min_y = -o_max
+        end
         -- Billowing ash smoke rising continuously into the air from the charred corpse
         return {
             amount = 12,
@@ -4746,12 +5008,12 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             glow = 1,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = 0.05, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = 0.30, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
-            minvel = { x = -0.15, y = 0.30, z = -0.15 },
-            maxvel = { x = 0.15, y = 0.80, z = 0.15 },
-            minacc = { x = -0.05, y = 0.15, z = -0.05 },
-            maxacc = { x = 0.05, y = 0.40, z = 0.05 },
+            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
+            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
+            minvel = has_attached and min_v or { x = -0.15, y = 0.30, z = -0.15 },
+            maxvel = has_attached and max_v or { x = 0.15, y = 0.80, z = 0.15 },
+            minacc = has_attached and min_a or { x = -0.05, y = 0.15, z = -0.05 },
+            maxacc = has_attached and max_a or { x = 0.05, y = 0.40, z = 0.05 },
             minexptime = 1.0,
             maxexptime = 2.0,
             minsize = 1.2,
@@ -4765,16 +5027,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, 0.05, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, 0.30, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
+                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
             },
             vel = {
-                min = vector.new(-0.15, 0.30, -0.15),
-                max = vector.new(0.15, 0.80, 0.15),
+                min = has_attached and min_v or vector.new(-0.15, 0.30, -0.15),
+                max = has_attached and max_v or vector.new(0.15, 0.80, 0.15),
             },
             acc = {
-                min = vector.new(-0.05, 0.15, -0.05),
-                max = vector.new(0.05, 0.40, 0.05),
+                min = has_attached and min_a or vector.new(-0.05, 0.15, -0.05),
+                max = has_attached and max_a or vector.new(0.05, 0.40, 0.05),
             },
             exptime = { min = 1.0, max = 2.0 },
             size = { min = 1.2, max = 2.4 },
@@ -6933,6 +7195,24 @@ function deathstats.reset_camera(player, is_leaving)
     -- Restore original inventory and hand reach (verified against in-memory data and persistent metadata)
     deathstats.restore_player_inventory_and_hand(player)
 
+    deathstats.player_camera_data[name] = nil
+
+    -- Reset camera modes and eye offsets on the player object itself
+    if player.set_camera then
+        player:set_camera({ mode = "first" })
+    end
+    if player.set_eye_offset then
+        player:set_eye_offset(vector.zero(), vector.zero(), vector.zero())
+    end
+    if player.set_look_vertical then
+        player:set_look_vertical(0)
+    end
+
+    -- If player is leaving, offline, or server is shutting down, skip player_api model/skin updates, animations and timers
+    if is_leaving or not deathstats.is_player_online(name) or deathstats.is_shutting_down then
+        return
+    end
+
     -- Restore player physical and visual properties & nametag
     local meta = player:get_meta()
     local vs = (data and data.old_visual_size) or { x = 1, y = 1, z = 1 }
@@ -7025,35 +7305,19 @@ function deathstats.reset_camera(player, is_leaving)
         armor_mod:set_player_armor(player)
     end
 
-    deathstats.player_camera_data[name] = nil
-
-    -- If player is leaving or offline, bypass camera changes, animations and timers
-    if is_leaving or not deathstats.is_player_online(name) then
-        return
-    end
-
-    -- Restore camera mode back to first person, then unlock to any mode
-    if player.set_camera then
-        player:set_camera({ mode = "first" })
-    end
-
-    -- Reset eye offsets to zero
-    if player.set_eye_offset then
-        player:set_eye_offset(vector.zero(), vector.zero(), vector.zero())
-    end
-
-    -- Reset pitch back to horizontal eye level
-    if player.set_look_vertical then
-        player:set_look_vertical(0)
-    end
-
     -- Restore standing animation (with deferred retries to ensure player_api handshake is complete)
     local function restore_stand()
-        if not deathstats.is_player_online(name) then return end
+        if deathstats.is_shutting_down or not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
         if not p or not p:is_player() then return end
         local player_papi = rawget(_G, "player_api")
+        if type(player_papi) == "table" and type(player_papi.registered_players) == "table" and not player_papi.registered_players[name] then
+            return
+        end
         local restore_xpapi = rawget(_G, "x_player_api")
+        if type(restore_xpapi) == "table" and type(restore_xpapi.registered_players) == "table" and not restore_xpapi.registered_players[name] then
+            return
+        end
         local def_mod = rawget(_G, "default")
         local mcl_p = rawget(_G, "mcl_player")
         if player_papi and type(player_papi) == "table" and type(player_papi.set_animation) == "function" then
@@ -7602,6 +7866,7 @@ function deathstats.on_player_respawn(player)
 
     -- Deferred reinforcement ticks to guarantee full health and correct model/skin across engine/client respawn handshake
     core.after(0.05, function()
+        if deathstats.is_shutting_down or not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
         if p and p:is_player() then
             deathstats.zero_player_velocity(p)
@@ -7628,6 +7893,7 @@ function deathstats.on_player_respawn(player)
         end
     end)
     core.after(0.2, function()
+        if deathstats.is_shutting_down or not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
         if p and p:is_player() then
             deathstats.zero_player_velocity(p)

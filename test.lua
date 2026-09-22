@@ -162,6 +162,13 @@ core = {
         end
         return core.get_node(pos)
     end,
+    get_node_light = function(pos)
+        local node = core.get_node(pos)
+        if node and node.name and node.name ~= "air" and core.registered_nodes[node.name] and core.registered_nodes[node.name].walkable then
+            return 0
+        end
+        return 12
+    end,
     set_node = function(pos, node)
         local k = string.format("%d,%d,%d", math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5))
         core.world_nodes[k] = (type(node) == "table" and node.name) or node
@@ -5586,6 +5593,7 @@ local function run_test_suite_51()
     core.on_shutdown()
     assert(p_chat:hud_get_flags().chat == true, "on_shutdown must restore chat for all active scoreboard viewers")
     assert(deathstats.active_scoreboard_huds["ChatTester"] == nil, "Scoreboard state must be cleared on shutdown")
+    deathstats.is_shutting_down = false
 
     -- Formspec Opening: opening /scores modal hides HUD and restores chat
     deathstats.show_scoreboard_hud(p_chat)
@@ -9902,5 +9910,111 @@ suites[100] = function()
 end
 suites[100]()
 
-print("\nALL 100 TEST SUITES PASSED SUCCESSFULLY!")
+suites[101] = function()
+    print("\n--- TEST 101: Wall Clearance, Prone Particle Inversion, Liquid Buoyancy & Shutdown Safety ---")
+
+    -- 1. Wall Clearance & Ambient Light Sampling
+    -- Set up a wall at z = 49 (behind a player facing north / yaw=0)
+    core.set_node({ x = 50, y = 5, z = 49 }, { name = "default:stone" })
+    core.set_node({ x = 50, y = 5, z = 50 }, { name = "air" })
+    local raw_pos = vector.new(50, 5, 50)
+    local cleared_pos = deathstats.ensure_corpse_clearance(raw_pos, 0, true)
+    assert(cleared_pos ~= nil, "cleared_pos must not be nil")
+    assert(cleared_pos.z > raw_pos.z, "cleared_pos must nudge corpse forward away from back wall")
+
+    -- Ambient light sampling
+    local mock_light = deathstats.sample_corpse_ambient_light(cleared_pos, 0)
+    assert(mock_light ~= nil and mock_light >= 0, "sample_corpse_ambient_light must return non-nil light value")
+
+    -- 2. Prone Face-Down Particle Vector Inversion (roll = math.pi)
+    local rot_prone = { x = 0, y = 0, z = math.pi }
+    local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot_prone, 0.4, 0.9, 0.1)
+    -- With roll = pi, local Y must be negative so that world-space transformation yields positive Y (upwards)
+    assert(max_v.y < 0 and min_v.y < 0,
+        string.format("Prone particles must have negative local Y velocity! got min=%f max=%f", min_v.y, max_v.y))
+
+    local dummy_corpse = core.add_entity({ x = 50, y = 5, z = 50 }, "deathstats:corpse")
+    dummy_corpse:set_rotation(rot_prone)
+    local d_ent = dummy_corpse:get_luaentity()
+    d_ent._rot = rot_prone
+
+    local water_ps_def = deathstats.create_corpse_particlespawner_def("water", { x = 50, y = 5, z = 50 }, dummy_corpse)
+    assert(water_ps_def ~= nil, "Water particlespawner def must be created")
+    assert(water_ps_def.maxvel.y < 0, "Attached prone water bubbles must have negative local Y velocity")
+    assert(water_ps_def.vel.max.y < 0, "Modern texpool vel.max.y must have negative local Y velocity")
+
+    local lava_ps_def = deathstats.create_corpse_particlespawner_def("lava", { x = 50, y = 5, z = 50 }, dummy_corpse)
+    assert(lava_ps_def ~= nil, "Lava particlespawner def must be created")
+    assert(lava_ps_def.maxvel.y < 0, "Attached prone lava sparks must have negative local Y velocity")
+
+    local fire_ps_def = deathstats.create_corpse_particlespawner_def("fire", { x = 50, y = 5, z = 50 }, dummy_corpse)
+    assert(fire_ps_def ~= nil, "Fire particlespawner def must be created")
+    assert(fire_ps_def.maxvel.y < 0, "Attached prone fire smoke must have negative local Y velocity")
+
+    dummy_corpse:remove()
+
+    -- 3. Liquid Buoyancy: Submerged Corpse Floats Upward
+    core.set_node({ x = 60, y = 5, z = 60 }, { name = "default:water_source" })
+    core.set_node({ x = 60, y = 6, z = 60 }, { name = "air" }) -- surface is at y = 5, y=6 is air
+    local p_drown = create_mock_player("SubmergedPlayer", 0, { x = 60, y = 5, z = 60 })
+    mock_players["SubmergedPlayer"] = p_drown
+
+    local sub_corpse = deathstats.spawn_and_setup_corpse(
+        { x = 60, y = 5, z = 60 },
+        { mesh = "character.b3d", textures = { "character.png" }, yaw = 0 },
+        p_drown,
+        { category = "drown", damage = 4 },
+        nil
+    )
+    assert(sub_corpse ~= nil, "Submerged corpse must be spawned")
+    local sub_v = sub_corpse:get_velocity()
+    assert(sub_v ~= nil and sub_v.y > 0,
+        string.format("Submerged corpse must have upward initial buoyant velocity! got %s", tostring(sub_v and sub_v.y)))
+
+    local sub_ent = sub_corpse:get_luaentity()
+    assert(sub_ent ~= nil, "Submerged corpse luaentity must exist")
+    assert(sub_ent._settled == false, "Submerged corpse must start unsettled to float")
+
+    -- Step in water: buoyant upward acceleration drives corpse up
+    sub_ent:on_step(0.1)
+    local sub_v_after = sub_corpse:get_velocity()
+    assert(sub_v_after.y > 0, "Corpse in water must maintain positive upward velocity while submerged")
+
+    sub_corpse:remove()
+    mock_players["SubmergedPlayer"] = nil
+    deathstats.players["SubmergedPlayer"] = nil
+
+    -- 4. Server Shutdown & Offline Player Warning Safety
+    deathstats.is_shutting_down = true
+    local p_off = create_mock_player("ShutdownOfflinePlayer", 20)
+    mock_players["ShutdownOfflinePlayer"] = p_off
+    deathstats.player_camera_data["ShutdownOfflinePlayer"] = {
+        corpse = nil,
+        anchor = nil,
+    }
+
+    local warn_count = 0
+    local orig_warn = core.log
+    core.log = function(level, msg)
+        if level == "warning" and msg and (msg:find("offline") or msg:find("set_model")) then
+            warn_count = warn_count + 1
+        end
+        if orig_warn then orig_warn(level, msg) end
+    end
+
+    -- Call reset_camera during shutdown / leaving
+    deathstats.reset_camera(p_off, true)
+    assert(warn_count == 0, "reset_camera must produce 0 offline player warnings on shutdown/leave")
+
+    core.log = orig_warn
+    deathstats.is_shutting_down = false
+    mock_players["ShutdownOfflinePlayer"] = nil
+    deathstats.players["ShutdownOfflinePlayer"] = nil
+
+    print("  [PASS] Wall Clearance, Prone Particle Inversion, Liquid Buoyancy & Shutdown Safety")
+end
+suites[101]()
+
+print("\nALL 101 TEST SUITES PASSED SUCCESSFULLY!")
+
 
