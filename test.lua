@@ -9734,5 +9734,98 @@ suites[98] = function()
 end
 suites[98]()
 
-print("\nALL 98 TEST SUITES PASSED SUCCESSFULLY!")
+--- TEST 99: x_player_api Absence, Non-Table Flag & Fault Immunity ---
+suites[99] = function()
+    print("\n--- TEST 99: x_player_api Absence, Non-Table Flag & Fault Immunity ---")
+
+    local saved_xpapi = rawget(_G, "x_player_api")
+    local saved_papi = rawget(_G, "player_api")
+    local p = create_mock_player("XPAPITestPlayer")
+
+    -- Case 1: x_player_api completely missing / nil (and player_api nil)
+    rawset(_G, "x_player_api", nil)
+    rawset(_G, "player_api", nil)
+
+    assert(deathstats.compat_skins.is_humanoid_mesh("unknown_mesh.b3d") == false,
+        "is_humanoid_mesh must return false without crash when x_player_api is nil")
+
+    local skin_nil, _, _, _, _ = deathstats.compat_skins.extract_base_skin(p, "XPAPITestPlayer")
+    assert(skin_nil == "character.png",
+        "extract_base_skin must safely fallback to character.png when x_player_api is nil")
+
+    local visuals_nil = deathstats.get_player_visuals(p)
+    assert(visuals_nil ~= nil and visuals_nil.mesh ~= nil,
+        "get_player_visuals must return valid visual table when x_player_api is nil")
+
+    local corpse_nil = core.add_entity({ x = 0, y = 5, z = 0 }, "deathstats:corpse")
+    deathstats.pose_corpse(corpse_nil, "character.b3d", "sit")
+    corpse_nil:remove()
+
+    deathstats.set_engine_player_attached("XPAPITestPlayer", true)
+    deathstats.set_engine_player_attached("XPAPITestPlayer", nil)
+    deathstats.hook_animation_function(nil, "set_animation")
+    deathstats.reset_camera(p)
+    deathstats.on_player_respawn(p)
+
+    -- Case 2: x_player_api is a non-table dummy value (e.g. boolean flag)
+    rawset(_G, "x_player_api", true)
+    rawset(_G, "player_api", true)
+
+    assert(deathstats.compat_skins.is_humanoid_mesh("unknown_mesh.b3d") == false,
+        "is_humanoid_mesh must not error when x_player_api is boolean true")
+    local skin_bool = deathstats.compat_skins.extract_base_skin(p, "XPAPITestPlayer")
+    assert(skin_bool == "character.png",
+        "extract_base_skin must not error when x_player_api is boolean true")
+    local visuals_bool = deathstats.get_player_visuals(p)
+    assert(visuals_bool ~= nil,
+        "get_player_visuals must not error when x_player_api is boolean true")
+
+    deathstats.set_engine_player_attached("XPAPITestPlayer", true)
+    deathstats.set_engine_player_attached("XPAPITestPlayer", nil)
+    deathstats.hook_animation_function(true, "set_animation")
+    deathstats.reset_camera(p)
+    deathstats.on_player_respawn(p)
+
+    -- Case 3: x_player_api is present but throws unhandled internal errors
+    local faulty_xpapi = {
+        registered_models = "not a table",
+        player_attached = "not a table",
+        get_textures = function() error("Simulated xpapi get_textures crash!") end,
+        get_player_data = function() error("Simulated xpapi get_player_data crash!") end,
+        get_visual_proxies = function() error("Simulated xpapi get_visual_proxies crash!") end,
+        get_model_name = function() error("Simulated xpapi get_model_name crash!") end,
+        set_model = function() error("Simulated xpapi set_model crash!") end,
+        set_textures = function() error("Simulated xpapi set_textures crash!") end,
+        set_animation = function() error("Simulated xpapi set_animation crash!") end,
+    }
+    rawset(_G, "x_player_api", faulty_xpapi)
+    rawset(_G, "player_api", faulty_xpapi)
+
+    assert(deathstats.compat_skins.is_humanoid_mesh("any_mesh.b3d") == false,
+        "is_humanoid_mesh must survive faulty x_player_api registered_models")
+    local skin_faulty = deathstats.compat_skins.extract_base_skin(p, "XPAPITestPlayer")
+    assert(skin_faulty == "character.png",
+        "extract_base_skin must catch faulty xpapi exceptions via pcall")
+    local visuals_faulty = deathstats.get_player_visuals(p)
+    assert(visuals_faulty ~= nil and visuals_faulty.mesh ~= nil,
+        "get_player_visuals must catch faulty xpapi exceptions via pcall")
+
+    local corpse_faulty = core.add_entity({ x = 0, y = 5, z = 0 }, "deathstats:corpse")
+    deathstats.pose_corpse(corpse_faulty, "character.b3d", "sit")
+    corpse_faulty:remove()
+
+    deathstats.set_engine_player_attached("XPAPITestPlayer", true)
+    deathstats.set_engine_player_attached("XPAPITestPlayer", nil)
+    deathstats.reset_camera(p)
+    deathstats.on_player_respawn(p)
+
+    -- Restore environment
+    rawset(_G, "x_player_api", saved_xpapi)
+    rawset(_G, "player_api", saved_papi)
+
+    print("  [PASS] x_player_api Absence, Non-Table Flag & Fault Immunity")
+end
+suites[99]()
+
+print("\nALL 99 TEST SUITES PASSED SUCCESSFULLY!")
 
