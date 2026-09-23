@@ -200,7 +200,8 @@ core.register_entity("deathstats:corpse", {
             -- respawning, or logging in, without unnecessary CPU/network overhead when nobody is nearby.
             if deathstats.config.enable_corpse_particles ~= false and self._decay_time then
                 self._particle_check_timer = (self._particle_check_timer or 0) + (dtime or 0)
-                if self._particle_check_timer >= 3.0 then
+                local check_interval = (not self._particle_spawners or #self._particle_spawners == 0) and 0.5 or 3.0
+                if self._particle_check_timer >= check_interval then
                     self._particle_check_timer = 0
                     local cpos = (self.object and self.object.get_pos and self.object:get_pos()) or self._settled_pos
                     if cpos then
@@ -701,7 +702,10 @@ core.register_entity("deathstats:corpse", {
                     self._flail_timer = (self._flail_timer or 0) + dtime
                     if self._flail_timer >= flail_interval then
                         self._flail_timer = 0
-                        deathstats.update_ragdoll_flight_limbs(self.object, cur_v, self._base_yaw or 0, self._bounce_shock)
+                        scratch_vel.x = cur_v.x
+                        scratch_vel.y = cur_v.y
+                        scratch_vel.z = cur_v.z
+                        deathstats.update_ragdoll_flight_limbs(self.object, scratch_vel, self._base_yaw or 0, self._bounce_shock)
                     end
                 end
 
@@ -850,7 +854,7 @@ function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
             local dx = math.abs(rx - last.x)
             local dy = math.abs(ry - last.y)
             local dz = math.abs(rz - last.z)
-            if dx < 0.05 and dy < 0.05 and dz < 0.05 then
+            if dx < 0.05 and dy < 0.05 and dz < 0.05 and not (rx == 0 and ry == 0 and (last.x ~= 0 or last.y ~= 0)) then
                 return true
             end
         end
@@ -1055,9 +1059,6 @@ function deathstats.remove_corpse(corpse)
     end
 end
 
---- Spawn gentle ash / smoke dissipation particles when a corpse decays
-
-
 --- Dissolve and cleanly remove a persistent corpse with dissipation particles
 ---@param corpse ObjectRef|nil The corpse object reference
 function deathstats.dissolve_corpse(corpse)
@@ -1097,14 +1098,6 @@ function deathstats.unhide_corpse_arrows(corpse)
         end
     end
 end
-
---- Spawn and configure the corpse placeholder entity at the given position
----@param corpse_pos table The {x, y, z} coordinates where corpse should be placed
----@param visuals table The player visual appearance table (mesh, textures, visual_size, yaw)
----@param player ObjectRef|nil Optional player reference for transferring attached arrows
----@param death_info table|nil Optional death analysis table
----@param last_blow table|nil Optional lethal blow data
-
 
 --- Check if 3d_armor is configured to drop or destroy armor on player death
 ---@param player ObjectRef|nil Optional player reference
@@ -1470,21 +1463,63 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
 
         -- Attach 3D wielditem entity to right hand if inventory items are retained on death
         if visuals.wield_item and visuals.wield_item ~= "" and not visuals.inventory_dropped then
-            local wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
-            if wield_ent then
-                wield_ent:set_properties({
-                    textures = { visuals.wield_item },
-                    wield_item = visuals.wield_item,
-                    visual_size = { x = 0.25, y = 0.25, z = 0.25 },
-                    pointable = false,
-                })
-                if wield_ent.set_attach then
-                    -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
-                    wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
+            local xpapi = rawget(_G, "x_player_api")
+            local is_xpapi_wield = xpapi and xpapi.enable_wield_item ~= false
+            local wield_ent
+
+            if is_xpapi_wield and type(xpapi.attach_wield_item_to_entity) == "function" then
+                local mesh = visuals.mesh or "character.b3d"
+                local is_glb = mesh:find("%.glb$") ~= nil
+                local model_format = is_glb and "glb" or "b3d"
+                wield_ent = xpapi.attach_wield_item_to_entity(
+                    corpse,
+                    visuals.wield_item,
+                    model_format,
+                    "Arm_Right",
+                    "deathstats:corpse_wielditem",
+                    true
+                )
+            elseif is_xpapi_wield and type(xpapi.get_wield_attachment_params) == "function" then
+                wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+                if wield_ent then
+                    local mesh = visuals.mesh or "character.b3d"
+                    local is_glb = mesh:find("%.glb$") ~= nil
+                    local model_format = is_glb and "glb" or "b3d"
+                    local v_size, att_pos, att_rot, glow, item_col = xpapi.get_wield_attachment_params(visuals.wield_item, model_format)
+                    local props = {
+                        textures = { visuals.wield_item },
+                        wield_item = visuals.wield_item,
+                        visual_size = v_size,
+                        glow = glow or 0,
+                        pointable = false,
+                        use_texture_alpha = true,
+                        backface_culling = false,
+                    }
+                    if item_col then props.color = item_col end
+                    wield_ent:set_properties(props)
+                    if wield_ent.set_attach then
+                        wield_ent:set_attach(corpse, "Arm_Right", att_pos, att_rot, true)
+                    end
                 end
-                if luaent then
-                    luaent._wielditem_entity = wield_ent
+            else
+                -- Unchanged default deathstats behavior when x_player_api is not enabled
+                wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+                if wield_ent then
+                    wield_ent:set_properties({
+                        textures = { visuals.wield_item },
+                        wield_item = visuals.wield_item,
+                        visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+                        pointable = false,
+                    })
+                    if wield_ent.set_attach then
+                        -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
+                        wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
+                    end
                 end
+            end
+
+            if wield_ent and luaent then
+                luaent._wielditem_entity = wield_ent
             end
         end
 

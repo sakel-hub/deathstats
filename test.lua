@@ -10407,6 +10407,492 @@ suites[102] = function()
 end
 suites[102]()
 
-print("\nALL 102 TEST SUITES PASSED SUCCESSFULLY!")
+suites[103] = function()
+    print("\n--- TEST 103: True Directional Blast Impulse & Corpse Atmospheric Particles Accuracy ---")
 
+    -- 1. Blast Impulse Calculation: TNT in front of player launches corpse backward
+    local tnt_victim_pos = vector.new(0, 5, 0)
+    local tnt_front = vector.new(0, 5, 2)
+    local p_front = create_mock_player("TntVictimFront", 20, tnt_victim_pos)
+    p_front:set_look_horizontal(0) -- facing +Z toward the TNT
+    local impulse_front = deathstats.calculate_corpse_impulse(p_front, {
+        category = "explosion",
+        blast_pos = tnt_front,
+        last_blow_damage = 20,
+    })
+    assert(impulse_front ~= nil, "Impulse must be calculated for explosion")
+    assert(impulse_front.z < -1.0, string.format("Corpse must fly backward (-Z) away from TNT in front of player, got z=%.2f", impulse_front.z))
+    assert(impulse_front.y > 0, "Corpse must have upward trajectory from explosion")
+
+    -- 2. Blast Impulse Calculation: TNT behind player launches corpse forward (even when player looks toward +Z)
+    local tnt_behind = vector.new(0, 5, -2)
+    local impulse_behind = deathstats.calculate_corpse_impulse(p_front, {
+        category = "explosion",
+        blast_pos = tnt_behind,
+        last_blow_damage = 20,
+    })
+    assert(impulse_behind ~= nil, "Impulse must be calculated for explosion behind player")
+    assert(impulse_behind.z > 1.0, string.format("Corpse must fly forward (+Z) away from TNT behind player, got z=%.2f", impulse_behind.z))
+    assert(impulse_behind.y > 0, "Corpse must have upward trajectory from explosion")
+
+    -- 3. MTG TNT lethal blow detection via on_player_hpchange with reason.type = "set_hp"
+    local p_tnt_victim = create_mock_player("TntVictim103", 20, ppos)
+    mock_players["TntVictim103"] = p_tnt_victim
+    deathstats.record_explosion(tnt_behind, 3)
+    -- Luanti Game TNT applies damage via set_hp which calls on_player_hpchange with reason.type = "set_hp"
+    core.on_player_hpchange(p_tnt_victim, -20, { type = "set_hp" })
+    local blow_info = deathstats.last_blow["TntVictim103"]
+    assert(blow_info ~= nil, "Last blow info must be recorded for lethal TNT damage")
+    assert(blow_info.blast_pos ~= nil, "blast_pos must be recorded from nearby recent explosion")
+    assert(vector.distance(blow_info.blast_pos, tnt_behind) < 0.001, "blast_pos must match the recent TNT position")
+
+    -- 4. analyze_death recognizes explosion category and blast_pos from surroundings/recent_explosions
+    local analyzed = deathstats.analyze_death(p_tnt_victim, { type = "set_hp" })
+    assert(analyzed.category == "explosion", "Death must be categorized as explosion from nearby TNT blast")
+    assert(analyzed.blast_pos ~= nil, "Death analysis must retain blast_pos")
+
+    -- 5. Corpse effect type on dry explosion crater: returns 'flies' instead of fire smoke
+    core.world_nodes["0,5,0"] = "air"
+    core.world_nodes["0,4,0"] = "default:dirt"
+    core.world_nodes["0,4,1"] = "fire:basic_flame" -- residual crater flame nearby
+    local eff_explosion = deathstats.get_corpse_effect_type(ppos, analyzed)
+    assert(eff_explosion == "flies", "Dry ground explosion corpse must produce flies swarm even with residual crater flame")
+
+    -- 6. Rotation-compensated particle placement for lateral poses
+    -- In Luanti content_cao.cpp, entity rotation angles are negated (-m_rotation), meaning:
+    -- When corpse is on right side (roll = pi / 2), local -X transforms into world +Y (UP)
+    local rot_lateral_right = { x = 0, y = 0, z = math.pi / 2 }
+    local min_p_right, max_p_right = deathstats.calc_oriented_particle_pos(rot_lateral_right, 0.15, 0.65, 0.45)
+    assert(min_p_right.x == -0.65 and max_p_right.x == -0.15,
+        "Lateral right corpse must offset along local -X so world Y is above corpse")
+    assert(min_p_right.y == -0.45 and max_p_right.y == 0.45,
+        "Lateral right corpse local Y must span horizontal spread")
+    local _, max_v_right = deathstats.calc_oriented_particle_bounds(rot_lateral_right, 0.1, 0.4, 0.4)
+    assert(max_v_right.x < 0,
+        "Lateral right corpse must have negative local X velocity so world Y velocity is upward")
+
+    -- When corpse is on left side (roll = -pi / 2), local +X transforms into world +Y (UP)
+    local rot_lateral_left = { x = 0, y = 0, z = -math.pi / 2 }
+    local min_p_left, max_p_left = deathstats.calc_oriented_particle_pos(rot_lateral_left, 0.15, 0.65, 0.45)
+    assert(min_p_left.x == 0.15 and max_p_left.x == 0.65,
+        "Lateral left corpse must offset along local +X so world Y is above corpse")
+    local min_v_left, _ = deathstats.calc_oriented_particle_bounds(rot_lateral_left, 0.1, 0.4, 0.4)
+    assert(min_v_left.x > 0,
+        "Lateral left corpse must have positive local X velocity so world Y velocity is upward")
+
+    -- 7. Flies particle spawner definition parameters
+    local flies_def = deathstats.create_corpse_particlespawner_def("flies", ppos)
+    assert(flies_def ~= nil, "Flies definition must exist")
+    assert(flies_def.glow == 1, "Flies must have subtle minimum glow = 1 for visibility in craters")
+    assert(flies_def.size.min >= 1.0 and flies_def.size.max >= 1.6, "Flies size must be tuned for visibility (>= 1.0)")
+    assert(math.abs(flies_def.jitter.max.x) <= 2.0, "Flies jitter must be controlled (<= 2.0) to prevent instant dispersion")
+
+    -- 8. Persistent Corpse Particle Spawner Continuity across Player Respawn
+    local orig_decay = deathstats.config.corpse_decay_time
+    deathstats.config.corpse_decay_time = 180
+    deathstats.dead_players["TntVictim103"] = true
+    deathstats.set_death_camera(p_tnt_victim, analyzed)
+    local cdata_103 = deathstats.player_camera_data["TntVictim103"]
+    local corpse_ent_103 = cdata_103.corpse:get_luaentity()
+    deathstats.settle_corpse_at_rest(corpse_ent_103)
+    assert(corpse_ent_103._rot ~= nil, "settle_corpse_at_rest must synchronize luaent._rot with settled rotation")
+    local actual_rot = cdata_103.corpse:get_rotation()
+    assert(corpse_ent_103._rot.z == actual_rot.z, "luaent._rot.z must match object:get_rotation().z")
+
+    -- Reset camera upon respawn
+    deathstats.reset_camera(p_tnt_victim, false)
+    assert(deathstats.player_corpses["TntVictim103"] ~= nil, "Corpse must persist in deathstats.player_corpses")
+    assert(corpse_ent_103._persisted_after_respawn == true, "Corpse must have _persisted_after_respawn flag")
+
+    -- Step corpse with nearby respawned player
+    local orig_conn = core.get_connected_players
+    core.get_connected_players = function() return { p_tnt_victim } end
+
+    local corpse_def = core.registered_entities["deathstats:corpse"]
+    corpse_def.on_step(corpse_ent_103, 0.1)
+    assert(corpse_ent_103._particle_spawners ~= nil and #corpse_ent_103._particle_spawners > 0,
+        "Persistent corpse must immediately spawn and maintain active particle spawners for nearby players")
+
+    core.get_connected_players = orig_conn
+    deathstats.config.corpse_decay_time = orig_decay
+    mock_players["TntVictim103"] = nil
+    mock_players["TntVictimFront"] = nil
+    deathstats.players["TntVictim103"] = nil
+    deathstats.players["TntVictimFront"] = nil
+    deathstats.dead_players["TntVictim103"] = nil
+
+    print("  [PASS] True Directional Blast Impulse & Corpse Atmospheric Particles Accuracy")
+end
+suites[103]()
+
+suites[104] = function()
+    print("\n--- TEST 104: Codebase Audit Verification (State Hygiene, Directional Limbs, Safe Vector & Ground Fast-Path) ---")
+
+    -- 1. Cross-Life Attribution & State Reset
+    local p_life = create_mock_player("LifeTester104", 20, vector.new(0, 10, 0))
+    deathstats.recent_punches["LifeTester104"] = { attacker = "Attacker104", time = core.get_gametime(), attacker_hp = 15 }
+    deathstats.recent_falls["LifeTester104"] = -14.2
+    deathstats.respawn_immunity["LifeTester104"] = core.get_gametime() + 5.0
+    deathstats.last_death_reason["LifeTester104"] = { category = "pvp" }
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.paused_players then
+        deathstats.compat_hudbars.paused_players["LifeTester104"] = true
+    end
+
+    deathstats.reset_player_effects(p_life)
+    assert(deathstats.recent_punches["LifeTester104"] == nil, "recent_punches must be cleared on reset_player_effects")
+    assert(deathstats.recent_falls["LifeTester104"] == nil, "recent_falls must be cleared on reset_player_effects")
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.paused_players then
+        assert(deathstats.compat_hudbars.paused_players["LifeTester104"] == nil, "compat_hudbars.paused_players must be cleared on reset_player_effects")
+    end
+
+    deathstats.reset_player_effects(p_life, true)
+    assert(deathstats.respawn_immunity["LifeTester104"] == nil, "respawn_immunity must be cleared on leave")
+    assert(deathstats.last_death_reason["LifeTester104"] == nil, "last_death_reason must be cleared on leave")
+
+    -- 2. Leaveplayer HUDbars Cleanup
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.paused_players then
+        local p_leave_hb = create_mock_player("LeaveGuy104", 20, vector.new(0, 10, 0))
+        deathstats.compat_hudbars.paused_players["LeaveGuy104"] = true
+        core.on_leaveplayer(p_leave_hb)
+        assert(deathstats.compat_hudbars.paused_players["LeaveGuy104"] == nil,
+            "compat_hudbars.paused_players must be cleared when player leaves")
+        mock_players["LeaveGuy104"] = nil
+    end
+
+    -- 3. Public killer_health Field Alignment
+    local p_victim = create_mock_player("Victim104", 0, vector.new(50, 10, 50))
+    local p_killer = create_mock_player("Killer104", 17, vector.new(52, 10, 50))
+    deathstats.recent_punches["Victim104"] = {
+        attacker = "Killer104",
+        time = core.get_gametime(),
+        attacker_hp = 17,
+        attacker_max_hp = 20,
+    }
+    local analysis_res = deathstats.analyze_death(p_victim, { type = "punch", puncher = p_killer })
+    assert(analysis_res.killer_health ~= nil, "Death analysis must populate killer_health per API contract")
+    assert(analysis_res.killer_health == 17, "killer_health must match killer remaining HP")
+    assert(analysis_res.killer_hp == analysis_res.killer_health, "killer_hp and killer_health must be synchronized")
+
+    deathstats.record_player_death("Victim104", analysis_res)
+    local vdata = deathstats.players["Victim104"]
+    assert(vdata and vdata.last_life and vdata.last_life.killer_health == 17,
+        "record_player_death must preserve killer_health in snapshot")
+
+    -- 4. Safe Normalize Vector Math
+    local v_zero = deathstats.safe_normalize(vector.new(0, 0, 0))
+    assert(v_zero.x == 0 and v_zero.y == 0 and v_zero.z == 0, "safe_normalize on zero vector must return (0,0,0)")
+    assert(v_zero.x == v_zero.x, "safe_normalize must never return NaN")
+
+    local v_tiny = deathstats.safe_normalize(vector.new(1e-12, 0, 0))
+    assert(v_tiny.x == 0 and v_tiny.y == 0 and v_tiny.z == 0, "safe_normalize on sub-epsilon vector must safely return (0,0,0)")
+
+    local v_norm = deathstats.safe_normalize(vector.new(3, 4, 0))
+    assert(math.abs(v_norm.x - 0.6) < 1e-4 and math.abs(v_norm.y - 0.8) < 1e-4 and v_norm.z == 0,
+        "safe_normalize must correctly normalize standard 3D vectors")
+
+    -- 5. Ground Support Fast-Path
+    core.world_nodes["300,9,300"] = "default:stone"
+    assert(deathstats.has_ground_support(vector.new(300, 10, 300)) == true,
+        "has_ground_support must immediately identify solid ground beneath corpse center")
+
+    -- 6. Formspec Lifetime Tab Default Safety
+    local p_tab = create_mock_player("TabTester104", 20, vector.new(0, 10, 0))
+    deathstats.show_lifetime_formspec(p_tab, true) -- Boolean from_death_screen must safely default to "overview"
+    assert(core.last_formspec ~= nil, "show_lifetime_formspec must display formspec when passed boolean")
+    assert(core.last_formspec.fs:find("tab_overview"), "Formspec must select overview tab by default")
+
+    deathstats.show_lifetime_formspec(p_tab, "records")
+    assert(core.last_formspec.fs:find("tab_records"), "show_lifetime_formspec must select specified string tab")
+
+    -- 7. Corpse Directional Limb Dynamics (rebound_v and base_yaw)
+    local corpse_test = core.add_entity({ x = 400, y = 10, z = 400 }, "deathstats:corpse")
+    deathstats.apply_corpse_bounce_impact(corpse_test, -7.0, vector.new(2, 2, 0), { x = 0, y = 0, z = 0 }, 1)
+    local head_ov = corpse_test:get_bone_override("Head")
+    local arm_l_ov = corpse_test:get_bone_override("Arm_Left")
+    local arm_r_ov = corpse_test:get_bone_override("Arm_Right")
+    assert(head_ov ~= nil and arm_l_ov ~= nil and arm_r_ov ~= nil,
+        "apply_corpse_bounce_impact must rotate limbs using rebound velocity")
+    assert(head_ov.rotation.vec.x < 0, "Head pitch must remain negative under rebound deceleration")
+
+    deathstats.update_ragdoll_flight_limbs(corpse_test, vector.new(3, 1, 0), 0, 0.4)
+    local arm_flight = corpse_test:get_bone_override("Arm_Left")
+    assert(arm_flight ~= nil, "update_ragdoll_flight_limbs must rotate limbs with directional sway/surge")
+
+    corpse_test:remove()
+
+    -- 8. Punch Hook Resolved Weapon Reuse
+    local p_puncher = create_mock_player("Puncher104", 20, vector.new(10, 5, 10))
+    p_puncher.wielded_item = {
+        name = "default:sword_steel",
+        get_name = function(self) return self.name end,
+        is_empty = function() return false end,
+    }
+    core.on_punchplayer(p_victim, p_puncher, 0, {}, vector.new(0, 0, 1), 6)
+    local recorded_punch = deathstats.recent_punches["Victim104"]
+    assert(recorded_punch ~= nil, "on_punchplayer must record recent punch")
+    assert(recorded_punch.tool_name == "default:sword_steel",
+        "Punch record must correctly capture resolved weapon name without redundant lookup")
+
+    -- Cleanup
+    mock_players["LifeTester104"] = nil
+    mock_players["Victim104"] = nil
+    mock_players["Killer104"] = nil
+    mock_players["TabTester104"] = nil
+    mock_players["Puncher104"] = nil
+    deathstats.players["LifeTester104"] = nil
+    deathstats.players["Victim104"] = nil
+    deathstats.players["Killer104"] = nil
+    deathstats.players["TabTester104"] = nil
+    deathstats.players["Puncher104"] = nil
+
+    print("  [PASS] Codebase Audit Verification (State Hygiene, Directional Limbs, Safe Vector & Ground Fast-Path)")
+end
+suites[104]()
+
+--- TEST 105: x_player_api Visual Proxy & Attached Child Unhiding on Respawn ---
+suites[105] = function()
+    print("\n--- TEST 105: x_player_api Visual Proxy & Attached Child Unhiding on Respawn ---")
+
+    local saved_xpapi = rawget(_G, "x_player_api")
+    local saved_papi = rawget(_G, "player_api")
+
+    local p_xp = create_mock_player("XPAPIRootPlayer")
+    p_xp.properties.textures = { "blank.png", "blank.png", "blank.png" }
+    p_xp.properties.mesh = "character.b3d"
+
+    -- Create mock x_player_api visual proxy entities attached to player
+    local mock_glb = core.add_entity(vector.new(0, 10, 0), "x_player_api:visual_glb")
+    mock_glb.properties.visual_size = { x = 1, y = 1 }
+    mock_glb.properties.is_visible = true
+    mock_glb.properties.mesh = "character.glb"
+    mock_glb.properties.textures = { "hero_skin.png" }
+
+    local mock_b3d = core.add_entity(vector.new(0, 10, 0), "x_player_api:visual_b3d")
+    mock_b3d.properties.visual_size = { x = 1, y = 1 }
+    mock_b3d.properties.is_visible = true
+    mock_b3d.properties.mesh = "character.b3d"
+    mock_b3d.properties.textures = { "hero_skin.png" }
+
+    -- Also attach a generic external child entity (e.g. 3d_armor chestplate)
+    local mock_armor = core.add_entity(vector.new(0, 10, 0), "3d_armor:chestplate")
+    mock_armor.properties.visual_size = { x = 1, y = 1, z = 1 }
+    mock_armor.properties.is_visible = true
+
+    p_xp.children = { mock_glb, mock_b3d, mock_armor }
+
+    local wield_visible = false
+    local set_model_called = false
+    local mock_xpapi = {
+        registered_models = {
+            ["character.glb"] = { mesh = "character.glb", visual_size = { x = 1, y = 1 } },
+            ["character.b3d"] = { mesh = "character.b3d", visual_size = { x = 1, y = 1 } },
+        },
+        _players = {
+            ["XPAPIRootPlayer"] = { model = "character.glb" },
+        },
+        player_attached = {},
+        get_model_name = function(_player)
+            return "character.glb"
+        end,
+        get_model = function(name)
+            return { mesh = name, visual_size = { x = 1, y = 1 } }
+        end,
+        get_model_format = function()
+            return "both"
+        end,
+        get_textures = function(_player)
+            return { "hero_skin.png" }
+        end,
+        get_visual_proxies = function(_player)
+            return {
+                glb = mock_glb,
+                b3d = mock_b3d,
+            }
+        end,
+        set_model = function(_player, model_name)
+            set_model_called = true
+            mock_glb.properties.mesh = model_name
+            mock_glb.properties.visual_size = { x = 1, y = 1 }
+            mock_glb.properties.is_visible = true
+        end,
+        set_textures = function(_player, tex)
+            mock_glb.properties.textures = tex
+        end,
+        set_animation = function(_player, _anim) end,
+        set_wield_item_visibility = function(_player, vis)
+            wield_visible = vis
+        end,
+    }
+    rawset(_G, "x_player_api", mock_xpapi)
+    rawset(_G, "player_api", mock_xpapi)
+
+    -- 1. Trigger death camera -> all child entities on player must be hidden
+    deathstats.set_death_camera(p_xp, { category = "pvp", reason_text = "Slain in duel" })
+    local root_cam_data = deathstats.player_camera_data["XPAPIRootPlayer"]
+    assert(root_cam_data ~= nil, "Camera data must exist for dead player")
+
+    assert(mock_glb:get_properties().is_visible == false, "GLB proxy must be hidden during death")
+    assert(mock_glb:get_properties().visual_size.x == 0, "GLB proxy visual_size must be zeroed during death")
+    assert(mock_b3d:get_properties().is_visible == false, "B3D proxy must be hidden during death")
+    assert(mock_b3d:get_properties().visual_size.x == 0, "B3D proxy visual_size must be zeroed during death")
+    assert(mock_armor:get_properties().is_visible == false, "Attached armor entity must be hidden during death")
+    assert(mock_armor:get_properties().visual_size.x == 0, "Attached armor entity visual_size must be zeroed during death")
+
+    -- 2. Trigger player respawn -> proxies and attached children must be cleanly restored to visible!
+    deathstats.on_player_respawn(p_xp)
+
+    assert(mock_glb:get_properties().is_visible == true, "GLB proxy is_visible must be restored to true on respawn")
+    assert(mock_glb:get_properties().visual_size.x > 0, "GLB proxy visual_size must be restored on respawn")
+    assert(mock_b3d:get_properties().is_visible == true, "B3D proxy is_visible must be restored to true on respawn")
+    assert(mock_b3d:get_properties().visual_size.x > 0, "B3D proxy visual_size must be restored on respawn")
+    assert(mock_armor:get_properties().is_visible == true, "Attached armor entity is_visible must be restored to true on respawn")
+    assert(mock_armor:get_properties().visual_size.x > 0, "Attached armor entity visual_size must be restored on respawn")
+    assert(wield_visible == true, "x_player_api wield item visibility must be restored to true on respawn")
+    assert(set_model_called == true, "x_player_api.set_model must be called on respawn")
+
+    -- Clean up
+    mock_glb:remove()
+    mock_b3d:remove()
+    mock_armor:remove()
+    mock_players["XPAPIRootPlayer"] = nil
+    deathstats.players["XPAPIRootPlayer"] = nil
+    rawset(_G, "x_player_api", saved_xpapi)
+    rawset(_G, "player_api", saved_papi)
+
+    print("  [PASS] x_player_api Visual Proxy & Attached Child Unhiding on Respawn")
+end
+suites[105]()
+
+-- =========================================================================
+-- SUITE 106: X_PLAYER_API CORPSE WIELDITEM INTEGRATION & FORMAT PARITY
+-- =========================================================================
+suites[106] = function()
+    print("\n--- TEST 106: x_player_api Corpse Wielditem Integration & Format Parity ---")
+
+    local saved_xpapi = rawget(_G, "x_player_api")
+
+    -- 1. Mock x_player_api with attach_wield_item_to_entity
+    local attach_called = false
+    local attach_args = nil
+    local mock_xpapi = {
+        enable_wield_item = true,
+        get_wield_attachment_params = function(item, fmt)
+            local is_glb = (fmt == "glb")
+            local pos = is_glb and { x = 0, y = 4.9, z = -3.5 } or { x = 0, y = 4.9, z = 3.5 }
+            local rot = is_glb and { x = -90, y = 45, z = 90 } or { x = -90, y = 225, z = 90 }
+            local vs = { x = 0.275 * 1.33, y = 0.275 * 1.33, z = 0.275 * 1.33 }
+            return vs, pos, rot, 4, "#ffffff"
+        end,
+        attach_wield_item_to_entity = function(parent, item, fmt, bone, ent_name, forced_vis)
+            attach_called = true
+            attach_args = {
+                parent = parent,
+                item = item,
+                format = fmt,
+                bone = bone,
+                ent_name = ent_name,
+                forced_vis = forced_vis,
+            }
+            local went = core.add_entity(parent:get_pos(), ent_name or "deathstats:corpse_wielditem")
+            local is_glb = (fmt == "glb")
+            local pos = is_glb and { x = 0, y = 4.9, z = -3.5 } or { x = 0, y = 4.9, z = 3.5 }
+            local rot = is_glb and { x = -90, y = 45, z = 90 } or { x = -90, y = 225, z = 90 }
+            local vs = { x = 0.275 * 1.33, y = 0.275 * 1.33, z = 0.275 * 1.33 }
+            went:set_properties({
+                textures = { item },
+                wield_item = item,
+                visual_size = vs,
+                glow = 4,
+                color = "#ffffff",
+                use_texture_alpha = true,
+                backface_culling = false,
+            })
+            went:set_attach(parent, bone or "Arm_Right", pos, rot, forced_vis)
+            return went
+        end,
+    }
+    rawset(_G, "x_player_api", mock_xpapi)
+
+    -- Test B3D model corpse wielditem integration
+    local corpse_pos = { x = 20, y = 2, z = 20 }
+    local visuals_b3d = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        wield_item = "default:sword_steel",
+        inventory_dropped = false,
+    }
+    local corpse_b3d = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_b3d)
+    assert(corpse_b3d ~= nil, "Corpse must spawn")
+    assert(attach_called == true, "x_player_api.attach_wield_item_to_entity must be called")
+    assert(attach_args.format == "b3d", "Format must be detected as b3d")
+    assert(attach_args.bone == "Arm_Right", "Attachment bone must be Arm_Right")
+    assert(attach_args.ent_name == "deathstats:corpse_wielditem", "Entity name must be deathstats:corpse_wielditem")
+    assert(attach_args.forced_vis == true, "forced_visible must be true")
+
+    local went_b3d = deathstats.get_corpse_wielditem(corpse_b3d)
+    assert(went_b3d ~= nil, "Attached corpse wielditem entity must be present")
+    local _, _, pos_b3d, rot_b3d = went_b3d:get_attach()
+    assert(pos_b3d.x == 0 and pos_b3d.y == 4.9 and pos_b3d.z == 3.5, "B3D position must be {x=0, y=4.9, z=3.5}")
+    assert(rot_b3d.x == -90 and rot_b3d.y == 225 and rot_b3d.z == 90, "B3D rotation must be {x=-90, y=225, z=90}")
+    local props_b3d = went_b3d:get_properties()
+    assert(math.abs(props_b3d.visual_size.x - (0.275 * 1.33)) < 0.001, "Tool scale must be 1.33x * 0.275")
+    assert(props_b3d.glow == 4, "Glow must be applied")
+    assert(props_b3d.use_texture_alpha == true, "use_texture_alpha must be true")
+
+    -- Test GLB model corpse wielditem integration
+    attach_called = false
+    local visuals_glb = {
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        wield_item = "default:sword_steel",
+        inventory_dropped = false,
+    }
+    local corpse_glb = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_glb)
+    assert(corpse_glb ~= nil, "GLB corpse must spawn")
+    assert(attach_called == true, "x_player_api.attach_wield_item_to_entity must be called for GLB")
+    assert(attach_args.format == "glb", "Format must be detected as glb")
+
+    local went_glb = deathstats.get_corpse_wielditem(corpse_glb)
+    assert(went_glb ~= nil, "Attached corpse wielditem entity must be present on GLB")
+    local _, _, pos_glb, rot_glb = went_glb:get_attach()
+    assert(pos_glb.x == 0 and pos_glb.y == 4.9 and pos_glb.z == -3.5, "GLB position must be {x=0, y=4.9, z=-3.5}")
+    assert(rot_glb.x == -90 and rot_glb.y == 45 and rot_glb.z == 90, "GLB rotation must be {x=-90, y=45, z=90}")
+
+    -- Test fallback to get_wield_attachment_params when attach_wield_item_to_entity is not available
+    mock_xpapi.attach_wield_item_to_entity = nil
+    local corpse_fallback = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_b3d)
+    assert(corpse_fallback ~= nil, "Corpse must spawn with get_wield_attachment_params fallback")
+    local went_fb = deathstats.get_corpse_wielditem(corpse_fallback)
+    assert(went_fb ~= nil, "Attached corpse wielditem entity must be present via get_wield_attachment_params")
+    local _, _, pos_fb, rot_fb = went_fb:get_attach()
+    assert(pos_fb.x == 0 and pos_fb.y == 4.9 and pos_fb.z == 3.5, "Fallback position must match B3D")
+    assert(rot_fb.x == -90 and rot_fb.y == 225 and rot_fb.z == 90, "Fallback rotation must match B3D")
+
+    -- Test when x_player_api.enable_wield_item is false (unchanged default deathstats behavior)
+    mock_xpapi.enable_wield_item = false
+    local corpse_disabled = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_b3d)
+    assert(corpse_disabled ~= nil, "Corpse must spawn when wield items disabled")
+    local went_dis = deathstats.get_corpse_wielditem(corpse_disabled)
+    assert(went_dis ~= nil, "Default deathstats wielditem entity must be present")
+    local _, _, pos_dis, rot_dis = went_dis:get_attach()
+    assert(pos_dis.x == 0 and pos_dis.y == 6.0 and pos_dis.z == 1.5, "Disabled x_player_api must restore default pos {x=0, y=6.0, z=1.5}")
+    assert(rot_dis.x == 90 and rot_dis.y == 0 and rot_dis.z == 90, "Disabled x_player_api must restore default rot {x=90, y=0, z=90}")
+    assert(went_dis:get_properties().visual_size.x == 0.25, "Default visual_size must be 0.25")
+
+    -- Clean up
+    deathstats.remove_corpse(corpse_b3d)
+    deathstats.remove_corpse(corpse_glb)
+    deathstats.remove_corpse(corpse_fallback)
+    deathstats.remove_corpse(corpse_disabled)
+    rawset(_G, "x_player_api", saved_xpapi)
+
+    print("  [PASS] x_player_api Corpse Wielditem Integration & Format Parity")
+end
+suites[106]()
+
+print("\nALL 106 TEST SUITES PASSED SUCCESSFULLY!")
 
