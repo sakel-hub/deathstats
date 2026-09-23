@@ -1551,10 +1551,19 @@ function deathstats.reset_camera(player, is_leaving)
                 if luaent then
                     luaent._decay_time = core.get_gametime() + decay
                     luaent._persisted_after_respawn = true
+                    luaent._particle_spawners = nil
+                    luaent._particle_check_timer = 3.0 -- Force immediate particle spawn for nearby players on first step
                 end
                 data.corpse = nil
                 data.corpse_wielditem = nil
             else
+                local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
+                if luaent and luaent._particle_spawners then
+                    for _, pid in ipairs(luaent._particle_spawners) do
+                        core.delete_particlespawner(pid)
+                    end
+                    luaent._particle_spawners = nil
+                end
                 deathstats.remove_corpse(data.corpse)
                 data.corpse = nil
                 if data.corpse_wielditem then
@@ -1676,6 +1685,32 @@ function deathstats.reset_camera(player, is_leaving)
         player:set_physics_override((data and data.old_physics_override) or { speed = 1, jump = 1, gravity = 1 })
     end
 
+    -- Unhide attached child entities that were hidden during death sequence (e.g. 3D armor, wield entities)
+    if player.get_children then
+        local children = player:get_children()
+        if children then
+            for _, child in ipairs(children) do
+                if child and (not child.is_valid or child:is_valid())
+                    and (not data or (child ~= data.anchor and child ~= data.corpse and child ~= data.corpse_wielditem)) then
+                    local cent = child.get_luaentity and child:get_luaentity()
+                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
+                    if not is_arrow and child.set_properties then
+                        local is_proxy = cent and (cent.name == "x_player_api:visual_glb" or cent.name == "x_player_api:visual_b3d")
+                        if not is_proxy then
+                            local cp = child.get_properties and child:get_properties()
+                            local c_vs = (cp and cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0) and cp.visual_size) or { x = 1, y = 1, z = 1 }
+                            child:set_properties({
+                                is_visible = true,
+                                visual_size = c_vs,
+                                pointable = false,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     -- Reapply model and skins to player_api, x_player_api, and compatible skin frameworks
     local papi = rawget(_G, "player_api")
     if papi and type(papi) == "table" then
@@ -1688,11 +1723,44 @@ function deathstats.reset_camera(player, is_leaving)
     end
     local x_papi = rawget(_G, "x_player_api")
     if x_papi and type(x_papi) == "table" then
+        -- Explicitly unhide x_player_api visual proxies and reset cached model to force a full re-bind
+        if type(x_papi.get_visual_proxies) == "function" then
+            local ok, proxies = pcall(x_papi.get_visual_proxies, player)
+            if ok and type(proxies) == "table" then
+                local m_name = (type(x_papi.get_model_name) == "function" and x_papi.get_model_name(player)) or mesh_name
+                local m_def = (type(x_papi.get_model) == "function" and x_papi.get_model(m_name))
+                local p_vsize = (m_def and m_def.visual_size) or vs or { x = 1, y = 1 }
+                local cur_fmt = (type(x_papi.get_model_format) == "function" and x_papi.get_model_format()) or "both"
+                if proxies.glb and (not proxies.glb.is_valid or proxies.glb:is_valid()) then
+                    local glb_vs = (cur_fmt == "b3d") and { x = 0, y = 0 } or p_vsize
+                    proxies.glb:set_properties({
+                        is_visible = true,
+                        visual_size = glb_vs,
+                        pointable = false,
+                    })
+                end
+                if proxies.b3d and (not proxies.b3d.is_valid or proxies.b3d:is_valid()) then
+                    local b3d_vs = (cur_fmt == "glb") and { x = 0, y = 0 } or p_vsize
+                    proxies.b3d:set_properties({
+                        is_visible = true,
+                        visual_size = b3d_vs,
+                        pointable = false,
+                    })
+                end
+            end
+        end
+        local p_tbl = rawget(x_papi, "_players")
+        if type(p_tbl) == "table" and p_tbl[name] then
+            p_tbl[name].model = nil
+        end
         if type(x_papi.set_model) == "function" then
             pcall(x_papi.set_model, player, mesh_name)
         end
         if type(x_papi.set_textures) == "function" and tex then
             pcall(x_papi.set_textures, player, tex)
+        end
+        if type(x_papi.set_wield_item_visibility) == "function" then
+            pcall(x_papi.set_wield_item_visibility, player, true)
         end
     end
     local skins_mod = rawget(_G, "skins")
@@ -1737,11 +1805,25 @@ function deathstats.reset_camera(player, is_leaving)
             end
         end
         if restore_xpapi and type(restore_xpapi) == "table" then
+            if type(restore_xpapi.get_visual_proxies) == "function" then
+                local ok, proxies = pcall(restore_xpapi.get_visual_proxies, p)
+                if ok and type(proxies) == "table" then
+                    if proxies.glb and (not proxies.glb.is_valid or proxies.glb:is_valid()) then
+                        proxies.glb:set_properties({ is_visible = true })
+                    end
+                    if proxies.b3d and (not proxies.b3d.is_valid or proxies.b3d:is_valid()) then
+                        proxies.b3d:set_properties({ is_visible = true })
+                    end
+                end
+            end
             if type(restore_xpapi.set_model) == "function" then
                 pcall(restore_xpapi.set_model, p, mesh_name)
             end
             if type(restore_xpapi.set_textures) == "function" and tex then
                 pcall(restore_xpapi.set_textures, p, tex)
+            end
+            if type(restore_xpapi.set_wield_item_visibility) == "function" then
+                pcall(restore_xpapi.set_wield_item_visibility, p, true)
             end
         end
     end
@@ -1777,42 +1859,9 @@ core.register_on_leaveplayer(function(player)
     if not player or not player:is_player() then return end
     local name = player:get_player_name()
     deathstats.left_players[name] = true
-    deathstats.dead_players[name] = nil
 
-    -- Restore stashed inventory and hand reach before removing camera data
-    deathstats.restore_player_inventory_and_hand(player)
-
-    local data = deathstats.player_camera_data[name]
-    if data then
-        if data.particle_spawners then
-            for _, pid in ipairs(data.particle_spawners) do
-                core.delete_particlespawner(pid)
-            end
-            data.particle_spawners = nil
-        end
-        if data.corpse then
-            deathstats.remove_corpse(data.corpse)
-            data.corpse = nil
-        end
-        if data.corpse_wielditem then
-            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
-                data.corpse_wielditem:remove()
-            end
-            data.corpse_wielditem = nil
-        end
-        if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.remove then
-            data.anchor:remove()
-        end
-    end
-    deathstats.set_engine_player_attached(name, nil)
-    deathstats.player_camera_data[name] = nil
-    deathstats.respawn_immunity[name] = nil
-    if deathstats.last_death_reason then
-        deathstats.last_death_reason[name] = nil
-    end
-    if deathstats.compat_hunger and deathstats.compat_hunger.hidden_huds then
-        deathstats.compat_hunger.hidden_huds[name] = nil
-    end
+    -- Cleanly reset all death screen effects, HUDs, and camera
+    deathstats.reset_player_effects(player, true)
 end)
 
 -- Guard all interaction callbacks: orbiting dead players cannot punch, place, dig, or eat
