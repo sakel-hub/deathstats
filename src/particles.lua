@@ -124,12 +124,9 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
     -- Probe the physical environment around corpse_pos first (detects settled water/lava/fire)
     if corpse_pos then
         local probe_offsets = {
+            vector.new(corpse_pos.x, corpse_pos.y + 0.3, corpse_pos.z),
             vector.new(corpse_pos.x, corpse_pos.y, corpse_pos.z),
-            vector.new(corpse_pos.x, corpse_pos.y - 0.3, corpse_pos.z),
-            vector.new(corpse_pos.x, corpse_pos.y - 0.6, corpse_pos.z),
-            vector.new(corpse_pos.x, corpse_pos.y - 1.0, corpse_pos.z),
-            vector.new(corpse_pos.x, corpse_pos.y + 0.2, corpse_pos.z),
-            vector.new(corpse_pos.x, corpse_pos.y + 0.5, corpse_pos.z),
+            vector.new(corpse_pos.x, corpse_pos.y - 0.25, corpse_pos.z),
         }
         for _, ppos in ipairs(probe_offsets) do
             local node = core.get_node_or_nil(ppos)
@@ -137,10 +134,13 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
                 local nname = node.name:lower()
                 if nname:find("lava") then
                     return "lava"
-                elseif nname:find("fire") or nname:find("flame") then
-                    return "fire"
                 elseif nname:find("water") then
                     return "water"
+                elseif nname:find("fire") or nname:find("flame") then
+                    -- If killed by an explosion, crater flames do not turn dry corpse into smoke
+                    if not (death_info and death_info.category == "explosion") then
+                        return "fire"
+                    end
                 end
                 local ndef = core.registered_nodes[node.name]
                 if ndef then
@@ -161,7 +161,9 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
                     elseif idef.groups.water or idef.groups.liquid then
                         return "water"
                     elseif idef.groups.fire then
-                        return "fire"
+                        if not (death_info and death_info.category == "explosion") then
+                            return "fire"
+                        end
                     end
                 end
             end
@@ -170,7 +172,9 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
 
     -- Fall back to death_info cause / category if the corpse is on dry ground or in air
     local cat = death_info and death_info.category
-    if cat == "lava" then
+    if cat == "explosion" then
+        return "flies"
+    elseif cat == "lava" then
         return "lava"
     elseif cat == "fire" then
         return "fire"
@@ -193,6 +197,69 @@ function deathstats.get_corpse_effect_type(corpse_pos, death_info)
     return "flies"
 end
 
+--- Calculates rotation-compensated particle emitter position box for an attached entity.
+--- Offsets along the local axis corresponding to world +Y (UP) so particles always emit
+--- from the top of the corpse regardless of pitch and roll.
+---@param rot table|nil Rotation { x = pitch, y = yaw, z = roll } in radians
+---@param min_h_offset number Minimum vertical offset above corpse (world space)
+---@param max_h_offset number Maximum vertical offset above corpse (world space)
+---@param h_spread number Horizontal half-width spread around corpse (world space)
+---@return table min_p Vector { x, y, z }
+---@return table max_p Vector { x, y, z }
+function deathstats.calc_oriented_particle_pos(rot, min_h_offset, max_h_offset, h_spread)
+    local pitch = (rot and rot.x) or 0
+    local roll = (rot and rot.z) or 0
+    local cp = math.cos(pitch)
+    local sp = math.sin(pitch)
+    local cr = math.cos(roll)
+    local sr = math.sin(roll)
+
+    -- Local unit vector that transforms into world +Y (straight UP) under Luanti CAO rotation.
+    -- Luanti negates the rotation angles when building the client transform matrix in content_cao.cpp (-m_rotation),
+    -- which negates the sine components: M[1] = -sin(roll)*cos(pitch) and M[9] = sin(pitch).
+    local ux = -sr * cp
+    local uy = cr * cp
+    local uz = sp
+
+    local abs_x = math.abs(ux)
+    local abs_y = math.abs(uy)
+    local abs_z = math.abs(uz)
+
+    local min_p = vector.new(-h_spread, -h_spread, -h_spread)
+    local max_p = vector.new(h_spread, h_spread, h_spread)
+
+    if abs_y >= abs_x and abs_y >= abs_z then
+        -- Torso is primarily flat / horizontal (supine or prone)
+        if uy >= 0 then
+            min_p.y = min_h_offset
+            max_p.y = max_h_offset
+        else
+            min_p.y = -max_h_offset
+            max_p.y = -min_h_offset
+        end
+    elseif abs_x >= abs_z then
+        -- Corpse is lying on its side (lateral roll)
+        if ux >= 0 then
+            min_p.x = min_h_offset
+            max_p.x = max_h_offset
+        else
+            min_p.x = -max_h_offset
+            max_p.x = -min_h_offset
+        end
+    else
+        -- Corpse is pitched steeply (head/feet tilted up or down)
+        if uz >= 0 then
+            min_p.z = min_h_offset
+            max_p.z = max_h_offset
+        else
+            min_p.z = -max_h_offset
+            max_p.z = -min_h_offset
+        end
+    end
+
+    return min_p, max_p
+end
+
 --- Calculates rotation-compensated particle emitter vectors for an attached entity.
 --- Computes the local direction matching world +Y (straight up) so that particles
 --- always rise upward in world space regardless of whether the corpse is prone, supine, or tilted.
@@ -210,10 +277,10 @@ function deathstats.calc_oriented_particle_bounds(rot, min_val, max_val, spread_
     local cr = math.cos(roll)
     local sr = math.sin(roll)
 
-    -- Local unit vector that transforms into world +Y (straight UP) under Z-X-Y rotation:
-    local ux = sr * cp
+    -- Local unit vector that transforms into world +Y (straight UP) under Luanti CAO rotation:
+    local ux = -sr * cp
     local uy = cr * cp
-    local uz = -sp
+    local uz = sp
 
     -- Helper to determine min and max along an axis given directional component
     local function axis_range(u_comp, min_s, max_s, spread)
@@ -260,8 +327,12 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     local rot = nil
     if has_attached then
         local luaent = (attached_obj.get_luaentity and attached_obj:get_luaentity())
-        rot = (luaent and luaent._rot) or (attached_obj.get_rotation and attached_obj:get_rotation())
+        rot = (attached_obj.get_rotation and attached_obj:get_rotation())
+            or (luaent and luaent._rot)
         if luaent then
+            if not luaent._rot and rot then
+                luaent._rot = rot
+            end
             local roll = (rot and rot.z) or 0
             local pitch = (rot and rot.x) or 0
             local uy = math.cos(roll) * math.cos(pitch)
@@ -272,14 +343,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     if effect_type == "water" then
         local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.35, 0.85, 0.15)
         local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.20, 0.45, 0.05)
-        local pos_min_y, pos_max_y = 0.05, 0.25
-        local roll = (rot and rot.z) or 0
-        local pitch = (rot and rot.x) or 0
-        local uy = math.cos(roll) * math.cos(pitch)
-        if has_attached and uy < -0.5 then
-            local o_max = pos_max_y
-            pos_max_y = -pos_min_y
-            pos_min_y = -o_max
+        local min_p, max_p
+        if has_attached then
+            min_p, max_p = deathstats.calc_oriented_particle_pos(rot, 0.05, 0.25, 0.35)
+        else
+            min_p = vector.new(cx - 0.35, cy + 0.05, cz - 0.35)
+            max_p = vector.new(cx + 0.35, cy + 0.25, cz + 0.35)
+            min_v = vector.new(-0.15, 0.35, -0.15)
+            max_v = vector.new(0.15, 0.85, 0.15)
+            min_a = vector.new(-0.05, 0.20, -0.05)
+            max_a = vector.new(0.05, 0.45, 0.05)
         end
         -- Bubbles floating upwards through water continuously from random positions on the submerged corpse
         return {
@@ -287,19 +360,19 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             time = 0, -- Continuous spawner
             collisiondetection = false,
             collision_removal = false,
-            glow = 3,
+            glow = 4,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.25, z = cz + 0.35 },
-            minvel = has_attached and min_v or { x = -0.15, y = 0.35, z = -0.15 },
-            maxvel = has_attached and max_v or { x = 0.15, y = 0.85, z = 0.15 },
-            minacc = has_attached and min_a or { x = -0.05, y = 0.20, z = -0.05 },
-            maxacc = has_attached and max_a or { x = 0.05, y = 0.45, z = 0.05 },
+            minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
+            maxpos = { x = max_p.x, y = max_p.y, z = max_p.z },
+            minvel = { x = min_v.x, y = min_v.y, z = min_v.z },
+            maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
+            minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
+            maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
             minexptime = 1.2,
             maxexptime = 2.4,
-            minsize = 1.0,
-            maxsize = 1.6,
+            minsize = 1.2,
+            maxsize = 2.0,
             texture = "deathstats_particle_bubble.png",
             animation = {
                 type = "vertical_frames",
@@ -309,19 +382,19 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.25, cz + 0.35),
+                min = min_p,
+                max = max_p,
             },
             vel = {
-                min = has_attached and min_v or vector.new(-0.15, 0.35, -0.15),
-                max = has_attached and max_v or vector.new(0.15, 0.85, 0.15),
+                min = min_v,
+                max = max_v,
             },
             acc = {
-                min = has_attached and min_a or vector.new(-0.05, 0.20, -0.05),
-                max = has_attached and max_a or vector.new(0.05, 0.45, 0.05),
+                min = min_a,
+                max = max_a,
             },
             exptime = { min = 1.2, max = 2.4 },
-            size = { min = 1.0, max = 1.6 },
+            size = { min = 1.2, max = 2.0 },
             texpool = {
                 {
                     name = "deathstats_particle_bubble.png",
@@ -341,14 +414,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     elseif effect_type == "lava" then
         local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.50, 1.40, 0.25)
         local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.30, 0.80, 0.10)
-        local pos_min_y, pos_max_y = 0.05, 0.30
-        local roll = (rot and rot.z) or 0
-        local pitch = (rot and rot.x) or 0
-        local uy = math.cos(roll) * math.cos(pitch)
-        if has_attached and uy < -0.5 then
-            local o_max = pos_max_y
-            pos_max_y = -pos_min_y
-            pos_min_y = -o_max
+        local min_p, max_p
+        if has_attached then
+            min_p, max_p = deathstats.calc_oriented_particle_pos(rot, 0.05, 0.30, 0.35)
+        else
+            min_p = vector.new(cx - 0.35, cy + 0.05, cz - 0.35)
+            max_p = vector.new(cx + 0.35, cy + 0.30, cz + 0.35)
+            min_v = vector.new(-0.25, 0.50, -0.25)
+            max_v = vector.new(0.25, 1.40, 0.25)
+            min_a = vector.new(-0.10, 0.30, -0.10)
+            max_a = vector.new(0.10, 0.80, 0.10)
         end
         -- Fire and glowing ember sparks leaping continuously from random positions on the burning corpse
         return {
@@ -359,16 +434,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             glow = 14,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
-            minvel = has_attached and min_v or { x = -0.25, y = 0.50, z = -0.25 },
-            maxvel = has_attached and max_v or { x = 0.25, y = 1.40, z = 0.25 },
-            minacc = has_attached and min_a or { x = -0.10, y = 0.30, z = -0.10 },
-            maxacc = has_attached and max_a or { x = 0.10, y = 0.80, z = 0.10 },
+            minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
+            maxpos = { x = max_p.x, y = max_p.y, z = max_p.z },
+            minvel = { x = min_v.x, y = min_v.y, z = min_v.z },
+            maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
+            minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
+            maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
             minexptime = 0.5,
             maxexptime = 1.2,
-            minsize = 1.0,
-            maxsize = 1.8,
+            minsize = 1.2,
+            maxsize = 2.0,
             texture = "deathstats_particle_fire.png",
             animation = {
                 type = "vertical_frames",
@@ -378,19 +453,19 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = min_p,
+                max = max_p,
             },
             vel = {
-                min = has_attached and min_v or vector.new(-0.25, 0.50, -0.25),
-                max = has_attached and max_v or vector.new(0.25, 1.40, 0.25),
+                min = min_v,
+                max = max_v,
             },
             acc = {
-                min = has_attached and min_a or vector.new(-0.10, 0.30, -0.10),
-                max = has_attached and max_a or vector.new(0.10, 0.80, 0.10),
+                min = min_a,
+                max = max_a,
             },
             exptime = { min = 0.5, max = 1.2 },
-            size = { min = 1.0, max = 1.8 },
+            size = { min = 1.2, max = 2.0 },
             texpool = {
                 {
                     name = "deathstats_particle_fire.png",
@@ -409,14 +484,16 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
     elseif effect_type == "fire" then
         local min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.30, 0.80, 0.15)
         local min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, 0.15, 0.40, 0.05)
-        local pos_min_y, pos_max_y = 0.05, 0.30
-        local roll = (rot and rot.z) or 0
-        local pitch = (rot and rot.x) or 0
-        local uy = math.cos(roll) * math.cos(pitch)
-        if has_attached and uy < -0.5 then
-            local o_max = pos_max_y
-            pos_max_y = -pos_min_y
-            pos_min_y = -o_max
+        local min_p, max_p
+        if has_attached then
+            min_p, max_p = deathstats.calc_oriented_particle_pos(rot, 0.05, 0.30, 0.35)
+        else
+            min_p = vector.new(cx - 0.35, cy + 0.05, cz - 0.35)
+            max_p = vector.new(cx + 0.35, cy + 0.30, cz + 0.35)
+            min_v = vector.new(-0.15, 0.30, -0.15)
+            max_v = vector.new(0.15, 0.80, 0.15)
+            min_a = vector.new(-0.05, 0.15, -0.05)
+            max_a = vector.new(0.05, 0.40, 0.05)
         end
         -- Billowing ash smoke rising continuously into the air from the charred corpse
         return {
@@ -424,19 +501,19 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             time = 0, -- Continuous spawner
             collisiondetection = true,
             collision_removal = false,
-            glow = 1,
+            glow = 2,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.35, y = pos_min_y, z = -0.35 } or { x = cx - 0.35, y = cy + 0.05, z = cz - 0.35 },
-            maxpos = has_attached and { x = 0.35, y = pos_max_y, z = 0.35 } or { x = cx + 0.35, y = cy + 0.30, z = cz + 0.35 },
-            minvel = has_attached and min_v or { x = -0.15, y = 0.30, z = -0.15 },
-            maxvel = has_attached and max_v or { x = 0.15, y = 0.80, z = 0.15 },
-            minacc = has_attached and min_a or { x = -0.05, y = 0.15, z = -0.05 },
-            maxacc = has_attached and max_a or { x = 0.05, y = 0.40, z = 0.05 },
+            minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
+            maxpos = { x = max_p.x, y = max_p.y, z = max_p.z },
+            minvel = { x = min_v.x, y = min_v.y, z = min_v.z },
+            maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
+            minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
+            maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
             minexptime = 1.0,
             maxexptime = 2.0,
-            minsize = 1.2,
-            maxsize = 2.4,
+            minsize = 1.4,
+            maxsize = 2.8,
             texture = "deathstats_particle_smoke.png",
             animation = {
                 type = "vertical_frames",
@@ -446,19 +523,19 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             },
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.35, pos_min_y, -0.35) or vector.new(cx - 0.35, cy + 0.05, cz - 0.35),
-                max = has_attached and vector.new(0.35, pos_max_y, 0.35) or vector.new(cx + 0.35, cy + 0.30, cz + 0.35),
+                min = min_p,
+                max = max_p,
             },
             vel = {
-                min = has_attached and min_v or vector.new(-0.15, 0.30, -0.15),
-                max = has_attached and max_v or vector.new(0.15, 0.80, 0.15),
+                min = min_v,
+                max = max_v,
             },
             acc = {
-                min = has_attached and min_a or vector.new(-0.05, 0.15, -0.05),
-                max = has_attached and max_a or vector.new(0.05, 0.40, 0.05),
+                min = min_a,
+                max = max_a,
             },
             exptime = { min = 1.0, max = 2.0 },
-            size = { min = 1.2, max = 2.4 },
+            size = { min = 1.4, max = 2.8 },
             texpool = {
                 {
                     name = "deathstats_particle_smoke.png",
@@ -483,35 +560,28 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             aspect_h = 5,
             length = 0.08,
         }
-        local pos_min_y, pos_max_y = 0.15, 0.65
-        local roll = (rot and rot.z) or 0
-        local pitch = (rot and rot.x) or 0
-        local uy = math.cos(roll) * math.cos(pitch)
-        local vel_min_y, vel_max_y = -0.3, 0.5
-        local acc_min_y, acc_max_y = -0.8, 0.8
-        if has_attached and uy < -0.5 then
-            local o_max = pos_max_y
-            pos_max_y = -pos_min_y
-            pos_min_y = -o_max
-            local o_vmax = vel_max_y
-            vel_max_y = -vel_min_y
-            vel_min_y = -o_vmax
-            local o_amax = acc_max_y
-            acc_max_y = -acc_min_y
-            acc_min_y = -o_amax
+        local min_p, max_p
+        local min_v, max_v
+        local min_a, max_a
+        if has_attached then
+            min_p, max_p = deathstats.calc_oriented_particle_pos(rot, 0.15, 0.65, 0.45)
+            min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 0.1, 0.4, 0.4)
+            min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, -0.2, 0.2, 0.4)
+        else
+            min_p = vector.new(cx - 0.45, cy + 0.15, cz - 0.45)
+            max_p = vector.new(cx + 0.45, cy + 0.65, cz + 0.45)
+            min_v = vector.new(-0.4, 0.1, -0.4)
+            max_v = vector.new(0.4, 0.4, 0.4)
+            min_a = vector.new(-0.4, -0.2, -0.4)
+            max_a = vector.new(0.4, 0.2, 0.4)
         end
-        local min_p = has_attached and vector.new(-0.45, pos_min_y, -0.45) or vector.new(cx - 0.45, cy + 0.15, cz - 0.45)
-        local max_p = has_attached and vector.new(0.45, pos_max_y, 0.45) or vector.new(cx + 0.45, cy + 0.65, cz + 0.45)
-        local min_v = vector.new(-0.8, vel_min_y, -0.8)
-        local max_v = vector.new(0.8, vel_max_y, 0.8)
-        local min_a = vector.new(-1.6, acc_min_y, -1.6)
-        local max_a = vector.new(1.6, acc_max_y, 1.6)
 
         return {
             amount = 12,
             time = 0, -- Continuous spawner
             collisiondetection = false,
             collision_removal = false,
+            glow = 1,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
             minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
@@ -520,10 +590,10 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
             minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
             maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
-            minexptime = 0.5,
-            maxexptime = 1.2,
-            minsize = 0.6,
-            maxsize = 1.0,
+            minexptime = 0.8,
+            maxexptime = 1.6,
+            minsize = 1.0,
+            maxsize = 1.6,
             texture = "deathstats_particle_fly.png",
             animation = anim_def,
             -- Modern Luanti fields (v5.6+ / v5.8+)
@@ -540,15 +610,15 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
                 max = max_a,
             },
             jitter = {
-                min = vector.new(-5.0, -3.5, -5.0),
-                max = vector.new(5.0, 3.5, 5.0),
+                min = vector.new(-1.0, -0.5, -1.0),
+                max = vector.new(1.0, 0.5, 1.0),
             },
             drag = {
-                min = vector.new(1.2, 1.2, 1.2),
-                max = vector.new(2.4, 2.4, 2.4),
+                min = vector.new(0.8, 0.8, 0.8),
+                max = vector.new(1.5, 1.5, 1.5),
             },
-            exptime = { min = 0.5, max = 1.2 },
-            size = { min = 0.6, max = 1.0 },
+            exptime = { min = 0.8, max = 1.6 },
+            size = { min = 1.0, max = 1.6 },
             texpool = {
                 {
                     name = "deathstats_particle_fly.png",
@@ -581,22 +651,20 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
         end
 
         local fallback_tex = deathstats.get_node_tile_texture(ground_node_name)
-        local pos_min_y, pos_max_y = -0.05, 0.15
-        local vel_min_y, vel_max_y = 1.8, 3.6
-        local acc_min_y, acc_max_y = -9.81, -9.81
-        local roll = (rot and rot.z) or 0
-        local pitch = (rot and rot.x) or 0
-        local uy = math.cos(roll) * math.cos(pitch)
-        if has_attached and uy < -0.5 then
-            local o_max = pos_max_y
-            pos_max_y = -pos_min_y
-            pos_min_y = -o_max
-            local o_vmax = vel_max_y
-            vel_max_y = -vel_min_y
-            vel_min_y = -o_vmax
-            local o_amax = acc_max_y
-            acc_max_y = -acc_min_y
-            acc_min_y = -o_amax
+        local min_p, max_p
+        local min_v, max_v
+        local min_a, max_a
+        if has_attached then
+            min_p, max_p = deathstats.calc_oriented_particle_pos(rot, -0.05, 0.15, 0.45)
+            min_v, max_v = deathstats.calc_oriented_particle_bounds(rot, 1.8, 3.6, 1.6)
+            min_a, max_a = deathstats.calc_oriented_particle_bounds(rot, -9.81, -9.81, 0)
+        else
+            min_p = vector.new(cx - 0.45, cy - 0.05, cz - 0.45)
+            max_p = vector.new(cx + 0.45, cy + 0.15, cz + 0.45)
+            min_v = vector.new(-1.6, 1.8, -1.6)
+            max_v = vector.new(1.6, 3.6, 1.6)
+            min_a = vector.new(0, -9.81, 0)
+            max_a = vector.new(0, -9.81, 0)
         end
 
         return {
@@ -608,28 +676,28 @@ function deathstats.create_corpse_particlespawner_def(effect_type, corpse_pos, a
             texture = fallback_tex,
             attached = has_attached and attached_obj or nil,
             -- Legacy client fields (< v5.6)
-            minpos = has_attached and { x = -0.45, y = pos_min_y, z = -0.45 } or { x = cx - 0.45, y = cy - 0.05, z = cz - 0.45 },
-            maxpos = has_attached and { x = 0.45, y = pos_max_y, z = 0.45 } or { x = cx + 0.45, y = cy + 0.15, z = cz + 0.45 },
-            minvel = { x = -1.6, y = vel_min_y, z = -1.6 },
-            maxvel = { x = 1.6, y = vel_max_y, z = 1.6 },
-            minacc = { x = 0, y = acc_min_y, z = 0 },
-            maxacc = { x = 0, y = acc_max_y, z = 0 },
+            minpos = { x = min_p.x, y = min_p.y, z = min_p.z },
+            maxpos = { x = max_p.x, y = max_p.y, z = max_p.z },
+            minvel = { x = min_v.x, y = min_v.y, z = min_v.z },
+            maxvel = { x = max_v.x, y = max_v.y, z = max_v.z },
+            minacc = { x = min_a.x, y = min_a.y, z = min_a.z },
+            maxacc = { x = max_a.x, y = max_a.y, z = max_a.z },
             minexptime = 0.6,
             maxexptime = 1.2,
             minsize = 0,
             maxsize = 0,
             -- Modern Luanti fields (v5.6+)
             pos = {
-                min = has_attached and vector.new(-0.45, pos_min_y, -0.45) or vector.new(cx - 0.45, cy - 0.05, cz - 0.45),
-                max = has_attached and vector.new(0.45, pos_max_y, 0.45) or vector.new(cx + 0.45, cy + 0.15, cz + 0.45),
+                min = min_p,
+                max = max_p,
             },
             vel = {
-                min = vector.new(-1.6, vel_min_y, -1.6),
-                max = vector.new(1.6, vel_max_y, 1.6),
+                min = min_v,
+                max = max_v,
             },
             acc = {
-                min = vector.new(0, acc_min_y, 0),
-                max = vector.new(0, acc_max_y, 0),
+                min = min_a,
+                max = max_a,
             },
             exptime = { min = 0.6, max = 1.2 },
             size = { min = 0, max = 0 },
