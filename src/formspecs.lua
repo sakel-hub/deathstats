@@ -15,9 +15,6 @@ local F = core.formspec_escape
 -- Formspec Presentation Interfaces
 -- ==========================================
 
---- Display the elevated death formspec with consistent padding above hotbar area
----@param player ObjectRef The deceased player object
----@param death_info table The death analysis metadata table containing cause, killer, and notes
 --- Show minimal photo mode overlay with single button to restore death UI
 ---@param player ObjectRef The deceased player object
 function deathstats.show_photo_mode_formspec(player)
@@ -344,7 +341,9 @@ function deathstats.show_lifetime_stats_formspec(player, tab)
     local name = player:get_player_name()
     local data = deathstats.players[name]
     local life = (data and data.lifetime) or {}
-    tab = tab or "overview"
+    if type(tab) ~= "string" or (tab ~= "records" and tab ~= "ores" and tab ~= "combat") then
+        tab = "overview"
+    end
 
     local total_time = deathstats.format_time(life.time_alive or 0)
     local deaths = life.deaths or 0
@@ -653,9 +652,10 @@ end
 
 --- Display the lifetime player dossier formspec dialog (alias for show_lifetime_stats_formspec)
 ---@param player ObjectRef Luanti player object
----@param from_death_screen boolean|nil True if launched from death screen modal
+---@param from_death_screen boolean|string|nil True if launched from death screen modal, or specific tab name
 function deathstats.show_lifetime_formspec(player, from_death_screen)
-    deathstats.show_lifetime_stats_formspec(player, from_death_screen)
+    local tab = (type(from_death_screen) == "string") and from_death_screen or "overview"
+    deathstats.show_lifetime_stats_formspec(player, tab)
 end
 
 -- ============================================================================
@@ -713,20 +713,3 @@ function deathstats.get_ordered_scoreboard_columns()
     end)
     return cols
 end
-
--- Scoreboard HUD & Formspec Forward Declarations (Implemented in scoreboard.lua)
-deathstats.show_scoreboard_hud = deathstats.show_scoreboard_hud or function(_player) end
-deathstats.hide_scoreboard_hud = deathstats.hide_scoreboard_hud or function(_player) end
-deathstats.update_scoreboard_hud = deathstats.update_scoreboard_hud or function(_player) end
-deathstats.show_scoreboard_formspec = deathstats.show_scoreboard_formspec or function(_player) end
-deathstats.close_scoreboard_formspec = deathstats.close_scoreboard_formspec or function(_player) end
-deathstats.is_player_afk = deathstats.is_player_afk or function(_player_or_name) return false end
-deathstats.is_player_dead = deathstats.is_player_dead or function(_player_or_name) return false end
-deathstats.reset_player_activity = deathstats.reset_player_activity or function(_player_or_name) end
-deathstats.get_player_armor_points = deathstats.get_player_armor_points or function(_player) return 0 end
-deathstats.get_player_ping = deathstats.get_player_ping or function(_player_name) return 0 end
-deathstats.get_player_hp = deathstats.get_player_hp or function(_player) return 0 end
-deathstats.get_scoreboard_cell_color = deathstats.get_scoreboard_cell_color or function(_col, _player, _item, _row_idx) return 0xFFFFFF end
-deathstats.get_scoreboard_footer_text = deathstats.get_scoreboard_footer_text or function(_total, _visible) return "" end
-deathstats.get_scoreboard_data = deathstats.get_scoreboard_data or function(_viewer_player, _precomputed_base) return {}, {} end
-deathstats.calculate_player_score = deathstats.calculate_player_score or function(_pdata, _player, _cached_armor, _cached_hp) return 0, 0 end

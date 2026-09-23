@@ -17,16 +17,13 @@ function deathstats.safe_normalize(v)
     if not v then
         return vector.zero()
     end
-    if vector.normalize then
-        local res = vector.normalize(v)
-        if res then return res end
-    end
     local vx, vy, vz = v.x or 0, v.y or 0, v.z or 0
-    local len = math.sqrt(vx * vx + vy * vy + vz * vz)
-    if len == 0 then
+    local len_sq = vx * vx + vy * vy + vz * vz
+    if len_sq < 1e-9 then
         return vector.zero()
     end
-    return vector.new(vx / len, vy / len, vz / len)
+    local inv_len = 1.0 / math.sqrt(len_sq)
+    return vector.new(vx * inv_len, vy * inv_len, vz * inv_len)
 end
 
 --- Generate a pseudo-random floating point number in range [min_val, max_val]

@@ -212,12 +212,15 @@ core.register_on_player_hpchange(function(player, hp_change, reason)
                 for _, exp in ipairs(deathstats.recent_explosions) do
                     if (now - exp.time) <= 4.0 then
                         local dist = vector.distance(exp.pos, ppos)
-                        if dist < best_dist then
+                        if dist < best_dist and dist <= ((exp.radius or 3) + 6.0) then
                             best_dist = dist
-                            blast_pos = exp.pos
+                            blast_pos = vector.copy(exp.pos)
                         end
                     end
                 end
+            end
+            if not blast_pos and reason and (reason.pos or reason.origin) then
+                blast_pos = vector.copy(reason.pos or reason.origin)
             end
             deathstats.last_blow[name] = {
                 damage = dmg,

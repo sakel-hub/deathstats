@@ -340,6 +340,7 @@ function deathstats.record_player_death(player, death_info)
     snapshot.new_records = new_records
     snapshot.personal_bests = copy(pb)
     snapshot.killer_hp = death_info.killer_hp
+    snapshot.killer_health = death_info.killer_health or death_info.killer_hp
     snapshot.killer_max_hp = death_info.killer_max_hp or death_info.killer_hp_max
     snapshot.killer_hp_max = snapshot.killer_max_hp
     snapshot.fall_height = death_info.fall_height

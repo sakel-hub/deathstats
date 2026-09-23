@@ -242,3 +242,12 @@ core.register_globalstep(function(dtime)
         end
     end
 end)
+
+-- Clean up paused players state when player leaves
+core.register_on_leaveplayer(function(player)
+    if not player or not player:is_player() then return end
+    local name = player:get_player_name()
+    if name then
+        compat.paused_players[name] = nil
+    end
+end)

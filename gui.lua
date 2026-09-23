@@ -9,6 +9,8 @@
 --]]
 
 
+local S = core.get_translator(core.get_current_modname())
+
 -- ==========================================
 -- HUD Animation Globalstep & Bones Tracking
 -- ==========================================
@@ -161,12 +163,12 @@ function deathstats.get_last_death_info(player)
     local reason_text = (last_reason and last_reason.reason_text)
         or (d_info and d_info.reason_text)
         or (last_life and last_life.last_cause)
-        or "You died"
+        or S("You died")
 
     local funny_note = (last_reason and last_reason.funny_note)
         or (d_info and d_info.funny_note)
         or (last_life and last_life.last_funny)
-        or "Mistakes were made."
+        or S("Mistakes were made.")
 
     return {
         category = category,

@@ -417,6 +417,18 @@ deathstats.funny_notes = {
         S("Nobody saw anything, which is probably for the best."),
         S("A truly baffling sequence of unfortunate events."),
         S("Respawn, pretend it never happened, and never speak of it again."),
+    },
+    explosion = {
+        S("You stood entirely too close to the fuse."),
+        S("Next time, consider stepping away from the big red block."),
+        S("Physics lesson: explosive decompression is non-negotiable."),
+        S("KABOOM! That was quite an impressive firework display."),
+        S("You thought you had enough time to run. You did not."),
+        S("TNT stands for: Total Negligence Today."),
+        S("Rapid unscheduled disassembly of your character."),
+        S("You turned yourself into confetti. Happy celebration!"),
+        S("The blast wave sends its warmest regards."),
+        S("Standing on lit explosives: 0/10, would not recommend."),
     }
 }
 
@@ -582,6 +594,34 @@ function deathstats.inspect_surroundings_fallback(player)
         }
     end
 
+    -- Check recent explosion blast (within 4.0s and blast radius + 6 blocks)
+    local exp_blast_pos = nil
+    if pos and deathstats.recent_explosions then
+        local now = core.get_gametime()
+        local best_dist = 20.0
+        for _, exp in ipairs(deathstats.recent_explosions) do
+            if (now - exp.time) <= 4.0 then
+                local dist = vector.distance(exp.pos, pos)
+                if dist < best_dist and dist <= ((exp.radius or 3) + 6.0) then
+                    best_dist = dist
+                    exp_blast_pos = vector.copy(exp.pos)
+                end
+            end
+        end
+    end
+    local lb = deathstats.last_blow and deathstats.last_blow[name]
+    if not exp_blast_pos and lb and lb.blast_pos then
+        exp_blast_pos = vector.copy(lb.blast_pos)
+    end
+    if exp_blast_pos then
+        return {
+            category = "explosion",
+            reason_text = S("Blown up by an explosion"),
+            blast_pos = exp_blast_pos,
+            funny_note = deathstats.get_funny_note("explosion"),
+        }
+    end
+
     -- Check lava immersion
     if node_feet.name:find("lava") or node_head.name:find("lava") then
         return {
@@ -662,7 +702,7 @@ function deathstats.inspect_surroundings_fallback(player)
     -- Fallback unknown
     return {
         category = "unknown",
-        reason_text = "Died from mysterious causes",
+        reason_text = S("Died from mysterious causes"),
         funny_note = deathstats.get_funny_note("unknown"),
     }
 end
@@ -796,6 +836,9 @@ function deathstats.enrich_death_info(res, player, puncher)
                 res.killer_hp_max = res.killer_max_hp
             end
         end
+        if res.killer_hp then
+            res.killer_health = res.killer_hp
+        end
     end
 
     -- Fall Height & Impact Speed
@@ -833,7 +876,7 @@ function deathstats.analyze_death(player, reason)
     if not player then
         return {
             category = "unknown",
-            reason_text = "Died",
+            reason_text = S("Died"),
             funny_note = deathstats.get_funny_note("unknown"),
         }
     end
@@ -861,6 +904,42 @@ function deathstats.analyze_death_raw(player, reason)
     -- If reason table is provided and valid
     if reason and type(reason) == "table" and (reason.type or reason.hunger or reason.thirst or reason.cause) then
         local rtype = reason.type or (reason.hunger and "starve") or (reason.thirst and "thirst") or "set_hp"
+
+        -- EXPLOSION DAMAGE
+        local is_exp_reason = (rtype == "explosion" or rtype == "explode"
+            or (reason.node and reason.node:find("tnt"))
+            or (reason.cause and tostring(reason.cause):lower():find("explos")))
+        local ppos = player.get_pos and player:get_pos()
+        local exp_blast_pos = nil
+        if ppos and deathstats.recent_explosions then
+            local now = core.get_gametime()
+            local best_dist = 20.0
+            for _, exp in ipairs(deathstats.recent_explosions) do
+                if (now - exp.time) <= 4.0 then
+                    local dist = vector.distance(exp.pos, ppos)
+                    if dist < best_dist and dist <= ((exp.radius or 3) + 6.0) then
+                        best_dist = dist
+                        exp_blast_pos = vector.copy(exp.pos)
+                    end
+                end
+            end
+        end
+        local lb = deathstats.last_blow and deathstats.last_blow[pname]
+        if not exp_blast_pos and lb and lb.blast_pos then
+            exp_blast_pos = vector.copy(lb.blast_pos)
+        end
+        if not exp_blast_pos and reason and (reason.pos or reason.origin) then
+            exp_blast_pos = vector.copy(reason.pos or reason.origin)
+        end
+
+        if is_exp_reason or (rtype == "set_hp" and exp_blast_pos) then
+            return {
+                category = "explosion",
+                reason_text = S("Blown up by an explosion"),
+                blast_pos = exp_blast_pos,
+                funny_note = deathstats.get_funny_note("explosion"),
+            }
+        end
 
         -- PUNCH / KILL COMBAT
         if rtype == "punch" or rtype == "kill" then
@@ -958,7 +1037,7 @@ function deathstats.analyze_death_raw(player, reason)
             end
             return {
                 category = cat,
-                reason_text = "Pricked or wounded by " .. node_name,
+                reason_text = S("Pricked or wounded by @1", node_name),
                 funny_note = deathstats.get_funny_note(cat),
             }
         end

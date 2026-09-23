@@ -41,11 +41,25 @@ function deathstats.reset_player_effects(player, is_leaving)
     deathstats.dead_players[name] = nil
     deathstats.is_respawning[name] = nil
     deathstats.active_animations[name] = nil
+    deathstats.recent_punches[name] = nil
+    deathstats.recent_falls[name] = nil
     deathstats.recent_starvations[name] = nil
     deathstats.recent_dehydrations[name] = nil
     deathstats.last_blow[name] = nil
     if deathstats.fall_peaks then
         deathstats.fall_peaks[name] = nil
+    end
+    if is_leaving and deathstats.last_death_reason then
+        deathstats.last_death_reason[name] = nil
+    end
+    if is_leaving and deathstats.respawn_immunity then
+        deathstats.respawn_immunity[name] = nil
+    end
+    if deathstats.compat_hunger and deathstats.compat_hunger.hidden_huds then
+        deathstats.compat_hunger.hidden_huds[name] = nil
+    end
+    if deathstats.compat_hudbars and deathstats.compat_hudbars.paused_players then
+        deathstats.compat_hudbars.paused_players[name] = nil
     end
 
     -- Clear all death and scoreboard HUD elements
@@ -429,6 +443,21 @@ function deathstats.on_player_respawn(player)
                     skins_mod.update_player_skin(p)
                 end
             end
+            local xpapi = rawget(_G, "x_player_api")
+            if xpapi and type(xpapi) == "table" and type(xpapi.get_visual_proxies) == "function" then
+                local ok, proxies = pcall(xpapi.get_visual_proxies, p)
+                if ok and type(proxies) == "table" then
+                    if proxies.glb and (not proxies.glb.is_valid or proxies.glb:is_valid()) then
+                        proxies.glb:set_properties({ is_visible = true })
+                    end
+                    if proxies.b3d and (not proxies.b3d.is_valid or proxies.b3d:is_valid()) then
+                        proxies.b3d:set_properties({ is_visible = true })
+                    end
+                end
+                if type(xpapi.set_wield_item_visibility) == "function" then
+                    pcall(xpapi.set_wield_item_visibility, p, true)
+                end
+            end
         end
     end)
     core.after(0.2, function()
@@ -454,6 +483,21 @@ function deathstats.on_player_respawn(player)
                 local skins_mod = rawget(_G, "skins")
                 if skins_mod and skins_mod.update_player_skin then
                     skins_mod.update_player_skin(p)
+                end
+            end
+            local xpapi = rawget(_G, "x_player_api")
+            if xpapi and type(xpapi) == "table" and type(xpapi.get_visual_proxies) == "function" then
+                local ok, proxies = pcall(xpapi.get_visual_proxies, p)
+                if ok and type(proxies) == "table" then
+                    if proxies.glb and (not proxies.glb.is_valid or proxies.glb:is_valid()) then
+                        proxies.glb:set_properties({ is_visible = true })
+                    end
+                    if proxies.b3d and (not proxies.b3d.is_valid or proxies.b3d:is_valid()) then
+                        proxies.b3d:set_properties({ is_visible = true })
+                    end
+                end
+                if type(xpapi.set_wield_item_visibility) == "function" then
+                    pcall(xpapi.set_wield_item_visibility, p, true)
                 end
             end
         end

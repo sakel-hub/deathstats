@@ -14,22 +14,18 @@ core.register_on_punchplayer(function(player, hitter, _time_from_last_punch, _to
     local name = player:get_player_name()
     if not name or name == "" or deathstats.dead_players[name] then return end
 
-    local real_attacker, _, proj_name = deathstats.resolve_puncher_player(hitter)
+    local real_attacker, _, proj_name, resolved_weapon = deathstats.resolve_puncher_player(hitter)
     local tool_name = nil
     local tool_desc = nil
 
     if proj_name then
         tool_name = proj_name
         tool_desc = deathstats.format_projectile_name(proj_name)
+    elseif resolved_weapon and resolved_weapon ~= "" then
+        tool_name = resolved_weapon
+        tool_desc = deathstats.format_name(tool_name)
     elseif real_attacker and real_attacker:is_player() then
-        local item = real_attacker:get_wielded_item()
-        local iname = deathstats.get_stack_name(item)
-        if iname ~= "" then
-            tool_name = iname
-            tool_desc = deathstats.format_name(tool_name)
-        else
-            tool_desc = "Bare Hands"
-        end
+        tool_desc = "Bare Hands"
     elseif hitter and hitter:get_luaentity() then
         local ent = hitter:get_luaentity()
         local ent_def = core.registered_entities[ent.name]

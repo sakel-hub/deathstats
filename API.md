@@ -452,7 +452,7 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `scoreboard_key` | `string` | Keybinding name used to toggle the live scoreboard HUD |
 | `scoreboard_suppress_chat` | `boolean` | Automatically suppress background chat messages when scoreboard is open |
 | `scoreboard_update_interval` | `number` | Refresh interval in seconds between scoreboard HUD updates |
-| `time_format` | `string` | Time display formatting mode ("dhms", "hms", or "seconds") |
+| `time_format` | `string` | Scoreboard clock time display formatting mode ("24h" or "12h") |
 
 ### `PlayerLifetimeStats`
 

@@ -585,12 +585,3 @@ function cs.get_player_visuals(player)
         wield_item = wield_item,
     }
 end
-
--- Export delegation to main deathstats API
-
---- Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
----@param player ObjectRef Luanti player object
----@return PlayerVisuals visuals Visual properties table
-function deathstats.get_player_visuals(player)
-    return cs.get_player_visuals(player)
-end

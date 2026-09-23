@@ -33,7 +33,7 @@
 ---@field enable_slope_pitch boolean Enable raycast terrain slope inclination alignment for corpses
 ---@field enable_scoreboard boolean Enable live tactical scoreboard overlay HUD
 ---@field scoreboard_key string Keybinding name used to toggle the live scoreboard HUD
----@field time_format string Time display formatting mode ("dhms", "hms", or "seconds")
+---@field time_format string Time display formatting mode ("24h" or "12h")
 ---@field scoreboard_update_interval number Refresh interval in seconds between scoreboard HUD updates
 ---@field scoreboard_suppress_chat boolean Automatically suppress background chat messages when scoreboard is open
 ---@field afk_timeout number Idle duration in seconds before flagging player as AFK
@@ -338,6 +338,7 @@ deathstats = {
     players = {},
     recent_punches = {},
     recent_falls = {},
+    fall_peaks = {},
     recent_starvations = {},
     recent_dehydrations = {},
     last_blow = {},
