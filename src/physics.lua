@@ -46,33 +46,34 @@ function deathstats.calculate_corpse_impulse(player, death_info, last_blow)
     local dir_h = nil
 
     local is_fall = death_info and (death_info.category == "fall" or death_info.type == "fall")
-    local is_explosion = death_info and (death_info.category == "explode" or death_info.category == "explosion"
-        or death_info.type == "explode" or death_info.type == "explosion"
-        or (death_info.reason_text and death_info.reason_text:lower():find("explos"))
-        or (lb and ((lb.blast_pos ~= nil) or (lb.reason and (lb.reason.type == "explosion" or lb.reason.type == "explode" or (lb.reason.node and lb.reason.node:find("tnt")))))))
+    local blast_pos = (death_info and (death_info.blast_pos or death_info.explosion_pos or death_info.pos_origin))
+        or (lb and (lb.blast_pos or (lb.reason and (lb.reason.pos or lb.reason.origin))))
 
-    -- True 3D Explosion Blast Vector (Epicenter -> Player)
-    if is_explosion then
-        local blast_pos = (death_info and (death_info.blast_pos or death_info.explosion_pos or death_info.pos_origin))
-            or (lb and (lb.blast_pos or (lb.reason and (lb.reason.pos or lb.reason.origin))))
-        if not blast_pos and ppos and deathstats.recent_explosions then
-            local now = core.get_gametime()
-            local best_d = 20.0
-            for _, exp in ipairs(deathstats.recent_explosions) do
-                if (now - exp.time) <= 4.0 then
-                    local d = vector.distance(exp.pos, ppos)
-                    if d < best_d then
-                        best_d = d
-                        blast_pos = exp.pos
-                    end
+    if not blast_pos and ppos and deathstats.recent_explosions then
+        local now = core.get_gametime()
+        local best_d = 20.0
+        for _, exp in ipairs(deathstats.recent_explosions) do
+            if (now - exp.time) <= 4.0 then
+                local d = vector.distance(exp.pos, ppos)
+                if d < best_d and d <= ((exp.radius or 3) + 6.0) then
+                    best_d = d
+                    blast_pos = exp.pos
                 end
             end
         end
-        if blast_pos and ppos then
-            local d = vector.direction(blast_pos, ppos)
-            if d.x ~= 0 or d.z ~= 0 then
-                dir_h = safe_normalize({ x = d.x, y = 0, z = d.z })
-            end
+    end
+
+    local is_explosion = (blast_pos ~= nil)
+        or (death_info and (death_info.category == "explode" or death_info.category == "explosion"
+        or death_info.type == "explode" or death_info.type == "explosion"
+        or (death_info.reason_text and death_info.reason_text:lower():find("explos"))))
+        or (lb and (lb.reason and (lb.reason.type == "explosion" or lb.reason.type == "explode" or (lb.reason.node and lb.reason.node:find("tnt")))))
+
+    -- True 3D Explosion Blast Vector (Epicenter -> Player)
+    if is_explosion and blast_pos and ppos then
+        local d = vector.direction(blast_pos, ppos)
+        if d.x ~= 0 or d.z ~= 0 then
+            dir_h = safe_normalize({ x = d.x, y = 0, z = d.z })
         end
     end
 
@@ -217,10 +218,10 @@ local random_float = deathstats.random_float
 --- Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce
 ---@param corpse ObjectRef The corpse entity object
 ---@param impact_vy number Downward velocity of the impact
----@param _rebound_v Vector Resulting rebound velocity vector
----@param _rot table|nil Current rotation {x, y, z}
+---@param rebound_v Vector Resulting rebound velocity vector
+---@param rot table|nil Current rotation {x, y, z}
 ---@param bounce_count number Current bounce index (1 or 2)
-function deathstats.apply_corpse_bounce_impact(corpse, impact_vy, _rebound_v, _rot, bounce_count)
+function deathstats.apply_corpse_bounce_impact(corpse, impact_vy, rebound_v, rot, bounce_count)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
         and (deathstats.config.enable_fall_fractures ~= false)
@@ -231,19 +232,29 @@ function deathstats.apply_corpse_bounce_impact(corpse, impact_vy, _rebound_v, _r
     local bounce_damp = (bounce_count and bounce_count > 1) and 0.65 or 1.0
     local eff_shock = shock * bounce_damp
 
+    local rvx = (rebound_v and rebound_v.x) or 0
+    local rvz = (rebound_v and rebound_v.z) or 0
+    local yaw = (rot and rot.y) or 0
+    local cos_y = math.cos(yaw)
+    local sin_y = math.sin(yaw)
+    local surge = -sin_y * rvx + cos_y * rvz
+    local sway = cos_y * rvx + sin_y * rvz
+    local surge_bias = math.min(math.rad(15), math.max(math.rad(-15), surge * 0.03)) * eff_shock
+    local sway_bias = math.min(math.rad(10), math.max(math.rad(-10), sway * 0.02)) * eff_shock
+
     -- Inertial shock: sudden deceleration whips limbs and snaps head
-    local head_pitch = math.rad(-25) * eff_shock
-    local head_yaw = ((math.random() < 0.5) and -1 or 1) * math.rad(random_float(15, 30)) * eff_shock
-    local arm_pitch = math.rad(random_float(20, 45)) * eff_shock
+    local head_pitch = math.rad(-25) * eff_shock - surge_bias * 0.3
+    local head_yaw = (((math.random() < 0.5) and -1 or 1) * math.rad(random_float(15, 30)) * eff_shock) + sway_bias * 0.4
+    local arm_pitch = math.rad(random_float(20, 45)) * eff_shock - surge_bias * 0.4
     local arm_splay = math.rad(random_float(30, 60)) * eff_shock
-    local leg_pitch = math.rad(random_float(-12, 18)) * eff_shock
+    local leg_pitch = math.rad(random_float(-12, 18)) * eff_shock + surge_bias * 0.2
     local leg_splay = math.rad(random_float(20, 45)) * eff_shock
 
     deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
-    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, math.rad(10) * eff_shock, -arm_splay))
-    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, math.rad(-10) * eff_shock, arm_splay))
-    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_splay))
-    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_splay))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, math.rad(10) * eff_shock, -arm_splay - sway_bias))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, math.rad(-10) * eff_shock, arm_splay - sway_bias))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_splay - sway_bias * 0.5))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_splay - sway_bias * 0.5))
 end
 
 --- Apply final limp resting fractures or organic pose angles to corpse limbs on landing
@@ -471,9 +482,9 @@ end
 --- Procedurally adjust corpse limb angles during flight with 3D aerodynamics, vertical drag & bounce shock
 ---@param corpse ObjectRef The corpse entity object
 ---@param velocity Vector Current velocity vector
----@param _base_yaw number Facing yaw of the corpse
+---@param base_yaw number Facing yaw of the corpse
 ---@param bounce_shock number|nil Optional active bounce shock impulse
-function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw, bounce_shock)
+function deathstats.update_ragdoll_flight_limbs(corpse, velocity, base_yaw, bounce_shock)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
         and (deathstats.config.enable_fall_fractures ~= false)
@@ -490,6 +501,14 @@ function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw, bou
     local shock = bounce_shock or (luaent and luaent._bounce_shock) or 0
     local shock_decay = math.min(1.2, math.max(0, shock))
 
+    local yaw = base_yaw or (luaent and luaent._rot and luaent._rot.y) or 0
+    local cos_y = math.cos(yaw)
+    local sin_y = math.sin(yaw)
+    local surge = -sin_y * vx + cos_y * vz
+    local sway = cos_y * vx + sin_y * vz
+    local surge_drag = math.min(math.rad(15), math.max(math.rad(-15), -surge * 0.025))
+    local sway_drag = math.min(math.rad(10), math.max(math.rad(-10), sway * 0.02))
+
     -- Prominent harmonic flutter from wind resistance (well above 0.05 dirty delta threshold)
     local flutter = math.sin(t * 14.0) * math.min(math.rad(18), speed_3d * math.rad(3.5))
     -- Multi-frame damped harmonic recoil ripples through limbs after hard impact
@@ -499,22 +518,22 @@ function deathstats.update_ragdoll_flight_limbs(corpse, velocity, _base_yaw, bou
     -- Pitch (X-axis): air drag pushes limbs opposite vertical flight (vy > 0 pushes down, vy < 0 drags up)
     -- Yaw (Y-axis): limp sideways splay / oscillation
     -- Roll (Z-axis): planar splay outward along floor plane
-    local arm_pitch = math.min(math.rad(55), math.max(math.rad(-35), -vy * 0.05)) + flutter + shock_osc * 0.5
+    local arm_pitch = math.min(math.rad(55), math.max(math.rad(-35), -vy * 0.05 + surge_drag)) + flutter + shock_osc * 0.5
     local arm_roll = math.min(math.rad(70), math.rad(20 + speed_h * 4.0 + shock_decay * 30.0))
-    local leg_pitch = math.min(math.rad(40), math.max(math.rad(-25), -vy * 0.035)) - flutter * 0.5 + shock_osc * 0.3
+    local leg_pitch = math.min(math.rad(40), math.max(math.rad(-25), -vy * 0.035 + surge_drag * 0.5)) - flutter * 0.5 + shock_osc * 0.3
     local leg_roll = arm_roll * 0.5 + shock_decay * math.rad(15)
 
     -- Arm_Left: roll negative (splay left), pitch drag
-    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, flutter * 0.5, -arm_roll))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, flutter * 0.5, -arm_roll - sway_drag))
     -- Arm_Right: roll positive (splay right), pitch drag
-    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, -flutter * 0.5, arm_roll))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, -flutter * 0.5, arm_roll - sway_drag))
     -- Leg_Left: roll negative (splay left)
-    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_roll))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(leg_pitch, 0, -leg_roll - sway_drag * 0.5))
     -- Leg_Right: roll positive (splay right)
-    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_roll))
+    deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(leg_pitch, 0, leg_roll - sway_drag * 0.5))
     -- Head: loose floppy neck with whiplash recoil
     local head_pitch = math.rad(-15) - math.min(math.rad(25), math.max(0, -vy * 0.03)) + flutter * 0.5 - shock_osc * 0.7
-    local head_yaw = math.sin(t * 8.0) * math.min(math.rad(18), speed_h * 0.025) + (math.sin(t * 15.0) * shock_decay * math.rad(20))
+    local head_yaw = math.sin(t * 8.0) * math.min(math.rad(18), speed_h * 0.025) + (math.sin(t * 15.0) * shock_decay * math.rad(20)) + sway_drag * 0.4
     deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
 end
 
@@ -522,10 +541,10 @@ end
 --- Simulates ground surface friction drag, stair step bumps, and reactive limp jostling
 ---@param corpse ObjectRef The corpse entity object
 ---@param velocity Vector Current velocity vector
----@param _base_yaw number Facing yaw of the corpse
+---@param base_yaw number Facing yaw of the corpse
 ---@param bounce_shock number|nil Active bounce shock impulse
 ---@param slide_timer number|nil Accumulated sliding duration in seconds
-function deathstats.update_ragdoll_slide_limbs(corpse, velocity, _base_yaw, bounce_shock, slide_timer)
+function deathstats.update_ragdoll_slide_limbs(corpse, velocity, base_yaw, bounce_shock, slide_timer)
     if not corpse or (corpse.is_valid and not corpse:is_valid()) then return end
     local fractures_enabled = (deathstats.config.enable_limb_fractures ~= false)
         and (deathstats.config.enable_fall_fractures ~= false)
@@ -539,6 +558,12 @@ function deathstats.update_ragdoll_slide_limbs(corpse, velocity, _base_yaw, boun
     local luaent = corpse.get_luaentity and corpse:get_luaentity()
     local shock = bounce_shock or (luaent and luaent._bounce_shock) or 0
     local shock_decay = math.min(1.2, math.max(0, shock))
+
+    local yaw = base_yaw or (luaent and luaent._rot and luaent._rot.y) or 0
+    local cos_y = math.cos(yaw)
+    local sin_y = math.sin(yaw)
+    local sway = cos_y * vx + sin_y * vz
+    local sway_drag = math.min(math.rad(8), math.max(math.rad(-8), sway * 0.015))
 
     -- Stair step & rough terrain micro-jostle (frequency increases with speed, 12 to 18 rad/s)
     local bump_freq = 12.0 + math.min(6.0, speed_h * 1.5)
@@ -556,19 +581,18 @@ function deathstats.update_ragdoll_slide_limbs(corpse, velocity, _base_yaw, boun
     -- Legs splay along ground plane: keep local X/Y pitch strictly 0 for planar ground alignment,
     -- varying Z-roll (lateral splay) with alternating step/stair jostle
     local leg_roll_base = math.rad(15 + speed_h * 2.5 + shock_decay * 15.0)
-    local leg_roll_l = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_l))
-    local leg_roll_r = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_r))
+    local leg_roll_l = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_l - sway_drag * 0.5))
+    local leg_roll_r = math.min(math.rad(45), math.max(math.rad(8), leg_roll_base + leg_bump_r + sway_drag * 0.5))
 
     -- Apply bone rotations:
-    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, math.rad(8), -arm_roll))
-    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, -math.rad(8), arm_roll))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Left", vector.new(arm_pitch, -arm_bump * 0.3, -arm_roll - sway_drag))
+    deathstats.rotate_corpse_bone(corpse, "Arm_Right", vector.new(arm_pitch, arm_bump * 0.3, arm_roll - sway_drag))
     deathstats.rotate_corpse_bone(corpse, "Leg_Left", vector.new(0, 0, -leg_roll_l))
     deathstats.rotate_corpse_bone(corpse, "Leg_Right", vector.new(0, 0, leg_roll_r))
-
     -- Head: flopping from terrain bumps and bounce recoil
-    local head_flop = math.sin(t * 10.0) * math.min(math.rad(20), speed_h * math.rad(3.0)) + shock_osc
-    local head_pitch = math.rad(-12) + math.sin(t * bump_freq) * math.rad(8) - shock_decay * math.rad(15)
-    deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_flop, 0))
+    local head_pitch = math.rad(-10) + arm_bump * 0.4 - shock_osc * 0.5
+    local head_yaw = math.sin(t * 7.0) * math.min(math.rad(20), speed_h * 0.03) + sway_drag * 0.5
+    deathstats.rotate_corpse_bone(corpse, "Head", vector.new(head_pitch, head_yaw, 0))
 end
 
 
@@ -1094,10 +1118,14 @@ function deathstats.settle_corpse_at_rest(luaent)
         end
     end
 
+    local settled_rot = { x = pitch, y = base_yaw, z = roll }
     if obj.set_rotation then
-        obj:set_rotation({ x = pitch, y = base_yaw, z = roll })
+        obj:set_rotation(settled_rot)
     elseif obj.set_yaw then
         obj:set_yaw(base_yaw)
+    end
+    if luaent then
+        luaent._rot = settled_rot
     end
 
     local hanging_legs = false
@@ -1189,6 +1217,7 @@ local GROUND_PROBE_OFFSETS = {
     { x = 0.28, z = 0.28 },
 }
 local ground_probe_scratch = { x = 0, y = 0, z = 0 }
+local tested_cols_scratch = {}
 
 --- Check if a corpse has solid ground or liquid support beneath it
 --- Used to detect if blocks below a settled corpse have been dug out
@@ -1203,8 +1232,33 @@ function deathstats.has_ground_support(pos)
     local base_y = pos.y
     local base_z = pos.z
 
-    -- Track probed integer columns to avoid duplicate node queries when offsets map to same node
-    local tested_cols = {}
+    -- Fast-path: probe center node directly beneath corpse (-0.45 depth)
+    local center_x = math.floor(base_x + 0.5)
+    local center_z = math.floor(base_z + 0.5)
+    local center_y = math.floor(base_y - 0.45 + 0.5)
+    ground_probe_scratch.x = center_x
+    ground_probe_scratch.y = center_y
+    ground_probe_scratch.z = center_z
+    local cnode = core.get_node_or_nil(ground_probe_scratch)
+    if cnode and cnode.name ~= "ignore" then
+        if cnode.name ~= "air" then
+            local ndef = core.registered_nodes[cnode.name]
+            if ndef then
+                if (ndef.liquidtype and ndef.liquidtype ~= "none") or (ndef.walkable ~= false) then
+                    return true
+                end
+            else
+                return true
+            end
+        end
+    else
+        return true
+    end
+
+    -- Full perimeter footprint probe (reuse scratch table to avoid GC allocations)
+    for k in pairs(tested_cols_scratch) do
+        tested_cols_scratch[k] = nil
+    end
 
     for o = 1, #GROUND_PROBE_OFFSETS do
         local off = GROUND_PROBE_OFFSETS[o]
@@ -1212,8 +1266,8 @@ function deathstats.has_ground_support(pos)
         local pz = math.floor(base_z + off.z + 0.5)
         local col_key = px * 65536 + pz
 
-        if not tested_cols[col_key] then
-            tested_cols[col_key] = true
+        if not tested_cols_scratch[col_key] then
+            tested_cols_scratch[col_key] = true
             ground_probe_scratch.x = px
             ground_probe_scratch.z = pz
 
