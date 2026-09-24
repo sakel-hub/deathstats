@@ -150,6 +150,23 @@ core = {
         local def = core.registered_items[name]
         return (def and def.groups and def.groups[grp]) or 0
     end,
+    dropped_items = {},
+    item_drop = function(item, dropper, pos)
+        local item_obj = {
+            _valid = true,
+            _pos = pos and { x = pos.x, y = pos.y, z = pos.z },
+            _vel = { x = 0, y = 0, z = 0 },
+            _item = item,
+            is_valid = function(self) return self._valid end,
+            get_pos = function(self) return self._pos end,
+            set_velocity = function(self, v) self._vel = v end,
+            get_velocity = function(self) return self._vel end,
+            remove = function(self) self._valid = false end,
+        }
+        core.dropped_items = core.dropped_items or {}
+        table.insert(core.dropped_items, item_obj)
+        return item_obj
+    end,
     world_nodes = {},
     get_node = function(pos)
         local k = string.format("%d,%d,%d", math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5))
@@ -4161,6 +4178,196 @@ local function run_test_suite_44()
         { x = 0, y = 0, z = 0 }
     )
     assert(fb_bone == "Body", "Missing Head bone on humanoid target must fall back to Body")
+
+    -- Non-humanoid glb mob without bones falls back to root ""
+    local mock_reaper_no_bones = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function() return { mesh = "x_mobs_reaper.glb" } end,
+        get_luaentity = function()
+            return {
+                hp = 50,
+            }
+        end,
+    }
+    local r_head_bone, r_head_pos = xbmod.calculate_impact_bone(
+        mock_reaper_no_bones,
+        vector.new(0.0, 14.0, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(r_head_bone == "", "Mob without bones contract must attach to root node '', got: " .. tostring(r_head_bone))
+    assert(r_head_pos.y == 14.0, "Root fallback position must be untouched")
+
+    -- Mob with data-driven bones table containing exact pivots (e.g. x_mobs:reaper format)
+    local mock_reaper_with_bones = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function()
+            return {
+                mesh = "x_mobs_reaper.glb",
+                visual_size = { x = 0.75, y = 0.75 },
+                collisionbox = { -0.38, 0.0, -0.38, 0.38, 2.1, 0.38 },
+            }
+        end,
+        get_luaentity = function()
+            return {
+                hp = 50,
+                bones = {
+                    Body = { pivot = vector.new(0, 13.0, 0) },
+                    Chest = { pivot = vector.new(0, 17.5, 0) },
+                    Head = { pivot = vector.new(0, 22.0, 0) },
+                    Arm_Left = { pivot = vector.new(-5.8, 20.5, 0) },
+                    Arm_Right = { pivot = vector.new(5.8, 20.5, 0) },
+                },
+            }
+        end,
+    }
+    local r_b_head, r_p_head = xbmod.calculate_impact_bone(
+        mock_reaper_with_bones,
+        vector.new(0.0, 22.0, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(r_b_head == "Head", "Reaper shot at y=22.0 must attach to Head, got: " .. tostring(r_b_head))
+    assert(math.abs(r_p_head.y) < 0.001, "Reaper Head bone_pos Y must be 0 (pivot subtracted)")
+
+    local r_b_chest, r_p_chest = xbmod.calculate_impact_bone(
+        mock_reaper_with_bones,
+        vector.new(0.0, 17.5, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(r_b_chest == "Chest", "Reaper shot at y=17.5 must attach to Chest, got: " .. tostring(r_b_chest))
+    assert(math.abs(r_p_chest.y) < 0.001, "Reaper Chest bone_pos Y must be 0 (pivot subtracted)")
+
+    local r_b_arm, r_p_arm = xbmod.calculate_impact_bone(
+        mock_reaper_with_bones,
+        vector.new(-5.8, 20.5, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(r_b_arm == "Arm_Left", "Reaper shot at x=-5.8, y=20.5 must attach to Arm_Left, got: " .. tostring(r_b_arm))
+    assert(math.abs(r_p_arm.x) < 0.001 and math.abs(r_p_arm.y) < 0.001, "Arm_Left pivot must be subtracted")
+
+    -- Minion with data-driven bones table containing exact pivots
+    local mock_minion = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function()
+            return {
+                mesh = "x_mobs_fallen_minion.glb",
+                visual_size = { x = 6, y = 6 },
+                collisionbox = { -0.35, 0.0, -0.35, 0.35, 1.2, 0.35 },
+            }
+        end,
+        get_luaentity = function()
+            return {
+                hp = 15,
+                bones = {
+                    Body = { pivot = vector.new(0, 0.6, 0) },
+                    Head = { pivot = vector.new(0, 1.8, 0) },
+                    Arm_Left = { pivot = vector.new(-0.55, 1.6, 0) },
+                    Arm_Right = { pivot = vector.new(0.55, 1.6, 0) },
+                    Leg_Left = { pivot = vector.new(-0.2, 1.0, 0) },
+                    Leg_Right = { pivot = vector.new(0.2, 1.0, 0) },
+                },
+            }
+        end,
+    }
+    local m_b_head, m_p_head = xbmod.calculate_impact_bone(
+        mock_minion,
+        vector.new(0.0, 1.8, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(m_b_head == "Head", "Minion shot at y=1.8 must attach to Head, got: " .. tostring(m_b_head))
+    assert(math.abs(m_p_head.y) < 0.001, "Minion Head bone_pos Y must be 0")
+
+    local m_b_leg, m_p_leg = xbmod.calculate_impact_bone(
+        mock_minion,
+        vector.new(0.2, 0.5, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(m_b_leg == "Leg_Right", "Minion shot at x=0.2, y=0.5 must attach to Leg_Right, got: " .. tostring(m_b_leg))
+    assert(math.abs(m_p_leg.x) < 0.001, "Minion Leg_Right bone_pos X must be 0")
+    assert(math.abs(m_p_leg.y - (-0.5)) < 0.001, "Minion Leg_Right bone_pos Y must be -0.5")
+
+    -- Dynamic proportional bone fitting on a mob with simple boolean bones table (zero hardcoded pivots)
+    local mock_dynamic_biped = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function()
+            return {
+                visual_size = { x = 1, y = 1 },
+                collisionbox = { -0.3, 0.0, -0.3, 0.3, 2.0, 0.3 },
+            }
+        end,
+        get_luaentity = function()
+            return {
+                hp = 30,
+                bones = { Body = true, Head = true, Leg_Right = true, Leg_Left = true },
+            }
+        end,
+    }
+    local dyn_head_bone, dyn_head_pos = xbmod.calculate_impact_bone(
+        mock_dynamic_biped,
+        vector.new(0.0, 18.0, 0.0),
+        { x = 0, y = 0, z = 0 }
+    )
+    assert(dyn_head_bone == "Head", "Dynamic biped shot at high y must map to Head")
+    assert(math.abs(dyn_head_pos.y) < 5.0, "Dynamic Head pivot must be within reasonable model range")
+
+    -- Layer 1 Lua Contract for humanoid mobs: is_humanoid = true with ent.bones set format
+    local mock_contract_mob = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function() return { mesh = "character_hero.b3d" } end,
+        get_luaentity = function()
+            return {
+                is_humanoid = true,
+                bones = { Body = true, Head = true, Arm_Left = true, Arm_Right = true, Chest = true }
+            }
+        end,
+    }
+    -- Shot to Head
+    local c_head_bone = xbmod.calculate_impact_bone(mock_contract_mob, vector.new(0.0, 14.0, 0.0), { x = 0, y = 0, z = 0 })
+    assert(c_head_bone == "Head", "Contract humanoid mob must attach to Head bone, got: " .. tostring(c_head_bone))
+
+    -- Shot to Arm_Left
+    local c_arm_l_bone = xbmod.calculate_impact_bone(mock_contract_mob, vector.new(-3.5, 9.0, 0.0), { x = 0, y = 0, z = 0 })
+    assert(c_arm_l_bone == "Arm_Left", "Contract humanoid mob must attach to Arm_Left bone, got: " .. tostring(c_arm_l_bone))
+
+    -- Shot to Leg (not in reaper bones) -> should fall back to Body
+    local c_leg_bone = xbmod.calculate_impact_bone(mock_contract_mob, vector.new(0.0, 3.0, 0.0), { x = 0, y = 0, z = 0 })
+    assert(c_leg_bone == "Body", "Missing Leg on contract humanoid mob must fall back to Body, got: " .. tostring(c_leg_bone))
+
+    -- Layer 1 Lua Contract: ent.bones array format
+    local mock_array_mob = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function() return { mesh = "character_custom.b3d" } end,
+        get_luaentity = function()
+            return {
+                is_humanoid = true,
+                bones = { "Body", "Arm_Right" }
+            }
+        end,
+    }
+    local a_arm_r_bone = xbmod.calculate_impact_bone(mock_array_mob, vector.new(3.5, 9.0, 0.0), { x = 0, y = 0, z = 0 })
+    assert(a_arm_r_bone == "Arm_Right", "Array contract mob must attach to Arm_Right, got: " .. tostring(a_arm_r_bone))
+    local a_head_bone = xbmod.calculate_impact_bone(mock_array_mob, vector.new(0.0, 14.0, 0.0), { x = 0, y = 0, z = 0 })
+    assert(a_head_bone == "Body", "Array contract mob missing Head must fall back to Body, got: " .. tostring(a_head_bone))
+
+    -- Mob with no Body and missing bone -> falls back to root ""
+    local mock_nobody_mob = {
+        is_player = function() return false end,
+        is_valid = function() return true end,
+        get_properties = function() return { mesh = "floating_orb.glb" } end,
+        get_luaentity = function()
+            return {
+                bones = { Eye = true }
+            }
+        end,
+    }
+    local orb_bone, orb_pos = xbmod.calculate_impact_bone(mock_nobody_mob, vector.new(0.0, 14.0, 0.0), { x = 5, y = 5, z = 5 })
+    assert(orb_bone == "", "Mob without Body and missing candidate bone must fall back to root '', got: " .. tostring(orb_bone))
+    assert(orb_pos.y == 14.0, "Root fallback position must be untouched")
 
     -- Arrow Tracking and Reparenting to Corpse
     local p_victim = create_mock_player("VictimPlayer", 0, { x = 20, y = 5, z = 20 })
@@ -10895,5 +11102,173 @@ suites[106] = function()
 end
 suites[106]()
 
-print("\nALL 106 TEST SUITES PASSED SUCCESSFULLY!")
+-- TEST 107: Option A Detachment Timing & Arrow Smart Drop
+suites[107] = function()
+    core.loaded_mods = core.loaded_mods or {}
+    core.loaded_mods["x_mob_core"] = "../x_mob_core"
+    core.loaded_mods["x_mobs"] = "../x_mobs"
+    core.register_on_generated = core.register_on_generated or function() end
+    core.register_globalstep = core.register_globalstep or function() end
+    if not rawget(_G, "x_mob_core") then
+        dofile("../x_mob_core/api.lua")
+    end
+    dofile("../x_mobs/api.lua")
+    local xmobs = rawget(_G, "x_mobs")
+    assert(type(xmobs.detach_attached_children) == "function", "x_mobs.detach_attached_children must exist")
+
+    -- Mock mob object builder
+    local function create_mock_mob(pos)
+        local children = {}
+        local mob_obj = {
+            _valid = true,
+            _pos = pos or { x = 0, y = 5, z = 0 },
+            is_valid = function(self) return self._valid end,
+            get_pos = function(self) return self._pos end,
+            get_children = function(self)
+                local valid = {}
+                for _, c in ipairs(children) do
+                    if c:is_valid() then table.insert(valid, c) end
+                end
+                return valid
+            end,
+            _add_child = function(self, child)
+                table.insert(children, child)
+            end,
+            remove = function(self) self._valid = false end,
+        }
+        return mob_obj
+    end
+
+    -- Mock child entity builder
+    local function create_mock_child(is_player, lua_data)
+        local child = {
+            _valid = true,
+            _attached = true,
+            _is_player = is_player or false,
+            _lua = lua_data or {},
+            is_valid = function(self) return self._valid end,
+            is_player = function(self) return self._is_player end,
+            get_luaentity = function(self) return self._lua end,
+            get_pos = function(self) return { x = 0, y = 5, z = 0 } end,
+            set_pos = function(self, p) end,
+            set_detach = function(self) self._attached = false end,
+            get_attach = function(self) if self._attached then return true end return nil end,
+            remove = function(self) self._valid = false end,
+        }
+        if child._lua then
+            child._lua.object = child
+        end
+        return child
+    end
+
+    -- 1. Standard Arrow with on_death (Smart Drop)
+    local mob1 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local death_called = false
+    local arrow1 = create_mock_child(false, {
+        _is_arrow = true,
+        _arrow_name = "x_bows:arrow_wood",
+        _trail_spawner_id = 999,
+        on_death = function(selfObj, killer)
+            death_called = true
+            core.item_drop(ItemStack(selfObj._arrow_name), nil, selfObj.object:get_pos())
+        end,
+    })
+    mob1:_add_child(arrow1)
+
+    core.dropped_items = {}
+    xmobs.detach_attached_children(mob1)
+    assert(death_called == true, "on_death callback must be called on attached arrow")
+    assert(arrow1:is_valid() == false, "Arrow must be removed after detachment")
+    assert(arrow1:get_attach() == nil, "Arrow must be detached")
+    assert(#core.dropped_items == 1, "Item must be dropped on death")
+    assert(core.dropped_items[1]._item:get_name() == "x_bows:arrow_wood", "Dropped item must match arrow name")
+
+    -- 2. Creative Mode Arrow (Drop Suppressed)
+    local mob2 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local arrow_creative = create_mock_child(false, {
+        _is_arrow = true,
+        _arrow_name = "x_bows:arrow_stone",
+        _is_creative = true,
+    })
+    mob2:_add_child(arrow_creative)
+
+    core.dropped_items = {}
+    xmobs.detach_attached_children(mob2)
+    assert(arrow_creative._lua._dropped == true, "Creative arrow must be marked as _dropped")
+    assert(#core.dropped_items == 0, "Creative arrow must not drop items")
+    assert(arrow_creative:is_valid() == false, "Creative arrow must be removed")
+
+    -- 3. Infinity Enchantment Arrow (Drop Suppressed)
+    local mob3 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local arrow_infinity = create_mock_child(false, {
+        _is_arrow = true,
+        _arrow_name = "x_bows:arrow_steel",
+        _x_enchanting = { infinity = { value = 1 } },
+    })
+    mob3:_add_child(arrow_infinity)
+
+    core.dropped_items = {}
+    xmobs.detach_attached_children(mob3)
+    assert(arrow_infinity._lua._dropped == true, "Infinity arrow must be marked as _dropped")
+    assert(#core.dropped_items == 0, "Infinity arrow must not drop items")
+    assert(arrow_infinity:is_valid() == false, "Infinity arrow must be removed")
+
+    -- 4. Fallback Drop with 3D Random Scatter Velocity
+    local mob4 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local arrow_fallback = create_mock_child(false, {
+        _is_arrow = true,
+        _arrow_name = "x_bows:arrow_diamond",
+    })
+    mob4:_add_child(arrow_fallback)
+
+    core.dropped_items = {}
+    xmobs.detach_attached_children(mob4)
+    assert(#core.dropped_items == 1, "Fallback item drop must occur")
+    local d_vel = core.dropped_items[1]:get_velocity()
+    assert(d_vel ~= nil and d_vel.y >= 2.0, "Dropped item must receive upward scatter velocity")
+    assert(arrow_fallback:is_valid() == false, "Fallback arrow must be removed")
+
+    -- 5. Living Player Rider Safety
+    local mob5 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local player_rider = create_mock_child(true, nil)
+    mob5:_add_child(player_rider)
+
+    xmobs.detach_attached_children(mob5)
+    assert(player_rider:is_valid() == true, "Player rider must NOT be removed")
+    assert(player_rider:get_attach() == nil, "Player rider must be detached safely")
+
+    -- 6. Visual Attachment Prop Cleanup
+    local mob6 = create_mock_mob({ x = 10, y = 2, z = 10 })
+    local visual_prop = create_mock_child(false, { _is_visual = true })
+    mob6:_add_child(visual_prop)
+
+    xmobs.detach_attached_children(mob6)
+    assert(visual_prop:is_valid() == false, "Visual attachment prop must be removed")
+
+    -- 7. x_bows arrow on_death with 3D Scatter
+    dofile("../x_bows/arrow.lua")
+    local arrow_def = core.registered_entities["x_bows:arrow_entity"]
+    assert(arrow_def ~= nil and type(arrow_def.on_death) == "function", "x_bows:arrow_entity must have on_death")
+    local test_arrow_ent = {
+        _arrow_name = "x_bows:arrow_bronze",
+        _dropped = false,
+        _old_pos = { x = 0, y = 10, z = 0 },
+        object = {
+            is_valid = function() return true end,
+            get_pos = function() return { x = 0, y = 10, z = 0 } end,
+            remove = function(self) self._removed = true end,
+        }
+    }
+    core.dropped_items = {}
+    arrow_def.on_death(test_arrow_ent, nil)
+    assert(test_arrow_ent._dropped == true, "arrow on_death must set _dropped = true")
+    assert(#core.dropped_items == 1, "arrow on_death must drop 1 item")
+    local x_vel = core.dropped_items[1]:get_velocity()
+    assert(x_vel ~= nil and x_vel.y >= 2.0, "arrow on_death must apply scatter velocity y >= 2.0")
+
+    print("  [PASS] Option A Detachment Timing & Arrow Smart Drop")
+end
+suites[107]()
+
+print("\nALL 107 TEST SUITES PASSED SUCCESSFULLY!")
 
