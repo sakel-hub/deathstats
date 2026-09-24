@@ -10749,6 +10749,7 @@ suites[105] = function()
     assert(mock_armor:get_properties().visual_size.x > 0, "Attached armor entity visual_size must be restored on respawn")
     assert(wield_visible == true, "x_player_api wield item visibility must be restored to true on respawn")
     assert(set_model_called == true, "x_player_api.set_model must be called on respawn")
+    assert(mock_glb:get_properties().textures[1] == "hero_skin.png", "GLB proxy texture must not be corrupted to blank.png on respawn")
 
     -- Clean up
     mock_glb:remove()

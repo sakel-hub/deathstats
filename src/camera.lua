@@ -14,6 +14,18 @@ local atan2 = math.atan2 or math.atan
 local VEC_ZERO = vector.new(0, 0, 0)
 local CAMERA_PROBE_STEPS = { 0, 0.06 }
 local safe_normalize = deathstats.safe_normalize
+local scratch_ray_start = { x = 0, y = 0, z = 0 }
+local scratch_cam_target = { x = 0, y = 0, z = 0 }
+local scratch_eye_pos = { x = 0, y = 0, z = 0 }
+
+local function is_invalid_or_placeholder_texture(tex_name)
+    return not tex_name
+        or tex_name == ""
+        or tex_name == "player.png"
+        or tex_name == "player_back.png"
+        or tex_name == "blank.png"
+        or tex_name == "deathstats_transparent.png"
+end
 
 --- Register invisible camera anchor entity used to smoothly fly the player's camera
 --- Luanti disables client-side player physics, gravity, and fall damage when attached to an entity
@@ -626,7 +638,9 @@ function deathstats.update_death_camera(player, dtime)
     local probe_height = probe_radius * nominal_ratio
 
     if core.raycast and data.orbit_center then
-        local ray_start = vector.new(data.orbit_center.x, data.orbit_center.y + 0.5, data.orbit_center.z)
+        scratch_ray_start.x = data.orbit_center.x
+        scratch_ray_start.y = data.orbit_center.y + 0.5
+        scratch_ray_start.z = data.orbit_center.z
         local min_clear_r = probe_radius
 
         -- Directional lookahead probing: check primary camera sightline plus forward lookahead (+0.06 rad)
@@ -637,8 +651,10 @@ function deathstats.update_death_camera(player, dtime)
             local cam_x = data.orbit_center.x + probe_radius * math.sin(p_angle)
             local cam_y = data.orbit_center.y + probe_height
             local cam_z = data.orbit_center.z - probe_radius * math.cos(p_angle)
-            local cam_target = vector.new(cam_x, cam_y, cam_z)
-            local ray = core.raycast(ray_start, cam_target, false, false)
+            scratch_cam_target.x = cam_x
+            scratch_cam_target.y = cam_y
+            scratch_cam_target.z = cam_z
+            local ray = core.raycast(scratch_ray_start, scratch_cam_target, false, false)
             for pointed_thing in ray do
                 if pointed_thing.type == "node" and pointed_thing.under then
                     local node = core.get_node_or_nil(pointed_thing.under)
@@ -671,8 +687,10 @@ function deathstats.update_death_camera(player, dtime)
         local cam_x = data.orbit_center.x + target_radius * math.sin(angle)
         local cam_y = data.orbit_center.y + target_radius * nominal_ratio
         local cam_z = data.orbit_center.z - target_radius * math.cos(angle)
-        local eye_pos = vector.round(vector.new(cam_x, cam_y, cam_z))
-        local node_at_cam = core.get_node_or_nil(eye_pos)
+        scratch_eye_pos.x = math.floor(cam_x + 0.5)
+        scratch_eye_pos.y = math.floor(cam_y + 0.5)
+        scratch_eye_pos.z = math.floor(cam_z + 0.5)
+        local node_at_cam = core.get_node_or_nil(scratch_eye_pos)
         local def_cam = node_at_cam and node_at_cam.name ~= "ignore" and core.registered_nodes[node_at_cam.name]
         if def_cam and def_cam.walkable and node_at_cam.name ~= "air" and def_cam.drawtype ~= "airlike" then
             target_radius = math.max(0.4, target_radius - 0.6)
@@ -1056,8 +1074,14 @@ function deathstats.set_death_camera(player, death_info)
     local old_selectionbox = copy(props.selectionbox or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 })
     local old_textures = copy(props.textures or { "character.png" })
     local old_mesh = props.mesh
-    local old_pointable = (props.pointable ~= nil and props.pointable or true)
-    local old_is_visible = (props.is_visible ~= nil and props.is_visible or true)
+    local old_pointable = true
+    if props.pointable ~= nil then
+        old_pointable = props.pointable
+    end
+    local old_is_visible = true
+    if props.is_visible ~= nil then
+        old_is_visible = props.is_visible
+    end
     local old_interaction_range = props.interaction_range or 4
     local current_physics = player:get_physics_override() or { speed = 1, jump = 1, gravity = 1 }
     local old_physics = copy(current_physics)
@@ -1073,7 +1097,7 @@ function deathstats.set_death_camera(player, death_info)
     -- Detect uninitialized engine default upright sprite properties (e.g. reconnecting while dead)
     local is_upright_default = (props.visual == "upright_sprite")
         or (props.visual_size and props.visual_size.y == 2 and props.visual_size.x == 1)
-        or (props.textures and (props.textures[1] == "player.png" or props.textures[1] == "player_back.png"))
+        or (props.textures and is_invalid_or_placeholder_texture(props.textures[1]))
 
     if is_upright_default then
         if meta then
@@ -1091,7 +1115,7 @@ function deathstats.set_death_camera(player, death_info)
             local raw_tex = meta:get_string("deathstats:orig_textures")
             if raw_tex and raw_tex ~= "" then
                 local des_tex = core.deserialize(raw_tex)
-                if type(des_tex) == "table" and des_tex[1] and des_tex[1] ~= "player.png" and des_tex[1] ~= "player_back.png" then
+                if type(des_tex) == "table" and des_tex[1] and not is_invalid_or_placeholder_texture(des_tex[1]) then
                     old_textures = des_tex
                 else
                     old_textures = nil
@@ -1112,7 +1136,7 @@ function deathstats.set_death_camera(player, death_info)
         if old_visual_size and (old_visual_size.y ~= 2 or old_visual_size.x ~= 1) then
             meta:set_string("deathstats:orig_visual_size", core.serialize(old_visual_size))
         end
-        if old_textures and old_textures[1] ~= "player.png" and old_textures[1] ~= "player_back.png" then
+        if old_textures and not is_invalid_or_placeholder_texture(old_textures[1]) then
             meta:set_string("deathstats:orig_textures", core.serialize(old_textures))
         end
         if old_mesh and old_mesh ~= "" then
@@ -1178,7 +1202,7 @@ function deathstats.set_death_camera(player, death_info)
 
     -- Extract player visuals across skin mods and spawn corpse placeholder entity
     local visuals = deathstats.get_player_visuals(player)
-    if not old_textures or old_textures[1] == "player.png" or old_textures[1] == "player_back.png" then
+    if not old_textures or is_invalid_or_placeholder_texture(old_textures[1]) then
         old_textures = copy(visuals.textures or { "character.png" })
     end
     if not old_mesh or old_mesh == "" then
@@ -1628,14 +1652,14 @@ function deathstats.reset_camera(player, is_leaving)
         vs = { x = 1, y = 1, z = 1 }
     end
     local tex = data and data.old_textures
-    if not tex or tex[1] == "player.png" or tex[1] == "player_back.png" or tex[1] == "deathstats_transparent.png" then
+    if not tex or is_invalid_or_placeholder_texture(tex[1]) then
         tex = nil
     end
     if not tex and meta then
         local raw = meta:get_string("deathstats:orig_textures")
         if raw and raw ~= "" then
             local des = core.deserialize(raw)
-            if type(des) == "table" and des[1] and des[1] ~= "player.png" and des[1] ~= "player_back.png" then
+            if type(des) == "table" and des[1] and not is_invalid_or_placeholder_texture(des[1]) then
                 tex = des
             end
         end
@@ -1668,14 +1692,22 @@ function deathstats.reset_camera(player, is_leaving)
         end
     end
     if player.set_properties then
+        local respawn_is_visible = true
+        if data and data.old_is_visible ~= nil then
+            respawn_is_visible = data.old_is_visible
+        end
+        local respawn_pointable = true
+        if data and data.old_pointable ~= nil then
+            respawn_pointable = data.old_pointable
+        end
         player:set_properties({
-            is_visible = (data and data.old_is_visible ~= nil and data.old_is_visible or true),
+            is_visible = respawn_is_visible,
             visual = "mesh",
             mesh = mesh_name,
             visual_size = vs,
             collisionbox = (data and data.old_collisionbox) or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
             selectionbox = (data and data.old_selectionbox) or { -0.3, 0.0, -0.3, 0.3, 1.77, 0.3 },
-            pointable = (data and data.old_pointable ~= nil and data.old_pointable or true),
+            pointable = respawn_pointable,
             interaction_range = (data and data.old_interaction_range) or 4,
             textures = tex,
             show_on_minimap = true,
@@ -1796,14 +1828,6 @@ function deathstats.reset_camera(player, is_leaving)
         elseif mcl_p and type(mcl_p) == "table" and type(mcl_p.player_set_animation) == "function" then
             pcall(mcl_p.player_set_animation, p, "stand", 30)
         end
-        if player_papi and type(player_papi) == "table" then
-            if type(player_papi.set_model) == "function" then
-                pcall(player_papi.set_model, p, mesh_name)
-            end
-            if type(player_papi.set_textures) == "function" and tex then
-                pcall(player_papi.set_textures, p, tex)
-            end
-        end
         if restore_xpapi and type(restore_xpapi) == "table" then
             if type(restore_xpapi.get_visual_proxies) == "function" then
                 local ok, proxies = pcall(restore_xpapi.get_visual_proxies, p)
@@ -1816,15 +1840,15 @@ function deathstats.reset_camera(player, is_leaving)
                     end
                 end
             end
-            if type(restore_xpapi.set_model) == "function" then
-                pcall(restore_xpapi.set_model, p, mesh_name)
-            end
-            if type(restore_xpapi.set_textures) == "function" and tex then
-                pcall(restore_xpapi.set_textures, p, tex)
-            end
             if type(restore_xpapi.set_wield_item_visibility) == "function" then
                 pcall(restore_xpapi.set_wield_item_visibility, p, true)
             end
+        end
+        if skins_mod and skins_mod.update_player_skin then
+            pcall(skins_mod.update_player_skin, p)
+        end
+        if armor_mod and armor_mod.set_player_armor then
+            pcall(armor_mod.set_player_armor, p)
         end
     end
     restore_stand()

@@ -423,10 +423,18 @@ function cs.get_player_visuals(player)
         or (props and props.mesh)
         or "character.b3d"
 
-    local is_skinsdb = (raw_mesh == "skinsdb_3d_armor_character_5.b3d")
+    if type(xpapi) == "table" and type(xpapi.resolve_model_redirect) == "function" then
+        raw_mesh = xpapi.resolve_model_redirect(raw_mesh)
+    end
+
+    local is_redirected_to_canonical = raw_mesh and (raw_mesh:find("^3d_armor_character") ~= nil or raw_mesh:find("^character") ~= nil)
+
+    local is_skinsdb = not is_redirected_to_canonical and (
+        (raw_mesh == "skinsdb_3d_armor_character_5.b3d")
         or (raw_mesh and raw_mesh:find("skinsdb") ~= nil)
         or (skins_mod and skins_mod.armor_loaded == true)
         or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props and props.textures and #props.textures >= 4)))
+    )
 
     local is_3d_armor = not is_skinsdb and (
         (raw_mesh == "3d_armor_character.b3d" or raw_mesh == "3d_armor_character.glb")

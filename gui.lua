@@ -300,7 +300,7 @@ core.register_on_respawnplayer(function(player)
     return false
 end)
 
--- Player join hook: check player HP when joining; if dead show death screen, otherwise reset effects (see Luanti builtin death_screen.lua)
+-- Player join hook: check player HP when joining; if dead show death screen, otherwise reset effects if death was active or stale
 core.register_on_joinplayer(function(player)
     local name = player:get_player_name()
     deathstats.left_players[name] = nil
@@ -308,12 +308,17 @@ core.register_on_joinplayer(function(player)
     if player:get_hp() <= 0 or (meta and meta:get_string("deathstats:death_active") == "1") then
         deathstats.trigger_death_screen(player, nil, true)
     else
+        local was_dead = deathstats.dead_players[name]
+            or (deathstats.player_camera_data and deathstats.player_camera_data[name])
+            or (meta and meta:get_string("deathstats:death_active") ~= "")
         if meta and meta:get_string("deathstats:death_active") ~= "" then
             meta:set_string("deathstats:death_active", "")
             meta:set_string("deathstats:death_info", "")
             meta:set_string("deathstats:corpse_data", "")
         end
-        deathstats.reset_player_effects(player)
+        if was_dead then
+            deathstats.reset_player_effects(player)
+        end
         deathstats.restore_player_inventory_and_hand(player)
     end
 end)
