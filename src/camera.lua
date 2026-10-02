@@ -198,238 +198,169 @@ function deathstats.update_death_camera(player, dtime)
         return
     end
 
-    -- Check for delayed bones placement if bones were not initially detected
-    if not data.has_bones then
-        local bones_pos = deathstats.find_player_bones(player)
-        if bones_pos then
-            data.has_bones = true
-            data.bones_pos = bones_pos
-            local new_center = bones_pos
-            data.orbit_center = new_center
-            -- When bones are placed, remove any corpse entity so bones block is visible
-            if data.corpse then
-                deathstats.remove_corpse(data.corpse)
-                data.corpse = nil
+    -- Check if corpse needs to be spawned / re-spawned once mapblock is loaded
+    if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
+        local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player, data.death_info, data.last_blow, data.corpse_settled)
+        if new_corpse then
+            data.corpse = new_corpse
+            data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
+        end
+        local c_ent = new_corpse and new_corpse.get_luaentity and new_corpse:get_luaentity()
+        if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners and c_ent and c_ent._settled then
+            local effect_type = deathstats.get_corpse_effect_type(data.corpse_pos, data.death_info)
+            if effect_type ~= "impact" then
+                data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info, data.corpse)
+                data.current_effect_type = effect_type
+                local c_rot = (c_ent and c_ent._rot) or (new_corpse and new_corpse.get_rotation and new_corpse:get_rotation())
+                local r = (c_rot and c_rot.z) or 0
+                local p = (c_rot and c_rot.x) or 0
+                local is_p = (math.cos(r) * math.cos(p) < -0.5)
+                data.particles_were_prone = is_p
+                c_ent._particles_were_prone = is_p
+                c_ent._particle_spawners = data.particle_spawners
+                c_ent._effect_type = data.current_effect_type
             end
-            if data.corpse_wielditem then
-                if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
-                    data.corpse_wielditem:remove()
-                end
-                data.corpse_wielditem = nil
-            end
-            data.corpse_pos = nil
-            data.corpse_visuals = nil
-            local eff_r = data.eff_radius or data.orbit_radius or (deathstats.config.orbit_radius or 3.2)
-            local eff_h = data.eff_height or (eff_r * (data.nominal_ratio or 0.46875))
-            local cur_angle = data.orbit_angle or (data.yaw or 0)
-            if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-                if data.anchor.set_velocity then
-                    data.anchor:set_velocity(vector.zero())
-                end
-                if data.anchor.set_acceleration then
-                    data.anchor:set_acceleration(vector.zero())
-                end
-                if data.anchor.set_pos then
-                    data.anchor:set_pos(new_center)
-                end
-                if data.anchor.move_to then
-                    data.anchor:move_to(new_center, false)
-                end
-            end
-            if player.set_detach then player:set_detach() end
-            if player.set_pos then player:set_pos(new_center) end
-            if data.anchor and player.set_attach then
-                player:set_attach(data.anchor, "", vector.zero(), vector.zero(), false)
-            end
-            if player.set_eye_offset then
-                player:set_eye_offset({ x = 0, y = eff_h * 10, z = -eff_r * 10 }, vector.zero())
-                data.last_sent_eye_z = -eff_r * 10
-                data.last_sent_eye_y = eff_h * 10
-            end
-            if player.set_look_horizontal then player:set_look_horizontal(cur_angle) end
-            if player.set_look_vertical then player:set_look_vertical(atan2(eff_h, eff_r)) end
         end
     end
 
-    -- Check if corpse needs to be spawned / re-spawned once mapblock is loaded
-    local should_show_bones = deathstats.get_bones_mode()
-    local bones_active = data.has_bones or (data.bones_pos ~= nil) or data.expect_bones or should_show_bones
-    if not bones_active then
-        if (not data.corpse or (data.corpse.is_valid and not data.corpse:is_valid())) and data.corpse_pos and data.corpse_visuals then
-            local new_corpse = deathstats.spawn_and_setup_corpse(data.corpse_pos, data.corpse_visuals, player, data.death_info, data.last_blow, data.corpse_settled)
-            if new_corpse then
-                data.corpse = new_corpse
-                data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
-            end
-            local c_ent = new_corpse and new_corpse.get_luaentity and new_corpse:get_luaentity()
-            if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners and c_ent and c_ent._settled then
-                local effect_type = deathstats.get_corpse_effect_type(data.corpse_pos, data.death_info)
-                if effect_type ~= "impact" then
-                    data.particle_spawners = deathstats.spawn_corpse_particles(data.corpse_pos, data.death_info, data.corpse)
-                    data.current_effect_type = effect_type
-                    local c_rot = (c_ent and c_ent._rot) or (new_corpse and new_corpse.get_rotation and new_corpse:get_rotation())
-                    local r = (c_rot and c_rot.z) or 0
-                    local p = (c_rot and c_rot.x) or 0
-                    local is_p = (math.cos(r) * math.cos(p) < -0.5)
-                    data.particles_were_prone = is_p
-                    c_ent._particles_were_prone = is_p
-                    c_ent._particle_spawners = data.particle_spawners
-                    c_ent._effect_type = data.current_effect_type
+    -- Transfer fatal arrow from player to corpse on first camera step (dtime > 0)
+    -- after on_dieplayer and deferred x_bows core.after(0) attachments have executed
+    if dtime and dtime > 0 and not data.arrows_transferred and data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
+        data.arrows_transferred = true
+        local xbows_loaded = rawget(_G, "XBows")
+        if xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
+            xbows_loaded.transfer_arrows_to_corpse(player, data.corpse)
+            deathstats.unhide_corpse_arrows(data.corpse)
+        end
+    end
+
+    -- Dynamic corpse tracking: smoothly update orbit_center and anchor to lock 1:1 to corpse
+    if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) and data.corpse.get_pos then
+        local cpos = data.corpse:get_pos()
+        if cpos then
+            local cvel = (data.corpse.get_velocity and data.corpse:get_velocity()) or vector.zero()
+            local cacc = (data.corpse.get_acceleration and data.corpse:get_acceleration()) or vector.zero()
+            local vel_len = vector.length(cvel)
+            local pos_diff = data.orbit_center and vector.distance(cpos, data.orbit_center) or 0
+            local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
+            local is_settled = (luaent and luaent._settled) or (vel_len < 0.05 and pos_diff < 0.02)
+
+            data.corpse_pos = cpos
+            data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
+
+            if not is_settled then
+                -- Ragdoll corpse is actively moving/falling: translate orbit center and move anchor
+                data.corpse_settled = false
+                data.corpse_settled_particles_checked = false
+                data.corpse_vel = cvel
+                data.corpse_acc = cacc
+
+                -- Ensure no particles are visible while corpse is in flight/motion
+                if data.particle_spawners then
+                    for _, pid in ipairs(data.particle_spawners) do
+                        core.delete_particlespawner(pid)
+                    end
+                    data.particle_spawners = nil
                 end
-            end
-        end
-
-        -- Transfer fatal arrow from player to corpse on first camera step (dtime > 0)
-        -- after on_dieplayer and deferred x_bows core.after(0) attachments have executed
-        if dtime and dtime > 0 and not data.arrows_transferred and data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) then
-            data.arrows_transferred = true
-            local xbows_loaded = rawget(_G, "XBows")
-            if xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
-                xbows_loaded.transfer_arrows_to_corpse(player, data.corpse)
-                deathstats.unhide_corpse_arrows(data.corpse)
-            end
-        end
-
-        -- Dynamic corpse tracking: smoothly update orbit_center and anchor to lock 1:1 to corpse
-        if data.corpse and (not data.corpse.is_valid or data.corpse:is_valid()) and data.corpse.get_pos then
-            local cpos = data.corpse:get_pos()
-            if cpos then
-                local cvel = (data.corpse.get_velocity and data.corpse:get_velocity()) or vector.zero()
-                local cacc = (data.corpse.get_acceleration and data.corpse:get_acceleration()) or vector.zero()
-                local vel_len = vector.length(cvel)
-                local pos_diff = data.orbit_center and vector.distance(cpos, data.orbit_center) or 0
-                local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
-                local is_settled = (luaent and luaent._settled) or (vel_len < 0.05 and pos_diff < 0.02)
-
-                data.corpse_pos = cpos
-                data.orbit_center = vector.new(cpos.x, cpos.y, cpos.z)
-
-                if not is_settled then
-                    -- Ragdoll corpse is actively moving/falling: translate orbit center and move anchor
-                    data.corpse_settled = false
-                    data.corpse_settled_particles_checked = false
-                    data.corpse_vel = cvel
-                    data.corpse_acc = cacc
-
-                    -- Ensure no particles are visible while corpse is in flight/motion
-                    if data.particle_spawners then
-                        for _, pid in ipairs(data.particle_spawners) do
-                            core.delete_particlespawner(pid)
-                        end
-                        data.particle_spawners = nil
+                if luaent and luaent._particle_spawners then
+                    for _, pid in ipairs(luaent._particle_spawners) do
+                        core.delete_particlespawner(pid)
                     end
-                    if luaent and luaent._particle_spawners then
-                        for _, pid in ipairs(luaent._particle_spawners) do
-                            core.delete_particlespawner(pid)
-                        end
-                        luaent._particle_spawners = nil
-                    end
-                    data.current_effect_type = nil
-                    if luaent then luaent._effect_type = nil end
+                    luaent._particle_spawners = nil
+                end
+                data.current_effect_type = nil
+                if luaent then luaent._effect_type = nil end
 
-                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-                        if data.anchor.move_to then
-                            data.anchor:move_to(data.orbit_center, false)
-                        elseif data.anchor.set_pos then
-                            data.anchor:set_pos(data.orbit_center)
-                        end
+                if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                    if data.anchor.move_to then
+                        data.anchor:move_to(data.orbit_center, false)
+                    elseif data.anchor.set_pos then
+                        data.anchor:set_pos(data.orbit_center)
+                    end
+                    if data.anchor.set_velocity then
+                        data.anchor:set_velocity(cvel)
+                    end
+                    if data.anchor.set_acceleration then
+                        data.anchor:set_acceleration(vector.zero())
+                    end
+                end
+            else
+                -- Ragdoll corpse has settled: lock final stationary position and ensure anchor is zeroed
+                if not data.corpse_settled then
+                    data.corpse_settled = true
+                    data.corpse_vel = VEC_ZERO
+                    data.corpse_acc = VEC_ZERO
+                end
+
+                if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
+                    local cur_apos = data.anchor.get_pos and data.anchor:get_pos()
+                    local dist = cur_apos and vector.distance(cur_apos, data.orbit_center) or 0
+                    local avel = data.anchor.get_velocity and data.anchor:get_velocity()
+                    local has_vel = avel and (avel.x ~= 0 or avel.y ~= 0 or avel.z ~= 0)
+
+                    if dist > 0.01 or has_vel then
                         if data.anchor.set_velocity then
-                            data.anchor:set_velocity(cvel)
+                            data.anchor:set_velocity(VEC_ZERO)
                         end
                         if data.anchor.set_acceleration then
-                            data.anchor:set_acceleration(vector.zero())
+                            data.anchor:set_acceleration(VEC_ZERO)
                         end
-                    end
-                else
-                    -- Ragdoll corpse has settled: lock final stationary position and ensure anchor is zeroed
-                    if not data.corpse_settled then
-                        data.corpse_settled = true
-                        data.corpse_vel = VEC_ZERO
-                        data.corpse_acc = VEC_ZERO
-                    end
-
-                    if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
-                        local cur_apos = data.anchor.get_pos and data.anchor:get_pos()
-                        local dist = cur_apos and vector.distance(cur_apos, data.orbit_center) or 0
-                        local avel = data.anchor.get_velocity and data.anchor:get_velocity()
-                        local has_vel = avel and (avel.x ~= 0 or avel.y ~= 0 or avel.z ~= 0)
-
-                        if dist > 0.01 or has_vel then
-                            if data.anchor.set_velocity then
-                                data.anchor:set_velocity(VEC_ZERO)
-                            end
-                            if data.anchor.set_acceleration then
-                                data.anchor:set_acceleration(VEC_ZERO)
-                            end
-                            if data.anchor.set_pos then
-                                data.anchor:set_pos(data.orbit_center)
-                            end
-                        end
-                    end
-                end
-                -- When corpse_settled is true, anchor is stationary at orbit_center with zero velocity
-
-                -- Re-evaluate environment effect once corpse has settled
-                if luaent and luaent._settled and not data.corpse_settled_particles_checked then
-                    data.corpse_settled_particles_checked = true
-                    if deathstats.config.enable_corpse_particles ~= false then
-                        local settled_effect = deathstats.get_corpse_effect_type(cpos, data.death_info)
-                        local current_effect = data.current_effect_type or (luaent and luaent._effect_type)
-                        local roll = (luaent._rot and luaent._rot.z) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().z) or 0
-                        local pitch = (luaent._rot and luaent._rot.x) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().x) or 0
-                        local uy = math.cos(roll) * math.cos(pitch)
-                        local is_prone = (uy < -0.5)
-                        local orientation_changed = (data.particles_were_prone ~= nil and data.particles_were_prone ~= is_prone)
-                        local has_active_spawners = (data.particle_spawners and #data.particle_spawners > 0)
-                            or (luaent and luaent._particle_spawners and #luaent._particle_spawners > 0)
-
-                        if luaent and luaent._particle_spawners and not data.particle_spawners then
-                            data.particle_spawners = luaent._particle_spawners
-                            data.current_effect_type = luaent._effect_type or settled_effect
-                            data.particles_were_prone = luaent._particles_were_prone
-                        end
-
-                        if settled_effect ~= current_effect or not has_active_spawners or orientation_changed then
-                            if data.particle_spawners then
-                                for _, pid in ipairs(data.particle_spawners) do
-                                    core.delete_particlespawner(pid)
-                                end
-                                data.particle_spawners = nil
-                            end
-                            if luaent._particle_spawners then
-                                for _, pid in ipairs(luaent._particle_spawners) do
-                                    core.delete_particlespawner(pid)
-                                end
-                                luaent._particle_spawners = nil
-                            end
-                            if settled_effect ~= "impact" then
-                                local spawners, eff = deathstats.spawn_corpse_particles(cpos, data.death_info, data.corpse)
-                                data.particle_spawners = spawners
-                                data.current_effect_type = eff
-                                luaent._particle_spawners = spawners
-                                luaent._effect_type = eff
-                                data.particles_were_prone = is_prone
-                                luaent._particles_were_prone = is_prone
-                            else
-                                data.current_effect_type = settled_effect
-                                luaent._effect_type = settled_effect
-                            end
+                        if data.anchor.set_pos then
+                            data.anchor:set_pos(data.orbit_center)
                         end
                     end
                 end
             end
-        end
-    else
-        -- If bones are active, ensure any lingering corpse entity is removed
-        if data.corpse then
-            deathstats.remove_corpse(data.corpse)
-            data.corpse = nil
-        end
-        if data.corpse_wielditem then
-            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
-                data.corpse_wielditem:remove()
+            -- When corpse_settled is true, anchor is stationary at orbit_center with zero velocity
+
+            -- Re-evaluate environment effect once corpse has settled
+            if luaent and luaent._settled and not data.corpse_settled_particles_checked then
+                data.corpse_settled_particles_checked = true
+                if deathstats.config.enable_corpse_particles ~= false then
+                    local settled_effect = deathstats.get_corpse_effect_type(cpos, data.death_info)
+                    local current_effect = data.current_effect_type or (luaent and luaent._effect_type)
+                    local roll = (luaent._rot and luaent._rot.z) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().z) or 0
+                    local pitch = (luaent._rot and luaent._rot.x) or (data.corpse and data.corpse.get_rotation and data.corpse:get_rotation().x) or 0
+                    local uy = math.cos(roll) * math.cos(pitch)
+                    local is_prone = (uy < -0.5)
+                    local orientation_changed = (data.particles_were_prone ~= nil and data.particles_were_prone ~= is_prone)
+                    local has_active_spawners = (data.particle_spawners and #data.particle_spawners > 0)
+                        or (luaent and luaent._particle_spawners and #luaent._particle_spawners > 0)
+
+                    if luaent and luaent._particle_spawners and not data.particle_spawners then
+                        data.particle_spawners = luaent._particle_spawners
+                        data.current_effect_type = luaent._effect_type or settled_effect
+                        data.particles_were_prone = luaent._particles_were_prone
+                    end
+
+                    if settled_effect ~= current_effect or not has_active_spawners or orientation_changed then
+                        if data.particle_spawners then
+                            for _, pid in ipairs(data.particle_spawners) do
+                                core.delete_particlespawner(pid)
+                            end
+                            data.particle_spawners = nil
+                        end
+                        if luaent._particle_spawners then
+                            for _, pid in ipairs(luaent._particle_spawners) do
+                                core.delete_particlespawner(pid)
+                            end
+                            luaent._particle_spawners = nil
+                        end
+                        if settled_effect ~= "impact" then
+                            local spawners, eff = deathstats.spawn_corpse_particles(cpos, data.death_info, data.corpse)
+                            data.particle_spawners = spawners
+                            data.current_effect_type = eff
+                            luaent._particle_spawners = spawners
+                            luaent._effect_type = eff
+                            data.particles_were_prone = is_prone
+                            luaent._particles_were_prone = is_prone
+                        else
+                            data.current_effect_type = settled_effect
+                            luaent._effect_type = settled_effect
+                        end
+                    end
+                end
             end
-            data.corpse_wielditem = nil
         end
     end
 
@@ -806,19 +737,6 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
         local new_center = vector.copy(bones_pos)
         data.bones_pos = new_center
         data.orbit_center = new_center
-        if data.corpse then
-            deathstats.remove_corpse(data.corpse)
-            data.corpse = nil
-        end
-        if data.corpse_wielditem then
-            if (not data.corpse_wielditem.is_valid or data.corpse_wielditem:is_valid()) and data.corpse_wielditem.remove then
-                data.corpse_wielditem:remove()
-            end
-            data.corpse_wielditem = nil
-        end
-        data.corpse_pos = nil
-        data.corpse_visuals = nil
-        data.corpse_vel = nil
         local eff_r = data.eff_radius or data.orbit_radius or (deathstats.config.orbit_radius or 3.2)
         local eff_h = data.eff_height or (eff_r * (data.nominal_ratio or 0.46875))
         local cur_angle = data.orbit_angle or (data.yaw or 0)
@@ -849,7 +767,6 @@ function deathstats.aim_camera_at_bones(player, bones_pos)
         local target_pitch = atan2(eff_h, eff_r)
         if player.set_look_horizontal then player:set_look_horizontal(cur_angle) end
         if player.set_look_vertical then player:set_look_vertical(target_pitch) end
-        deathstats.update_death_camera(player, 0)
     end
 end
 
@@ -1060,12 +977,10 @@ function deathstats.set_death_camera(player, death_info)
     local ppos = (saved_corpse and saved_corpse.pos) or player:get_pos()
     if not ppos then return end
     local bones_pos = deathstats.find_player_bones(player)
-    local should_show_bones = deathstats.get_bones_mode()
-    local expect_bones = should_show_bones or (bones_pos ~= nil)
     local surface_y = (saved_corpse and saved_corpse.pos.y) or deathstats.find_ground_surface(ppos, bones_pos, death_info)
     local corpse_pos = vector.new(ppos.x, surface_y, ppos.z)
-    local in_liquid = deathstats.is_in_liquid(ppos, death_info)
-    local orbit_center = (in_liquid and corpse_pos) or bones_pos or corpse_pos
+    local orbit_center = corpse_pos
+
 
     -- Cache original player properties and armor groups for clean respawn restoration
     local props = player:get_properties() or {}
@@ -1235,24 +1150,21 @@ function deathstats.set_death_camera(player, death_info)
     end
 
     local lb = deathstats.last_blow[name]
-    local corpse = nil
-    if not expect_bones then
-        corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb, is_reconnect_death)
-        if corpse and corpse.get_pos then
-            local actual_pos = corpse:get_pos()
-            if actual_pos then
-                orbit_center = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
-                corpse_pos = orbit_center
-            end
+    local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_info, lb, is_reconnect_death)
+    if corpse and corpse.get_pos then
+        local actual_pos = corpse:get_pos()
+        if actual_pos then
+            corpse_pos = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
+            orbit_center = corpse_pos
         end
     end
     local particle_spawners = nil
     local current_effect_type = nil
     local initial_is_prone = false
     local c_ent = corpse and corpse.get_luaentity and corpse:get_luaentity()
-    local is_corpse_settled = expect_bones or (corpse == nil) or (c_ent and c_ent._settled == true)
+    local is_corpse_settled = (corpse == nil) or (c_ent and c_ent._settled == true)
     if deathstats.config.enable_corpse_particles ~= false and is_corpse_settled then
-        local particle_pos = bones_pos or corpse_pos
+        local particle_pos = corpse_pos
         particle_spawners, current_effect_type = deathstats.spawn_corpse_particles(particle_pos, death_info, corpse)
         local c_rot = (c_ent and c_ent._rot) or (corpse and corpse.get_rotation and corpse:get_rotation())
         local r = (c_rot and c_rot.z) or 0
@@ -1264,11 +1176,11 @@ function deathstats.set_death_camera(player, death_info)
             c_ent._effect_type = current_effect_type
         end
     end
-    if not expect_bones and not corpse and core.after then
+    if not corpse and core.after then
         core.after(0.2, function()
             local p = core.get_player_by_name(name)
             local cdata = deathstats.player_camera_data[name]
-            if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse and not cdata.has_bones and not cdata.expect_bones then
+            if p and p:is_player() and deathstats.dead_players[name] and cdata and not cdata.corpse then
                 local retry_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals, p, death_info, lb, is_reconnect_death)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
@@ -1276,8 +1188,8 @@ function deathstats.set_death_camera(player, death_info)
                     if retry_corpse.get_pos then
                         local actual_pos = retry_corpse:get_pos()
                         if actual_pos then
-                            cdata.orbit_center = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
-                            cdata.corpse_pos = cdata.orbit_center
+                            cdata.corpse_pos = vector.new(actual_pos.x, actual_pos.y, actual_pos.z)
+                            cdata.orbit_center = cdata.corpse_pos
                             if cdata.anchor and (not cdata.anchor.is_valid or cdata.anchor:is_valid()) and cdata.anchor.set_pos then
                                 cdata.anchor:set_pos(cdata.orbit_center)
                             end
@@ -1497,10 +1409,9 @@ function deathstats.set_death_camera(player, death_info)
     deathstats.player_camera_data[name] = {
         has_bones = (bones_pos ~= nil),
         bones_pos = bones_pos,
-        expect_bones = expect_bones,
-        corpse_pos = (not expect_bones) and corpse_pos or nil,
+        corpse_pos = corpse_pos,
         initial_death_pos = corpse_pos,
-        corpse_visuals = (not expect_bones) and visuals or nil,
+        corpse_visuals = visuals,
         orbit_center = orbit_center,
         orbit_angle = initial_angle,
         orbit_radius = radius,

@@ -165,7 +165,7 @@ core = {
         }
         core.dropped_items = core.dropped_items or {}
         table.insert(core.dropped_items, item_obj)
-        return item_obj
+        return item_obj, item_obj
     end,
     world_nodes = {},
     get_node = function(pos)
@@ -1086,8 +1086,8 @@ core.on_respawnplayer(player1)
 assert(deathstats.dead_players["Alice"] == nil, "Player must not be marked dead after respawn")
 print("  [PASS] Fall damage loop immunity, one-time death guard & damage sound suppression")
 
--- TEST 11: Bones Mod Camera Targeting & Delayed Placement Tracking
--- Case A: Bones placed prior to deathstats hook (standard execution order via optional_depends = bones)
+-- TEST 11: Corpse-Centric Camera Orbit & Explicit Bones Targeting
+-- Case A: Death with bones present: camera orbits corpse directly resting atop bones
 local bones_loc = { x = 10, y = 5, z = 10 }
 core.set_node(bones_loc, { name = "bones:bones" })
 player1:set_pos(bones_loc)
@@ -1097,48 +1097,55 @@ deathstats.trigger_death_screen(player1, { type = "punch" })
 
 assert(deathstats.dead_players["Alice"] == true, "Alice must be dead")
 local cam_data = deathstats.player_camera_data["Alice"]
-assert(cam_data ~= nil and cam_data.has_bones == true, "Camera must detect bones block")
-assert(player1.camera ~= nil and player1.camera.mode == "first", "Camera mode must be 'first' when looking at bones")
-assert(player1.look_vertical > 0, "Camera look_vertical must be tilted downwards (>0) directly toward the bones")
+assert(cam_data ~= nil, "Camera data must be initialized")
+assert(cam_data.corpse ~= nil, "Corpse entity must always be spawned")
+assert(player1.camera ~= nil and player1.camera.mode == "first", "Camera mode must be 'first' when orbiting corpse")
+assert(player1.look_vertical > 0, "Camera look_vertical must be tilted downwards (>0) directly toward corpse")
 assert(player1:get_attach() ~= nil, "Player must be attached to camera anchor")
 local ppos = player1:get_pos()
-local dist_to_bones = vector.distance(ppos, bones_loc)
-assert(dist_to_bones < 0.001, "Anchor must be stationed directly at bones node")
-assert(player1.eye_offset[1].z < 0 and player1.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from bones node")
-assert(cam_data.orbit_center.x == bones_loc.x and cam_data.orbit_center.z == bones_loc.z, "Orbit center must align with bones node")
+local corpse_loc = cam_data.corpse:get_pos()
+local dist_to_corpse = vector.distance(ppos, corpse_loc)
+assert(dist_to_corpse < 0.001, "Anchor must be stationed directly at corpse")
+assert(player1.eye_offset[1].z < 0 and player1.eye_offset[1].y > 0, "Eye offset must project backwards and upwards from corpse")
+assert(cam_data.orbit_center.x == bones_loc.x and cam_data.orbit_center.z == bones_loc.z, "Orbit center must align horizontally with death location")
+assert(cam_data.orbit_center.y == 5.5, "Corpse rests cleanly on top surface of bones node")
 
--- Test globalstep maintains yaw & pitch while pointing at bones
+-- Test globalstep maintains yaw & pitch while pointing at corpse
 player1:set_look_vertical(0)
 core.on_globalstep(0.1)
-assert(player1.look_vertical == cam_data.pitch, "Globalstep must maintain camera pitch pointing at bones")
-assert(player1.look_horizontal == cam_data.yaw, "Globalstep must maintain camera yaw pointing at bones")
+assert(player1.look_vertical == cam_data.pitch, "Globalstep must maintain camera pitch pointing at corpse")
+assert(player1.look_horizontal == cam_data.yaw, "Globalstep must maintain camera yaw pointing at corpse")
 
 -- Respawn resets camera data
 core.on_respawnplayer(player1)
 assert(deathstats.player_camera_data["Alice"] == nil, "Camera data must be cleared on respawn")
 
--- Case B: Bones placed delayed (e.g. on subsequent tick)
+-- Case B: Bones placed delayed & explicit aim_camera_at_bones targeting
 core.world_nodes = {}
 local late_loc = { x = 20, y = 5, z = 20 }
 player1:set_pos(late_loc)
 player1:set_hp(0)
 
 deathstats.trigger_death_screen(player1, { type = "punch" })
-assert(deathstats.player_camera_data["Alice"].has_bones == false, "Initially no bones placed")
 assert(player1.camera.mode == "first", "Always defaults to first mode for orbit")
+local late_cam = deathstats.player_camera_data["Alice"]
+assert(late_cam.corpse ~= nil, "Corpse entity must be spawned")
 
--- Simulate bones mod placing bones node on subsequent tick
+-- Delayed bones placed in world: corpse orbit continues without jitter or per-tick polling overhead
 core.set_node(late_loc, { name = "bones:bones" })
 core.on_globalstep(0.1)
+assert(late_cam.corpse ~= nil, "Camera smoothly orbits corpse without disruption from delayed bones")
 
-local late_cam = deathstats.player_camera_data["Alice"]
-assert(late_cam ~= nil and late_cam.has_bones == true, "Globalstep must detect delayed bones placement")
-assert(player1.camera.mode == "first", "Delayed bones detection maintains first mode")
-assert(player1.look_vertical > 0, "Delayed bones detection must orient camera downward at bones")
+-- Explicit aim_camera_at_bones aligns view to bones node
+deathstats.aim_camera_at_bones(player1, late_loc)
+assert(late_cam.has_bones == true, "aim_camera_at_bones sets has_bones flag")
+assert(late_cam.orbit_center.x == late_loc.x and late_cam.orbit_center.y == late_loc.y and late_cam.orbit_center.z == late_loc.z,
+    "aim_camera_at_bones aligns orbit center to bones node")
+assert(player1.look_vertical > 0, "Camera must orient downward at bones")
 
 core.on_respawnplayer(player1)
 core.world_nodes = {}
-print("  [PASS] Bones camera targeting: open-space anchoring, direct aim & delayed placement detection")
+print("  [PASS] Corpse-centric camera orbit & explicit bones targeting")
 
 -- TEST 13: Player Join HP Check & Death Screen Recovery (aligning with Luanti builtin/game/death_screen.lua)
 -- Case A: Player joins with HP > 0 (alive): cleans up any stale death effects, camera, and HUDs
@@ -2072,16 +2079,9 @@ deathstats.update_death_camera(p_midair, 0.05)
 assert(p_midair:get_physics_override().gravity == 0, "Death camera update must lock gravity back to 0")
 assert(p_midair:get_physics_override().speed == 0, "Death camera update must lock speed back to 0")
 
--- Simulate delayed bones appearing at y = 35: player must be detached, set to new_center, and re-attached to anchor
-core.world_nodes["15,35,15"] = { name = "bones:bones" }
-core.node_metas["15,35,15"] = {
-    get_string = function(self, key)
-        if key == "owner" then return "AirSkydiver" end
-        return ""
-    end,
-}
-deathstats.update_death_camera(p_midair, 0.05)
-assert(air_cam.has_bones == true, "Delayed bones must be recognized")
+-- Test explicit aim_camera_at_bones: player is detached, set to new_center, and re-attached to anchor
+deathstats.aim_camera_at_bones(p_midair, { x = 15, y = 35, z = 15 })
+assert(air_cam.has_bones == true, "Explicit bones aim must be recognized")
 assert(air_cam.orbit_center.y == 35, "Orbit center must align with bones")
 assert(math.abs(p_midair:get_pos().y - 35) < 0.01, "Player position must align with bones altitude (y = 35)")
 assert(p_midair:get_attach() ~= nil, "Player must remain securely attached to anchor")
@@ -3811,8 +3811,8 @@ do
     assert(mode_k == "keep", "mode must be 'keep'")
     assert(show_k == false, "should_show_bones must be false when bones_mode == 'keep'")
 
-    -- Corpse suppression when bones_mode == "bones":
-    -- When player dies with bones_mode == "bones", deathstats must NOT spawn deathstats:corpse
+    -- Uniform Corpse Spawning when bones_mode == "bones":
+    -- When player dies with bones_mode == "bones", deathstats MUST ALWAYS spawn deathstats:corpse
     core.settings:set("bones_mode", "bones")
     local p_bones_user = create_mock_player("BonesUser")
     p_bones_user:set_pos({ x = 50, y = 10, z = 50 })
@@ -3821,41 +3821,25 @@ do
     deathstats.trigger_death_screen(p_bones_user, { type = "punch" })
     local cdata_bones = deathstats.player_camera_data["BonesUser"]
     assert(cdata_bones ~= nil, "Camera data must be initialized")
-    assert(cdata_bones.expect_bones == true, "expect_bones must be true when bones_mode == 'bones'")
-    assert(cdata_bones.corpse == nil, "Corpse entity must NOT be spawned when bones_mode == 'bones'")
-    assert(cdata_bones.corpse_pos == nil, "corpse_pos must be nil when expecting bones")
+    assert(cdata_bones.corpse ~= nil, "Corpse entity MUST always be spawned even when bones_mode == 'bones'")
+    assert(cdata_bones.corpse_pos ~= nil, "corpse_pos must be populated")
 
-    -- Delayed bones placement: orbit locks onto bones, corpse remains nil
+    -- Delayed bones placement: corpse is smoothly orbited and PRESERVED (never purged)
     local bones_node_pos = { x = 50, y = 10, z = 50 }
     core.set_node(bones_node_pos, { name = "bones:bones" })
     core.on_globalstep(0.1)
+    assert(cdata_bones.corpse ~= nil, "Corpse entity must be preserved when bones are placed")
 
-    assert(cdata_bones.has_bones == true, "has_bones must be detected by update_death_camera")
+    -- Calling aim_camera_at_bones centers the view without deleting the corpse
+    deathstats.aim_camera_at_bones(p_bones_user, bones_node_pos)
+    assert(cdata_bones.has_bones == true, "has_bones is set by aim_camera_at_bones")
     assert(cdata_bones.bones_pos.x == 50 and cdata_bones.bones_pos.y == 10 and cdata_bones.bones_pos.z == 50,
         "bones_pos must match bones node coordinates")
+    assert(cdata_bones.corpse ~= nil, "Corpse entity must remain intact after aim_camera_at_bones")
     assert(cdata_bones.orbit_center.x == 50 and cdata_bones.orbit_center.y == 10 and cdata_bones.orbit_center.z == 50,
-        "Orbit center must be centered directly on the bones node")
-    assert(cdata_bones.corpse == nil, "Corpse entity must remain nil after bones placed")
+        "Orbit center must be aligned with bones position")
 
-    -- Corpse purge: if a corpse entity existed, update_death_camera and aim_camera_at_bones immediately remove it
-    local dummy_corpse_removed = false
-    local dummy_corpse = {
-        is_valid = function() return true end,
-        remove = function() dummy_corpse_removed = true end,
-    }
-    cdata_bones.corpse = dummy_corpse
-    cdata_bones.has_bones = false -- simulate before detection
-    core.on_globalstep(0.1)
-    assert(dummy_corpse_removed == true, "Existing corpse must be removed upon delayed bones detection")
-    assert(cdata_bones.corpse == nil, "Corpse reference must be cleared")
-
-    dummy_corpse_removed = false
-    cdata_bones.corpse = dummy_corpse
-    deathstats.aim_camera_at_bones(p_bones_user, bones_node_pos)
-    assert(dummy_corpse_removed == true, "Existing corpse must be removed by aim_camera_at_bones")
-    assert(cdata_bones.corpse == nil, "Corpse reference must be cleared by aim_camera_at_bones")
-
-    -- Fallback: when bones mod is absent, corpse IS spawned
+    -- Absent bones mod: corpse IS also spawned
     core.loaded_mods["bones"] = nil
     core.world_nodes = {}
     core.on_respawnplayer(p_bones_user)
@@ -3863,15 +3847,14 @@ do
     deathstats.set_death_camera(p_bones_user)
     local cdata_nobones = deathstats.player_camera_data["BonesUser"]
     assert(cdata_nobones ~= nil, "Camera data must exist")
-    assert(cdata_nobones.expect_bones == false, "expect_bones must be false when bones mod is absent")
-    assert(cdata_nobones.corpse ~= nil, "Corpse entity must be spawned when bones mod is not active")
+    assert(cdata_nobones.corpse ~= nil, "Corpse entity must be spawned when bones mod is absent")
 
     -- Clean up
     core.on_respawnplayer(p_bones_user)
     core.settings:set("bones_mode", "bones")
     core.loaded_mods["bones"] = nil
 
-    print("  [PASS] Bones mod settings compatibility, corpse suppression & bones fallback")
+    print("  [PASS] Bones mod settings compatibility & uniform corpse spawning")
 end
 
 -- =========================================================================
@@ -11113,8 +11096,8 @@ suites[107] = function()
         dofile("../x_mob_core/api.lua")
     end
     dofile("../x_mobs/api.lua")
-    local xmobs = rawget(_G, "x_mobs")
-    assert(type(xmobs.detach_attached_children) == "function", "x_mobs.detach_attached_children must exist")
+    local xmob_core = rawget(_G, "x_mob_core")
+    assert(type(xmob_core.detach_attached_children) == "function", "x_mob_core.detach_attached_children must exist")
 
     -- Mock mob object builder
     local function create_mock_mob(pos)
@@ -11176,7 +11159,7 @@ suites[107] = function()
     mob1:_add_child(arrow1)
 
     core.dropped_items = {}
-    xmobs.detach_attached_children(mob1)
+    xmob_core.detach_attached_children(mob1)
     assert(death_called == true, "on_death callback must be called on attached arrow")
     assert(arrow1:is_valid() == false, "Arrow must be removed after detachment")
     assert(arrow1:get_attach() == nil, "Arrow must be detached")
@@ -11193,7 +11176,7 @@ suites[107] = function()
     mob2:_add_child(arrow_creative)
 
     core.dropped_items = {}
-    xmobs.detach_attached_children(mob2)
+    xmob_core.detach_attached_children(mob2)
     assert(arrow_creative._lua._dropped == true, "Creative arrow must be marked as _dropped")
     assert(#core.dropped_items == 0, "Creative arrow must not drop items")
     assert(arrow_creative:is_valid() == false, "Creative arrow must be removed")
@@ -11208,7 +11191,7 @@ suites[107] = function()
     mob3:_add_child(arrow_infinity)
 
     core.dropped_items = {}
-    xmobs.detach_attached_children(mob3)
+    xmob_core.detach_attached_children(mob3)
     assert(arrow_infinity._lua._dropped == true, "Infinity arrow must be marked as _dropped")
     assert(#core.dropped_items == 0, "Infinity arrow must not drop items")
     assert(arrow_infinity:is_valid() == false, "Infinity arrow must be removed")
@@ -11222,7 +11205,7 @@ suites[107] = function()
     mob4:_add_child(arrow_fallback)
 
     core.dropped_items = {}
-    xmobs.detach_attached_children(mob4)
+    xmob_core.detach_attached_children(mob4)
     assert(#core.dropped_items == 1, "Fallback item drop must occur")
     local d_vel = core.dropped_items[1]:get_velocity()
     assert(d_vel ~= nil and d_vel.y >= 2.0, "Dropped item must receive upward scatter velocity")
@@ -11233,7 +11216,7 @@ suites[107] = function()
     local player_rider = create_mock_child(true, nil)
     mob5:_add_child(player_rider)
 
-    xmobs.detach_attached_children(mob5)
+    xmob_core.detach_attached_children(mob5)
     assert(player_rider:is_valid() == true, "Player rider must NOT be removed")
     assert(player_rider:get_attach() == nil, "Player rider must be detached safely")
 
@@ -11242,7 +11225,7 @@ suites[107] = function()
     local visual_prop = create_mock_child(false, { _is_visual = true })
     mob6:_add_child(visual_prop)
 
-    xmobs.detach_attached_children(mob6)
+    xmob_core.detach_attached_children(mob6)
     assert(visual_prop:is_valid() == false, "Visual attachment prop must be removed")
 
     -- 7. x_bows arrow on_death with 3D Scatter
