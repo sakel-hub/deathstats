@@ -22,6 +22,8 @@ local KNOWN_HUMANOID_MESHES = {
     ["myappearance_character.b3d"] = true,
     ["character.glb"] = true,
     ["3d_armor_character.glb"] = true,
+    ["mcl_armor_character.b3d"] = true,
+    ["mcl_armor_character_female.b3d"] = true,
 }
 
 
@@ -48,7 +50,7 @@ function cs.is_humanoid_mesh(mesh)
     end
     -- Check voxlibre / mineclonia player models
     local mcl_p = rawget(_G, "mcl_player")
-    if mcl_p and mcl_p.registered_players and mesh:find("character") then
+    if (mcl_p and mesh:find("character")) or (core.get_modpath("mcl_player") and mesh:find("character")) then
         return true
     end
     return false
@@ -427,7 +429,8 @@ function cs.get_player_visuals(player)
         raw_mesh = xpapi.resolve_model_redirect(raw_mesh)
     end
 
-    local is_redirected_to_canonical = raw_mesh and (raw_mesh:find("^3d_armor_character") ~= nil or raw_mesh:find("^character") ~= nil)
+    local is_redirected_to_canonical = (xpapi ~= nil and type(xpapi) == "table") and raw_mesh
+        and (raw_mesh:find("^3d_armor_character") ~= nil or raw_mesh:find("^character") ~= nil)
 
     local is_skinsdb = not is_redirected_to_canonical and (
         (raw_mesh == "skinsdb_3d_armor_character_5.b3d")
