@@ -1834,8 +1834,8 @@ if papi then
 end
 deathstats.pose_corpse(mock_gltf_corpse, "character.glb")
 assert(mock_gltf_corpse.played_track == "lay", "glTF corpse must play named 'lay' animation track")
-assert(mock_gltf_corpse.played_opts ~= nil and mock_gltf_corpse.played_opts.loop == false, "glTF corpse must play with loop=false")
-assert(mock_gltf_corpse.anim ~= nil and mock_gltf_corpse.anim.range.x == 0, "glTF corpse set_animation fallback must lock frame 0")
+assert(mock_gltf_corpse.played_opts ~= nil and mock_gltf_corpse.played_opts.loop == true, "glTF corpse must play with loop=true")
+assert(mock_gltf_corpse.anim == nil, "glTF corpse must not reset animation frame via set_animation")
 print("  [PASS] Multi-Skin Mod Compatibility & Corpse Appearance Inheritance")
 
 -- TEST 24: Luanti Out-of-the-Box Drops & Bones Preservation (Zero Inventory Interference)
@@ -2241,11 +2241,11 @@ assert((right_arm_deg >= 34.99 and right_arm_deg <= 80.01) or (right_arm_deg >= 
     string.format("Arm_Right angle (%f deg) must fall within broken bone ranges", right_arm_deg))
 
 local left_leg_deg = math.deg(rand_res["Leg_Left"])
-assert((left_leg_deg >= -70.01 and left_leg_deg <= -14.99) or (left_leg_deg >= 9.99 and left_leg_deg <= 30.01),
+assert(left_leg_deg >= -70.01 and left_leg_deg <= -14.99,
     string.format("Leg_Left angle (%f deg) must fall within broken bone ranges", left_leg_deg))
 
 local right_leg_deg = math.deg(rand_res["Leg_Right"])
-assert((right_leg_deg >= 14.99 and right_leg_deg <= 70.01) or (right_leg_deg >= -30.01 and right_leg_deg <= -9.99),
+assert(right_leg_deg >= 14.99 and right_leg_deg <= 70.01,
     string.format("Leg_Right angle (%f deg) must fall within broken bone ranges", right_leg_deg))
 
 local head_deg = math.deg(rand_res["Head"])
@@ -7052,26 +7052,53 @@ local function run_test_suite_64()
         "Downward pitch rotational velocity must be absorbed by ground contact normal")
     corpse_air:remove()
 
-    -- Steep Slope Longitudinal Barrel Rolling (Roll Z vs Pitch X)
-    local corpse_slope = core.add_entity({ x = 130, y = 15, z = 130 }, "deathstats:corpse")
-    local lua_slope = corpse_slope:get_luaentity()
-    lua_slope._settled = false
-    lua_slope._rot = { x = 0, y = 0, z = 0 }
-    lua_slope._base_yaw = 0
-    corpse_slope:set_velocity({ x = 0, y = 0, z = 1.0 })
-
+    -- Steep Slope Longitudinal Barrel Rolling & Downhill Slope Rotation
     local orig_slope_pitch = deathstats.detect_corpse_slope_pitch
     deathstats.detect_corpse_slope_pitch = function()
         return 0.55, 15.0 -- ~31.5 deg incline
     end
 
+    -- Test lateral downhill tumbling to the left (yaw = 0, moving -x): rolls with negative rot.z
+    local corpse_slope = core.add_entity({ x = 130, y = 15, z = 130 }, "deathstats:corpse")
+    local lua_slope = corpse_slope:get_luaentity()
+    lua_slope._settled = false
+    lua_slope._rot = { x = 0, y = 0, z = 0 }
+    lua_slope._base_yaw = 0
+    corpse_slope:set_velocity({ x = -1.5, y = 0, z = 0 })
+
     local slope_mr = { touching_ground = true, collides = true }
     lua_slope:on_step(0.1, slope_mr)
     assert(lua_slope._rot.x == 0.55, "Corpse pitch must stay locked flush with slope angle")
-    assert(lua_slope._rot.z > 0, "Corpse must roll longitudinally like a log (Roll Z > 0) along its spine")
+    assert(lua_slope._rot.z < 0, "Corpse rolling leftward down slope must roll with Roll Z < 0")
+    corpse_slope:remove()
+
+    -- Test lateral downhill tumbling to the right (yaw = 0, moving +x): rolls with positive rot.z
+    local corpse_slope_r = core.add_entity({ x = 130, y = 15, z = 130 }, "deathstats:corpse")
+    local lua_slope_r = corpse_slope_r:get_luaentity()
+    lua_slope_r._settled = false
+    lua_slope_r._rot = { x = 0, y = 0, z = 0 }
+    lua_slope_r._base_yaw = 0
+    corpse_slope_r:set_velocity({ x = 1.5, y = 0, z = 0 })
+
+    lua_slope_r:on_step(0.1, slope_mr)
+    assert(lua_slope_r._rot.x == 0.55, "Corpse pitch must stay locked flush with slope angle")
+    assert(lua_slope_r._rot.z > 0, "Corpse rolling rightward down slope must roll with Roll Z > 0")
+    corpse_slope_r:remove()
+
+    -- Test pure longitudinal sliding (head-first or feet-first along spine): zero barrel roll
+    local corpse_slope_long = core.add_entity({ x = 130, y = 15, z = 130 }, "deathstats:corpse")
+    local lua_slope_long = corpse_slope_long:get_luaentity()
+    lua_slope_long._settled = false
+    lua_slope_long._rot = { x = 0, y = 0, z = 0 }
+    lua_slope_long._base_yaw = 0
+    corpse_slope_long:set_velocity({ x = 0, y = 0, z = 1.0 })
+
+    lua_slope_long:on_step(0.1, slope_mr)
+    assert(lua_slope_long._rot.x == 0.55, "Corpse pitch must stay locked flush with slope angle")
+    assert(lua_slope_long._rot.z == 0, "Pure longitudinal sliding must not trigger barrel rolling")
+    corpse_slope_long:remove()
 
     deathstats.detect_corpse_slope_pitch = orig_slope_pitch
-    corpse_slope:remove()
 
     -- Wall Impact Angular Braking & Parallel Deflection
     local corpse_wall = core.add_entity({ x = 140, y = 10, z = 140 }, "deathstats:corpse")
@@ -7315,12 +7342,10 @@ local function run_test_suite_67()
 
     assert(double_crossed_count == 0,
         "Double-crossed legs (X-cross) must NEVER occur (expected 0, got: " .. tostring(double_crossed_count) .. ")")
-    local crossed_pct = (crossed_count / total_samples) * 100
-    assert(crossed_count >= 15 and crossed_count <= 75,
-        string.format("Crossed legs rate must be ~4%% (expected 15-75 in 1000 samples, got %d = %.1f%%)",
-            crossed_count, crossed_pct))
-    assert(natural_splay_count >= 920,
-        string.format("Natural splayed legs rate must be > 92%%, got %d = %.1f%%",
+    assert(crossed_count == 0,
+        string.format("Crossed legs must be completely prevented (expected 0 in 1000 samples, got %d)", crossed_count))
+    assert(natural_splay_count == total_samples,
+        string.format("Natural splayed legs rate must be 100%%, got %d = %.1f%%",
             natural_splay_count, (natural_splay_count / total_samples) * 100))
 
     -- Verify lateral side-pose generates grounded resting archetypes (flank rest, parallel, subtle stagger)
@@ -11253,5 +11278,290 @@ suites[107] = function()
 end
 suites[107]()
 
-print("\nALL 107 TEST SUITES PASSED SUCCESSFULLY!")
+-- TEST 108: Corpse Offhand & Shield Wielditem Integration
+suites[108] = function()
+    print("\n--- TEST 108: Corpse Offhand & Shield Wielditem Integration ---")
+
+    local saved_xpapi = rawget(_G, "x_player_api")
+    local saved_xpa = rawget(_G, "x_player_armor")
+    local saved_armor = rawget(_G, "armor")
+
+    -- 1. Test get_player_left_wield_item with x_player_api
+    local mock_player = {
+        _name = "ShieldHero",
+        is_player = function() return true end,
+        get_player_name = function(self) return self._name end,
+        get_wielded_item = function() return ItemStack("") end,
+        get_inventory = function() return nil end,
+        get_meta = function() return nil end,
+    }
+
+    local mock_xpapi = {
+        enable_wield_item = true,
+        get_left_wield_item = function()
+            return "x_player_armor:shield_steel"
+        end,
+        attach_wield_item_to_entity = function(parent, item, fmt, bone, ent_name, forced_vis)
+            local went = core.add_entity(parent:get_pos(), ent_name or "deathstats:corpse_wielditem")
+            went:set_attach(parent, bone, { x = 0, y = 4.9, z = -3.5 }, { x = -90, y = 45, z = 90 }, forced_vis)
+            return went
+        end,
+    }
+    rawset(_G, "x_player_api", mock_xpapi)
+
+    local left_item = deathstats.get_player_left_wield_item(mock_player)
+    assert(left_item == "x_player_armor:shield_steel", "Must extract shield from x_player_api.get_left_wield_item")
+
+    -- 2. Test get_player_left_wield_item fallback to x_player_armor (top-level and legacy combat)
+    mock_xpapi.get_left_wield_item = nil
+    rawset(_G, "x_player_armor", {
+        get_equipped_shield = function()
+            return ItemStack("x_player_armor:shield_gold")
+        end
+    })
+    local left_item_top = deathstats.get_player_left_wield_item(mock_player)
+    assert(left_item_top == "x_player_armor:shield_gold",
+        "Must extract shield from x_player_armor.get_equipped_shield")
+
+    rawset(_G, "x_player_armor", {
+        combat = {
+            get_equipped_shield = function()
+                return ItemStack("x_player_armor:shield_wood")
+            end
+        }
+    })
+    local left_item_xpa = deathstats.get_player_left_wield_item(mock_player)
+    assert(left_item_xpa == "x_player_armor:shield_wood",
+        "Must extract shield from x_player_armor.combat.get_equipped_shield")
+    rawset(_G, "x_player_armor", nil)
+
+    -- 3. Test get_player_left_wield_item fallback to 3d_armor textures
+    rawset(_G, "armor", {
+        textures = {
+            ["ShieldHero"] = { shield = "3d_armor_shield_diamond.png" }
+        }
+    })
+    core.registered_items["3d_armor:shield_diamond"] = {}
+    local left_item_armor = deathstats.get_player_left_wield_item(mock_player)
+    assert(left_item_armor == "3d_armor:shield_diamond", "Must extract shield from armor.textures")
+    rawset(_G, "armor", nil)
+
+    -- 4. Test corpse spawn with both right wield item and left shield
+    local corpse_pos = { x = 50, y = 5, z = 50 }
+    local visuals_dual = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        wield_item = "default:sword_steel",
+        left_wield_item = "x_player_armor:shield_steel",
+        inventory_dropped = false,
+        armor_dropped = false,
+    }
+    local corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_dual)
+    assert(corpse ~= nil, "Corpse must spawn")
+
+    local right_ent = deathstats.get_corpse_wielditem(corpse)
+    local left_ent = deathstats.get_corpse_left_wielditem(corpse)
+    assert(right_ent ~= nil, "Right wielditem entity must be attached to corpse")
+    assert(left_ent ~= nil, "Left wielditem entity must be attached to corpse")
+
+    local _, r_bone = right_ent:get_attach()
+    local _, l_bone = left_ent:get_attach()
+    assert(r_bone == "Arm_Right", "Right wielditem must attach to Arm_Right")
+    assert(l_bone == "Arm_Left", "Left wielditem must attach to Arm_Left")
+
+    -- 5. Test corpse removal cleans up both right and left wield entities
+    deathstats.remove_corpse(corpse)
+    assert(right_ent:is_valid() == false, "Right wielditem entity must be removed on remove_corpse")
+    assert(left_ent:is_valid() == false, "Left wielditem entity must be removed on remove_corpse")
+
+    -- 6. Test armor drop suppression of shields
+    local visuals_shield_dropped = {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        wield_item = "default:sword_steel",
+        left_wield_item = "x_player_armor:shield_steel",
+        inventory_dropped = false,
+        armor_dropped = true,
+    }
+    local corpse_shield_dropped = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_shield_dropped)
+    assert(deathstats.get_corpse_wielditem(corpse_shield_dropped) ~= nil,
+        "Right weapon remains when only armor dropped")
+    assert(deathstats.get_corpse_left_wielditem(corpse_shield_dropped) == nil,
+        "Left shield must NOT spawn when armor dropped")
+    deathstats.remove_corpse(corpse_shield_dropped)
+
+    -- Restore globals
+    rawset(_G, "x_player_api", saved_xpapi)
+    rawset(_G, "x_player_armor", saved_xpa)
+    rawset(_G, "armor", saved_armor)
+
+    print("  [PASS] Corpse Offhand & Shield Wielditem Integration")
+end
+suites[108]()
+
+--- TEST 109: Corpse Visuals Parity (GLB Pose & Bone Orientation, Underground Recovery, x_player_armor Integration) ---
+suites[109] = function()
+    print("\n--- TEST 109: Corpse Visuals Parity (GLB Pose & Bone Orientation, Underground Recovery, x_player_armor Integration) ---")
+
+    -- 1. GLB Posing: loop = true and no set_animation(0, 0) reset
+    local mock_glb_corpse = {
+        props = { mesh = "character.glb" },
+        played_track = nil,
+        played_opts = nil,
+        anim = nil,
+        set_properties = function(self, pr) self.props = pr end,
+        play_animation = function(self, track, opts)
+            self.played_track = track
+            self.played_opts = opts
+        end,
+        set_animation = function(self, range, speed, blend, loop)
+            self.anim = { range = range, speed = speed, blend = blend, loop = loop }
+        end,
+    }
+    deathstats.pose_corpse(mock_glb_corpse, "character.glb", "lay")
+    assert(mock_glb_corpse.played_track == "lay", "GLB corpse must play 'lay' animation track")
+    assert(mock_glb_corpse.played_opts ~= nil and mock_glb_corpse.played_opts.loop == true,
+        "GLB corpse play_animation must have loop=true so it stays laid down")
+    assert(mock_glb_corpse.anim == nil,
+        "GLB corpse must not call set_animation(0,0) which cancels the lay pose")
+
+    -- 2. Bone Orientation: GLB vs B3D Axis Parity (Left-Handed to Right-Handed inversion)
+    local b3d_corpse = core.add_entity({ x = 500, y = 10, z = 500 }, "deathstats:corpse")
+    local b3d_lent = b3d_corpse:get_luaentity()
+    b3d_lent._mesh = "character.b3d"
+    deathstats.rotate_corpse_bone(b3d_corpse, "Leg_Left", vector.new(0, 0, math.rad(-30)))
+    local b3d_override = b3d_corpse:get_bone_override("Leg_Left")
+    assert(b3d_override ~= nil, "B3D corpse must receive bone override")
+    assert(math.abs(b3d_override.rotation.vec.z - math.rad(-30)) < 0.001,
+        "B3D corpse retains direct rotation angles")
+
+    local glb_corpse = core.add_entity({ x = 500, y = 10, z = 500 }, "deathstats:corpse")
+    local glb_lent = glb_corpse:get_luaentity()
+    glb_lent._mesh = "character.glb"
+    deathstats.rotate_corpse_bone(glb_corpse, "Leg_Left", vector.new(0, 0, math.rad(-30)))
+    local glb_override = glb_corpse:get_bone_override("Leg_Left")
+    assert(glb_override ~= nil, "GLB corpse must receive bone override")
+    assert(math.abs(glb_override.rotation.vec.z - math.rad(30)) < 0.001,
+        "GLB corpse must invert bone rotation axes to match B3D outward leg splay")
+    b3d_corpse:remove()
+    glb_corpse:remove()
+
+    -- 3. Underground Settle Recovery: Clipped corpse (pos.y < surface_y) is elevated
+    local clipped_corpse = core.add_entity({ x = 100, y = 9.8, z = 100 }, "deathstats:corpse")
+    local clip_lent = clipped_corpse:get_luaentity()
+    clip_lent._mesh = "character.b3d"
+    clip_lent._base_yaw = 0
+    clip_lent._death_info = { category = "fall" }
+    -- Mock ground surface at y = 10.0 (top surface of block at y = 9.5..10.5)
+    core.world_nodes["100,10,100"] = "default:stone"
+    deathstats.settle_corpse_at_rest(clip_lent)
+    local settled_pos = clipped_corpse:get_pos()
+    assert(settled_pos.y >= 10.0,
+        "Clipped corpse below ground must be elevated to or above surface_y, got: " .. tostring(settled_pos.y))
+    core.world_nodes["100,10,100"] = nil
+    clipped_corpse:remove()
+
+    -- 4. x_player_armor Modular Armor Attachment & Cleanup
+    local saved_xpa = rawget(_G, "x_player_armor")
+    local spawned_armor_ents = {}
+    local xpa_mock = {
+        attach_armor_to_entity = function(parent, armor_items, format)
+            local a_ent = core.add_entity(parent:get_pos(), "x_player_armor:visual")
+            a_ent:set_attach(parent, "Body", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+            table.insert(spawned_armor_ents, a_ent)
+            return { a_ent }
+        end,
+    }
+    rawset(_G, "x_player_armor", xpa_mock)
+
+    local corpse_pos = { x = 600, y = 10, z = 600 }
+    local visuals_with_armor = {
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        armor_dropped = false,
+        inventory_dropped = false,
+        armor_items = { "x_player_armor:chestplate_diamond" },
+    }
+    local armor_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_with_armor)
+    assert(armor_corpse ~= nil, "spawn_and_setup_corpse must return corpse entity")
+    local a_lent = armor_corpse:get_luaentity()
+    assert(a_lent._armor_entities ~= nil and #a_lent._armor_entities == 1,
+        "Corpse must store spawned x_player_armor visual entities in _armor_entities")
+    assert(#spawned_armor_ents == 1, "x_player_armor.attach_armor_to_entity must have been called")
+
+    deathstats.remove_corpse(armor_corpse)
+    assert(a_lent._armor_entities == nil, "Corpse removal must clear _armor_entities")
+    assert(spawned_armor_ents[1].removed == true, "Corpse removal must remove attached armor entity")
+
+    -- Verify that when armor_dropped is true, modular armor is NOT attached to corpse
+    spawned_armor_ents = {}
+    local visuals_armor_dropped = {
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        armor_dropped = true,
+        inventory_dropped = false,
+        armor_items = { "x_player_armor:chestplate_diamond" },
+    }
+    local dropped_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_armor_dropped)
+    local d_lent = dropped_corpse:get_luaentity()
+    assert(d_lent._armor_entities == nil,
+        "Corpse must NOT attach modular armor when armor_dropped is true")
+    assert(#spawned_armor_ents == 0,
+        "x_player_armor.attach_armor_to_entity must NOT be called when armor_dropped is true")
+    deathstats.remove_corpse(dropped_corpse)
+
+    -- 5. x_player_armor Shield Attachment to Corpse
+    local shield_attach_called = false
+    local shield_target_item = nil
+    local shield_target_format = nil
+    local xpa_shield_mock = {
+        attach_shield_to_entity = function(parent, item, format, opts)
+            shield_attach_called = true
+            shield_target_item = item
+            shield_target_format = format
+            local s_ent = core.add_entity(parent:get_pos(), (opts and opts.entity_name) or "deathstats:corpse_wielditem")
+            s_ent:set_attach(parent, "Arm_Left", { x = -0.8, y = 5.0, z = -2.8 }, { x = 180, y = 45, z = 0 }, true)
+            return s_ent
+        end,
+    }
+    rawset(_G, "x_player_armor", xpa_shield_mock)
+
+    local visuals_shield = {
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        left_wield_item = "x_player_armor:shield_steel",
+        armor_dropped = false,
+        inventory_dropped = false,
+    }
+    local shield_corpse = deathstats.spawn_and_setup_corpse(corpse_pos, visuals_shield)
+    assert(shield_corpse ~= nil, "Corpse must spawn")
+    assert(shield_attach_called == true, "x_player_armor.attach_shield_to_entity must be called for shield")
+    assert(shield_target_item == "x_player_armor:shield_steel", "Shield item name must be passed")
+    assert(shield_target_format == "glb", "Corpse format glb must be passed to attach_shield_to_entity")
+    local s_went = deathstats.get_corpse_left_wielditem(shield_corpse)
+    assert(s_went ~= nil and s_went:is_valid(), "Corpse left wielditem entity must be registered")
+    local _, s_bone, s_pos, s_rot = s_went:get_attach()
+    assert(s_bone == "Arm_Left", "Shield must attach to Arm_Left")
+    assert(math.abs(s_pos.y - 5.0) < 0.01 and math.abs(s_rot.x - 180) < 0.01,
+        "Shield must have proper forearm transform")
+    deathstats.remove_corpse(shield_corpse)
+    assert(s_went:is_valid() == false, "Shield entity must be removed on remove_corpse")
+
+    rawset(_G, "x_player_armor", saved_xpa)
+
+    print("  [PASS] Corpse Visuals Parity (GLB Pose & Bone Orientation, Underground Recovery, x_player_armor Integration)")
+end
+suites[109]()
+
+print("\nALL 109 TEST SUITES PASSED SUCCESSFULLY!")
 

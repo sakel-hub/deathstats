@@ -349,6 +349,9 @@ function cs.get_player_visuals(player)
             visual_size = { x = 1, y = 1, z = 1 },
             yaw = 0,
             armor_dropped = false,
+            inventory_dropped = false,
+            wield_item = "",
+            left_wield_item = "",
         }
     end
 
@@ -368,6 +371,37 @@ function cs.get_player_visuals(player)
     local drops_armor = deathstats.is_armor_dropped(player)
     local drops_inventory = deathstats.is_inventory_dropped(player)
     local wield_item = deathstats.get_player_wield_item(player)
+    local left_wield_item = deathstats.get_player_left_wield_item and deathstats.get_player_left_wield_item(player) or ""
+
+    -- Extract x_player_armor worn items snapshot
+    local armor_items = {}
+    if not drops_armor then
+        local xpa = rawget(_G, "x_player_armor")
+        if xpa and type(xpa) == "table" then
+            local inv = nil
+            if type(xpa.get_valid_player) == "function" then
+                local _, p_inv = xpa.get_valid_player(player)
+                inv = p_inv
+            end
+            if inv then
+                local list = inv:get_list("armor")
+                if list then
+                    for _, item in ipairs(list) do
+                        if item and not item:is_empty() then
+                            table.insert(armor_items, item:to_string())
+                        end
+                    end
+                end
+            end
+            if #armor_items == 0 and name and xpa.visuals and xpa.visuals.last_death_armor and xpa.visuals.last_death_armor[name] then
+                for _, item in ipairs(xpa.visuals.last_death_armor[name]) do
+                    if item and not item:is_empty() then
+                        table.insert(armor_items, item:to_string())
+                    end
+                end
+            end
+        end
+    end
 
     -- Extract base skin and metadata
     local skin_tex, custom_mesh, format, vs_x, vs_y = cs.extract_base_skin(player, name)
@@ -594,5 +628,7 @@ function cs.get_player_visuals(player)
         armor_dropped = drops_armor,
         inventory_dropped = drops_inventory,
         wield_item = wield_item,
+        left_wield_item = left_wield_item,
+        armor_items = armor_items,
     }
 end

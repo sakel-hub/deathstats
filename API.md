@@ -48,10 +48,13 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
   -> analysis: table` |  Main Death Cause Analyzer: parses engine death reason metadata or invokes environmental inspection  @*param* `player` — The deceased player object  @*param* `reason` — The engine reason table from on_dieplayer or show_death_screen  @*return* `analysis` — The complete death metadata table (category, reason_text, killer_name, weapon, funny_note) |
 | `analyze_death_raw` | `function deathstats.analyze_death_raw(player: ObjectRef, reason: table\|nil)
   -> analysis: table` |  Internal raw death cause analyzer  @*param* `player` — The deceased player object  @*param* `reason` — The engine reason table from on_dieplayer or show_death_screen  @*return* `analysis` — The un-enriched death metadata table |
-| `apply_corpse_bounce_impact` | `function deathstats.apply_corpse_bounce_impact(corpse: ObjectRef, impact_vy: number, _rebound_v: Vector, _rot: table\|nil, bounce_count: number)` |  Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce  @*param* `corpse` — The corpse entity object  @*param* `impact_vy` — Downward velocity of the impact  @*param* `_rebound_v` — Resulting rebound velocity vector  @*param* `_rot` — Current rotation {x, y, z}  @*param* `bounce_count` — Current bounce index (1 or 2) |
+| `apply_corpse_bounce_impact` | `function deathstats.apply_corpse_bounce_impact(corpse: ObjectRef, impact_vy: number, rebound_v: Vector, rot: table\|nil, bounce_count: number)` |  Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce  @*param* `corpse` — The corpse entity object  @*param* `impact_vy` — Downward velocity of the impact  @*param* `rebound_v` — Resulting rebound velocity vector  @*param* `rot` — Current rotation {x, y, z}  @*param* `bounce_count` — Current bounce index (1 or 2) |
 | `calc_oriented_particle_bounds` | `function deathstats.calc_oriented_particle_bounds(rot: table\|nil, min_val: number, max_val: number, spread_h: number)
   -> min_v: table
   2. max_v: table` |  Calculates rotation-compensated particle emitter vectors for an attached entity.  Computes the local direction matching world +Y (straight up) so that particles  always rise upward in world space regardless of whether the corpse is prone, supine, or tilted.  @*param* `rot` — Rotation { x = pitch, y = yaw, z = roll } in radians  @*param* `min_val` — Minimum scalar magnitude (e.g. min vertical velocity or acceleration)  @*param* `max_val` — Maximum scalar magnitude (e.g. max vertical velocity or acceleration)  @*param* `spread_h` — Horizontal spread magnitude  @*return* `min_v` — Vector { x, y, z }  @*return* `max_v` — Vector { x, y, z } |
+| `calc_oriented_particle_pos` | `function deathstats.calc_oriented_particle_pos(rot: table\|nil, min_h_offset: number, max_h_offset: number, h_spread: number)
+  -> min_p: table
+  2. max_p: table` |  Calculates rotation-compensated particle emitter position box for an attached entity.  Offsets along the local axis corresponding to world +Y (UP) so particles always emit  from the top of the corpse regardless of pitch and roll.  @*param* `rot` — Rotation { x = pitch, y = yaw, z = roll } in radians  @*param* `min_h_offset` — Minimum vertical offset above corpse (world space)  @*param* `max_h_offset` — Maximum vertical offset above corpse (world space)  @*param* `h_spread` — Horizontal half-width spread around corpse (world space)  @*return* `min_p` — Vector { x, y, z }  @*return* `max_p` — Vector { x, y, z } |
 | `calculate_corpse_impulse` | `function deathstats.calculate_corpse_impulse(player: ObjectRef\|nil, death_info: table\|nil, last_blow: table\|nil)
   -> velocity: Vector
   2. rot_speed: Vector` |  Calculate initial 3D linear launch velocity and angular tumbling impulse for a ragdoll corpse  @*param* `player` — The deceased player  @*param* `death_info` — The death analysis table  @*param* `last_blow` — The recorded lethal blow data  @*return* `velocity` — Initial 3D velocity vector for the corpse  @*return* `rot_speed` — Initial angular tumbling velocity (pitch, yaw, roll) |
@@ -133,6 +136,8 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
   -> corpse: ObjectRef\|nil` |  Get the active corpse entity for a player name if currently spawned  @*return* `corpse` — The active corpse entity or nil |
 | `get_corpse_effect_type` | `function deathstats.get_corpse_effect_type(corpse_pos: table, death_info: table\|nil)
   -> effect_type: string` |  Determine the appropriate particle effect for a corpse based on death cause and environment  @*param* `corpse_pos` — The {x, y, z} position of the corpse  @*param* `death_info` — Optional death analysis table  @*return* `effect_type` — water |
+| `get_corpse_left_wielditem` | `function deathstats.get_corpse_left_wielditem(corpse: ObjectRef\|nil)
+  -> went: ObjectRef\|nil` |  Get the attached left wielditem entity (shield/offhand) from a corpse  @*param* `corpse` — The corpse entity object  @*return* `went` — The attached left wielditem entity or nil |
 | `get_corpse_wielditem` | `function deathstats.get_corpse_wielditem(corpse: ObjectRef\|nil)
   -> went: ObjectRef\|nil` |  Get the attached wielditem entity from a corpse  @*param* `corpse` — The corpse entity object  @*return* `went` — The attached wielditem entity or nil |
 | `get_depth_description` | `function deathstats.get_depth_description(y: number\|nil)
@@ -166,23 +171,25 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `get_player_hp` | `function deathstats.get_player_hp(player: ObjectRef\|nil)
   -> hp: integer` |  Get current health points safely  @*param* `player` — The player object  @*return* `hp` — Current health points |
 | `get_player_hydration` | `function deathstats.get_player_hydration(player: ObjectRef)
-  -> current: number?
-  2. max: number?
-  3. ratio: number?
-  4. source: string?
-  5. is_dehydrated: boolean?` |  Get player current hydration and thirst stats across supported thirst mods  @*param* `player` — Luanti player object  @*return* `current` — Current thirst value  @*return* `max` — Maximum thirst value  @*return* `ratio` — Hydration ratio (0.0 - 1.0)  @*return* `source` — Identification of originating thirst mod  @*return* `is_dehydrated` — True if thirst value is critical (<= 1) |
+  -> current: number\|nil
+  2. max: number\|nil
+  3. ratio: number\|nil
+  4. mod_name: string\|nil
+  5. is_dehydrated: boolean` |  Get hydration status and metrics for a player from thirsty mod  Delegated to deathstats.compat_hunger.get_player_hydration  @*param* `player` — The player object  @*return* `current` — Current hydro points (0-20)  @*return* `max` — Maximum hydration (20)  @*return* `ratio` — Normalized hydration ratio (0.0 to 1.0)  @*return* `mod_name` — Mod identifier ("thirsty")  @*return* `is_dehydrated` — True if hydro points <= 0 |
+| `get_player_left_wield_item` | `function deathstats.get_player_left_wield_item(player: ObjectRef)
+  -> item_name: string` |  Extract the player's active left/offhand wielded item or shield name  @*param* `player` — The player object  @*return* `item_name` — The item technical name (e.g. "x_player_armor:shield_steel"), or "" if empty |
 | `get_player_ping` | `function deathstats.get_player_ping(player_name: string)
   -> ping: integer` |  Query round-trip network ping latency in milliseconds for a connected player  @*param* `player_name` — Username of the target player  @*return* `ping` — Latency in milliseconds (0 for local or unavailable) |
 | `get_player_row_cells` | `function deathstats.get_player_row_cells(item: table, m: table)
   -> cells: table` |  Get formatted cell strings for all columns of a player row  Iterates over m.columns and invokes each column's get_value callback  @*param* `item` — Player scoreboard entry  @*param* `m` — Metrics table  @*return* `cells` — Array of cell strings |
 | `get_player_satiation` | `function deathstats.get_player_satiation(player: ObjectRef)
-  -> current: number?
-  2. max: number?
-  3. ratio: number?
-  4. source: string?
-  5. is_starving: boolean?` |  Get player current satiation and hunger stats across supported hunger mods  @*param* `player` — Luanti player object  @*return* `current` — Current hunger value  @*return* `max` — Maximum hunger value  @*return* `ratio` — Satiation ratio (0.0 - 1.0)  @*return* `source` — Identification of originating hunger mod  @*return* `is_starving` — True if hunger value is critical (<= 1) |
+  -> current: number\|nil
+  2. max: number\|nil
+  3. ratio: number\|nil
+  4. mod_name: string\|nil
+  5. is_starving: boolean` |  Get current satiation / hunger metrics for a player across all supported hunger mods  Delegated to deathstats.compat_hunger.get_player_satiation  @*param* `player` — The player object  @*return* `current` — The current hunger/satiation points  @*return* `max` — The maximum hunger/satiation capacity  @*return* `ratio` — The normalized saturation ratio from 0.0 (empty) to 1.0 (full)  @*return* `mod_name` — The technical identifier of the detected hunger framework  @*return* `is_starving` — True if hunger is at or below the framework's starvation damage threshold |
 | `get_player_visuals` | `function deathstats.get_player_visuals(player: ObjectRef)
-  -> visuals: PlayerVisuals` |  Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods  @*param* `player` — Luanti player object  @*return* `visuals` — Visual properties table |
+  -> visuals: table` |  Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods  @*param* `player` — The player object  @*return* `visuals` — { mesh = string, textures = table, visual_size = table, yaw = number, armor_dropped = boolean } |
 | `get_player_wield_item` | `function deathstats.get_player_wield_item(player: ObjectRef)
   -> item_name: string` |  Extract the player's active wielded item name, ignoring internal camera hands  @*param* `player` — The player object  @*return* `item_name` — The item technical name (e.g. "default:sword_steel"), or "" if empty/hand |
 | `get_player_window_size` | `function deathstats.get_player_window_size(player: ObjectRef\|nil)
@@ -190,7 +197,7 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
   2. screen_h: integer
   3. hud_scaling: number` |  Get player window size and display scaling parameters safely  @*param* `player` — Target player  @*return* `screen_w` — Screen width in pixels (default 1280)  @*return* `screen_h` — Screen height in pixels (default 720)  @*return* `hud_scaling` — Client HUD scaling factor |
 | `get_pose_elevation_offset` | `function deathstats.get_pose_elevation_offset(pose_type: string\|nil)
-  -> offset: number` |  Return the vertical position offset required to keep different resting poses  (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.  In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed  along the central torso plane.  Supine and prone both rest flat on the ground with zero vertical offset (0.0),  keeping the body (torso and legs) flush against the ground.  Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.  Wall sit and slouch maintain upright origin contact (0.0).  @*param* `pose_type` — supine  @*return* `offset` — Vertical offset in nodes |
+  -> offset: number` |  Return the vertical position offset required to keep different resting poses  (supine, prone, lateral, wall_sit, slouch) resting flat on top of the ground.  In character.b3d lay animation (frame 166), the entity origin (0,0,0) is stationed  along the back plane (Y min = -0.108, Y max = +0.427).  Rotating into prone (roll = pi) inverts Y to [-0.427, +0.108], plunging the chest/face  0.32 blocks into the ground if not offset.  Lateral (roll = +/- pi/2) places the shoulder at -0.27, needing a +0.16 block offset.  Wall sit and slouch maintain upright origin contact (0.0).  @*param* `pose_type` — supine  @*return* `offset` — Vertical offset in nodes |
 | `get_pose_selectionbox` | `function deathstats.get_pose_selectionbox(pose_type: string\|nil)
   -> selectionbox: number[]` |  Return the interaction selectionbox bounding box for a given resting pose  to match the physical mesh contact bounds in world space.  @*param* `pose_type` — supine  @*return* `selectionbox` — Bounding box table { minx, miny, minz, maxx, maxy, maxz } |
 | `get_scoreboard_bg_texture` | `function deathstats.get_scoreboard_bg_texture(m: table, viewer_row_idx: integer\|nil, _entries: table\|nil)
@@ -237,13 +244,13 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `is_player_dead` | `function deathstats.is_player_dead(player_or_name: string\|ObjectRef)
   -> is_dead: boolean` |  Check if a player is currently deceased (viewing death screen or HP <= 0)  @*param* `player_or_name` — The player object or username  @*return* `is_dead` — True if the player is dead |
 | `is_player_dehydrated` | `function deathstats.is_player_dehydrated(player: ObjectRef)
-  -> is_dehydrated: boolean` |  Check if player is currently dehydrated  @*param* `player` — Luanti player object  @*return* `is_dehydrated` — True if player is dehydrated |
+  -> boolean` |  Check if player is dehydrated (thirst hydro depleted) |
 | `is_player_online` | `function deathstats.is_player_online(player_or_name: string\|ObjectRef)
   -> is_online: boolean` |  Check if a player is currently connected and active on the server  @*param* `player_or_name` — The player object or player name  @*return* `is_online` — True if player is actively connected and not leaving/offline |
 | `is_player_sprint_exhausted` | `function deathstats.is_player_sprint_exhausted(player: ObjectRef)
-  -> is_exhausted: boolean` |  Check if player is exhausted from sprinting  @*param* `player` — Luanti player object  @*return* `is_exhausted` — True if stamina/exhaustion threshold is reached |
+  -> boolean` |  Check if player was recently sprinting or sprint-stamina exhausted  Supports hbsprint, sprint_lite, unified_stamina, stamina |
 | `is_player_starving` | `function deathstats.is_player_starving(player: ObjectRef)
-  -> is_starving: boolean` |  Check if player is currently starving  @*param* `player` — Luanti player object  @*return* `is_starving` — True if player is starving |
+  -> is_starving: boolean` |  Check if a player is in a starving state (satiation/hunger depleted)  Seamlessly integrates with hbhunger, hudbars, stamina, hunger_ng, mcl_hunger, and classic hunger  @*param* `player` — The player object  @*return* `is_starving` — True if hunger level is at or below starvation threshold |
 | `is_respawning` | `table<string, boolean>` | Flags marking players currently in respawn transition |
 | `is_scoreboard_key_down` | `function deathstats.is_scoreboard_key_down(player: ObjectRef, key_setting: string\|nil, ctrl: table\|nil)
   -> is_down: boolean` |  Determine if the player is currently holding the scoreboard activation key/combination  Supports "zoom", "sneak+aux1", "aux1", "sneak", or custom combinations  @*param* `player` — Target player  @*param* `key_setting` — Optional key config string  @*param* `ctrl` — Optional pre-fetched player control table  @*return* `is_down` — True if all configured keys are currently pressed |
@@ -328,9 +335,9 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `settle_ragdoll_limbs` | `function deathstats.settle_ragdoll_limbs(corpse: ObjectRef, impact_damage: number\|nil, pose_type: string\|nil, hanging_legs: boolean\|nil, roll_rad: number\|nil)` |  Apply final limp resting fractures or organic pose angles to corpse limbs on landing  @*param* `corpse` — The corpse entity object  @*param* `impact_damage` — Damage of the lethal impact  @*param* `pose_type` — Optional resting pose ("supine", "prone", "lateral")  @*param* `hanging_legs` — True if legs hang over a ledge/drop  @*param* `roll_rad` — Optional corpse roll angle in radians |
 | `show_corpse_epitaph_formspec` | `function deathstats.show_corpse_epitaph_formspec(clicker: ObjectRef, corpse_ref: table\|ObjectRef)` |  Show corpse epitaph tombstone plaque formspec when living players right-click a settled corpse  @*param* `clicker` — The living player inspecting the corpse  @*param* `corpse_ref` — The corpse entity reference or luaentity table |
 | `show_death_formspec` | `function deathstats.show_death_formspec(player: ObjectRef, death_info: table)` |  Display the elevated death formspec with consistent padding above hotbar area  @*param* `player` — The deceased player object  @*param* `death_info` — The death analysis metadata table containing cause, killer, and notes |
-| `show_lifetime_formspec` | `function deathstats.show_lifetime_formspec(player: ObjectRef, from_death_screen: boolean\|nil)` |  Display the lifetime player dossier formspec dialog (alias for show_lifetime_stats_formspec)  @*param* `player` — Luanti player object  @*param* `from_death_screen` — True if launched from death screen modal |
+| `show_lifetime_formspec` | `function deathstats.show_lifetime_formspec(player: ObjectRef, from_death_screen: boolean\|string\|nil)` |  Display the lifetime player dossier formspec dialog (alias for show_lifetime_stats_formspec)  @*param* `player` — Luanti player object  @*param* `from_death_screen` — True if launched from death screen modal, or specific tab name |
 | `show_lifetime_stats_formspec` | `function deathstats.show_lifetime_stats_formspec(player: ObjectRef, tab: string\|nil)` |  Display the Lifetime Statistics Dashboard with transparent backdrop and accessible tabs  @*param* `player` — The player viewing statistics  @*param* `tab` — The active tab name ("overview", "records", "ores", or "combat") |
-| `show_photo_mode_formspec` | `function deathstats.show_photo_mode_formspec(player: ObjectRef)` |  Display the elevated death formspec with consistent padding above hotbar area  @*param* `player` — The deceased player object  @*param* `death_info` — The death analysis metadata table containing cause, killer, and notes   Show minimal photo mode overlay with single button to restore death UI  @*param* `player` — The deceased player object |
+| `show_photo_mode_formspec` | `function deathstats.show_photo_mode_formspec(player: ObjectRef)` |  Show minimal photo mode overlay with single button to restore death UI  @*param* `player` — The deceased player object |
 | `show_scoreboard_formspec` | `function deathstats.show_scoreboard_formspec(player: ObjectRef, tab: string\|nil)` |  Display the full scrollable formspec scoreboard table with all players  @*param* `player` — Target player  @*param* `tab` — Optional tab ("live" or "hall_of_fame"). Defaults to "live". |
 | `show_scoreboard_hud` | `function deathstats.show_scoreboard_hud(player: ObjectRef, precomputed_entries: table\|nil)` |  Display or initialize the 2D HUD Scoreboard overlay for a player  Centered at position={x=0.5, y=0.5} with z_index=1000 and monospaced style=1  @*param* `player` — The player holding the activation key  @*param* `precomputed_entries` — Optional pre-calculated scoreboard entries |
 | `spawn_and_setup_corpse` | `function deathstats.spawn_and_setup_corpse(corpse_pos: Vector, visuals: table, player: ObjectRef\|nil, death_info: table\|nil, last_blow: table\|nil, is_settled_override: boolean\|nil)
@@ -350,8 +357,8 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `unhide_corpse_arrows` | `function deathstats.unhide_corpse_arrows(corpse: ObjectRef\|nil)` |  Unhide and restore native visual scale for any arrows attached to a corpse  Defensively resets is_visible = true and restores visual_size if previously zeroed  @*param* `corpse` — The corpse entity object |
 | `unregister_scoreboard_column` | `function deathstats.unregister_scoreboard_column(id: string)` |  Unregister an existing scoreboard column by id  @*param* `id` — Unique column identifier |
 | `update_death_camera` | `function deathstats.update_death_camera(player: ObjectRef, dtime: number)` |  Update camera position and orientation along the circular orbit  @*param* `player` — The deceased player object  @*param* `dtime` — Delta time in seconds since last frame |
-| `update_ragdoll_flight_limbs` | `function deathstats.update_ragdoll_flight_limbs(corpse: ObjectRef, velocity: Vector, _base_yaw: number, bounce_shock: number\|nil)` |  Procedurally adjust corpse limb angles during flight with 3D aerodynamics, vertical drag & bounce shock  @*param* `corpse` — The corpse entity object  @*param* `velocity` — Current velocity vector  @*param* `_base_yaw` — Facing yaw of the corpse  @*param* `bounce_shock` — Optional active bounce shock impulse |
-| `update_ragdoll_slide_limbs` | `function deathstats.update_ragdoll_slide_limbs(corpse: ObjectRef, velocity: Vector, _base_yaw: number, bounce_shock: number\|nil, slide_timer: number\|nil)` |  Procedurally adjust corpse limbs while sliding along ground or tumbling down stairs/hills  Simulates ground surface friction drag, stair step bumps, and reactive limp jostling  @*param* `corpse` — The corpse entity object  @*param* `velocity` — Current velocity vector  @*param* `_base_yaw` — Facing yaw of the corpse  @*param* `bounce_shock` — Active bounce shock impulse  @*param* `slide_timer` — Accumulated sliding duration in seconds |
+| `update_ragdoll_flight_limbs` | `function deathstats.update_ragdoll_flight_limbs(corpse: ObjectRef, velocity: Vector, base_yaw: number, bounce_shock: number\|nil)` |  Procedurally adjust corpse limb angles during flight with 3D aerodynamics, vertical drag & bounce shock  @*param* `corpse` — The corpse entity object  @*param* `velocity` — Current velocity vector  @*param* `base_yaw` — Facing yaw of the corpse  @*param* `bounce_shock` — Optional active bounce shock impulse |
+| `update_ragdoll_slide_limbs` | `function deathstats.update_ragdoll_slide_limbs(corpse: ObjectRef, velocity: Vector, base_yaw: number, bounce_shock: number\|nil, slide_timer: number\|nil)` |  Procedurally adjust corpse limbs while sliding along ground or tumbling down stairs/hills  Simulates ground surface friction drag, stair step bumps, and reactive limp jostling  @*param* `corpse` — The corpse entity object  @*param* `velocity` — Current velocity vector  @*param* `base_yaw` — Facing yaw of the corpse  @*param* `bounce_shock` — Active bounce shock impulse  @*param* `slide_timer` — Accumulated sliding duration in seconds |
 | `update_scoreboard_hud` | `function deathstats.update_scoreboard_hud(player: ObjectRef, precomputed_entries: table\|nil)` |  Update existing scoreboard HUD overlay elements with live changes (diff-based)  Only changes fields that modified (time, stats, ping) to eliminate network lag  @*param* `player` — Target player  @*param* `precomputed_entries` — Optional pre-calculated scoreboard entries |
 | `zero_player_velocity` | `function deathstats.zero_player_velocity(player: ObjectRef)` |  Cancel any player momentum / velocity safely across Luanti engine versions  Uses modern player:get_velocity() / player:add_velocity() without triggering deprecation warnings  @*param* `player` — The player object |
 
@@ -452,7 +459,7 @@ Cinematic death screen, ragdoll physics simulation, grave epitaphs, lifetime sta
 | `scoreboard_key` | `string` | Keybinding name used to toggle the live scoreboard HUD |
 | `scoreboard_suppress_chat` | `boolean` | Automatically suppress background chat messages when scoreboard is open |
 | `scoreboard_update_interval` | `number` | Refresh interval in seconds between scoreboard HUD updates |
-| `time_format` | `string` | Scoreboard clock time display formatting mode ("24h" or "12h") |
+| `time_format` | `string` | Time display formatting mode ("24h" or "12h") |
 
 ### `PlayerLifetimeStats`
 
@@ -1183,53 +1190,55 @@ function deathstats.get_funny_note(category: string)
 
 #### `deathstats.get_player_hydration`
 
-Get player current hydration and thirst stats across supported thirst mods
+Get hydration status and metrics for a player from thirsty mod
+ Delegated to deathstats.compat_hunger.get_player_hydration
 
 ```lua
 function deathstats.get_player_hydration(player: ObjectRef)
-  -> current: number?
-  2. max: number?
-  3. ratio: number?
-  4. source: string?
-  5. is_dehydrated: boolean?
+  -> current: number|nil
+  2. max: number|nil
+  3. ratio: number|nil
+  4. mod_name: string|nil
+  5. is_dehydrated: boolean
 ```
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`): The player object
 
 **Returns:**
 
-* `current` (`number?`): Current thirst value
-* `max` (`number?`): Maximum thirst value
-* `ratio` (`number?`): Hydration ratio (0.0 - 1.0)
-* `source` (`string?`): Identification of originating thirst mod
-* `is_dehydrated` (`boolean?`): True if thirst value is critical (<= 1)
+* `current` (`number|nil`): Current hydro points (0-20)
+* `max` (`number|nil`): Maximum hydration (20)
+* `ratio` (`number|nil`): Normalized hydration ratio (0.0 to 1.0)
+* `mod_name` (`string|nil`): Mod identifier ("thirsty")
+* `is_dehydrated` (`boolean`): True if hydro points <= 0
 
 #### `deathstats.get_player_satiation`
 
-Get player current satiation and hunger stats across supported hunger mods
+Get current satiation / hunger metrics for a player across all supported hunger mods
+ Delegated to deathstats.compat_hunger.get_player_satiation
 
 ```lua
 function deathstats.get_player_satiation(player: ObjectRef)
-  -> current: number?
-  2. max: number?
-  3. ratio: number?
-  4. source: string?
-  5. is_starving: boolean?
+  -> current: number|nil
+  2. max: number|nil
+  3. ratio: number|nil
+  4. mod_name: string|nil
+  5. is_starving: boolean
 ```
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`): The player object
 
 **Returns:**
 
-* `current` (`number?`): Current hunger value
-* `max` (`number?`): Maximum hunger value
-* `ratio` (`number?`): Satiation ratio (0.0 - 1.0)
-* `source` (`string?`): Identification of originating hunger mod
-* `is_starving` (`boolean?`): True if hunger value is critical (<= 1)
+* `current` (`number|nil`): The current hunger/satiation points
+* `max` (`number|nil`): The maximum hunger/satiation capacity
+* `ratio` (`number|nil`): The normalized saturation ratio from 0.0 (empty) to 1.0 (full)
+* `mod_name` (`string|nil`): The technical identifier of the detected hunger framework
+* `is_starving` (`boolean`): True if hunger is at or below the framework's starvation damage threshold
 
 #### `deathstats.inspect_surroundings_fallback`
 
@@ -1271,41 +1280,43 @@ function deathstats.is_mob_entity(ent_name: string, ent_def: table|nil, ent_inst
 
 #### `deathstats.is_player_dehydrated`
 
-Check if player is currently dehydrated
+Check if player is dehydrated (thirst hydro depleted)
 
 ```lua
 function deathstats.is_player_dehydrated(player: ObjectRef)
-  -> is_dehydrated: boolean
+  -> boolean
 ```
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`)
 
 **Returns:**
 
-* `is_dehydrated` (`boolean`): True if player is dehydrated
+* `boolean`
 
 #### `deathstats.is_player_sprint_exhausted`
 
-Check if player is exhausted from sprinting
+Check if player was recently sprinting or sprint-stamina exhausted
+ Supports hbsprint, sprint_lite, unified_stamina, stamina
 
 ```lua
 function deathstats.is_player_sprint_exhausted(player: ObjectRef)
-  -> is_exhausted: boolean
+  -> boolean
 ```
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`)
 
 **Returns:**
 
-* `is_exhausted` (`boolean`): True if stamina/exhaustion threshold is reached
+* `boolean`
 
 #### `deathstats.is_player_starving`
 
-Check if player is currently starving
+Check if a player is in a starving state (satiation/hunger depleted)
+ Seamlessly integrates with hbhunger, hudbars, stamina, hunger_ng, mcl_hunger, and classic hunger
 
 ```lua
 function deathstats.is_player_starving(player: ObjectRef)
@@ -1314,11 +1325,11 @@ function deathstats.is_player_starving(player: ObjectRef)
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`): The player object
 
 **Returns:**
 
-* `is_starving` (`boolean`): True if player is starving
+* `is_starving` (`boolean`): True if hunger level is at or below starvation threshold
 
 #### `deathstats.resolve_entity_info`
 
@@ -1392,15 +1403,15 @@ function deathstats.aim_camera_at_bones(player: ObjectRef, bones_pos: Vector)
 Apply immediate physical impact reaction to corpse limbs when colliding with ground during bounce
 
 ```lua
-function deathstats.apply_corpse_bounce_impact(corpse: ObjectRef, impact_vy: number, _rebound_v: Vector, _rot: table|nil, bounce_count: number)
+function deathstats.apply_corpse_bounce_impact(corpse: ObjectRef, impact_vy: number, rebound_v: Vector, rot: table|nil, bounce_count: number)
 ```
 
 **Parameters:**
 
 * `corpse` (`ObjectRef`): The corpse entity object
 * `impact_vy` (`number`): Downward velocity of the impact
-* `_rebound_v` (`Vector`): Resulting rebound velocity vector
-* `_rot` (`table|nil`): Current rotation {x, y, z}
+* `rebound_v` (`Vector`): Resulting rebound velocity vector
+* `rot` (`table|nil`): Current rotation {x, y, z}
 * `bounce_count` (`number`): Current bounce index (1 or 2)
 
 #### `deathstats.calculate_corpse_impulse`
@@ -1807,14 +1818,14 @@ function deathstats.settle_ragdoll_limbs(corpse: ObjectRef, impact_damage: numbe
 Procedurally adjust corpse limb angles during flight with 3D aerodynamics, vertical drag & bounce shock
 
 ```lua
-function deathstats.update_ragdoll_flight_limbs(corpse: ObjectRef, velocity: Vector, _base_yaw: number, bounce_shock: number|nil)
+function deathstats.update_ragdoll_flight_limbs(corpse: ObjectRef, velocity: Vector, base_yaw: number, bounce_shock: number|nil)
 ```
 
 **Parameters:**
 
 * `corpse` (`ObjectRef`): The corpse entity object
 * `velocity` (`Vector`): Current velocity vector
-* `_base_yaw` (`number`): Facing yaw of the corpse
+* `base_yaw` (`number`): Facing yaw of the corpse
 * `bounce_shock` (`number|nil`): Optional active bounce shock impulse
 
 #### `deathstats.update_ragdoll_slide_limbs`
@@ -1823,14 +1834,14 @@ Procedurally adjust corpse limbs while sliding along ground or tumbling down sta
  Simulates ground surface friction drag, stair step bumps, and reactive limp jostling
 
 ```lua
-function deathstats.update_ragdoll_slide_limbs(corpse: ObjectRef, velocity: Vector, _base_yaw: number, bounce_shock: number|nil, slide_timer: number|nil)
+function deathstats.update_ragdoll_slide_limbs(corpse: ObjectRef, velocity: Vector, base_yaw: number, bounce_shock: number|nil, slide_timer: number|nil)
 ```
 
 **Parameters:**
 
 * `corpse` (`ObjectRef`): The corpse entity object
 * `velocity` (`Vector`): Current velocity vector
-* `_base_yaw` (`number`): Facing yaw of the corpse
+* `base_yaw` (`number`): Facing yaw of the corpse
 * `bounce_shock` (`number|nil`): Active bounce shock impulse
 * `slide_timer` (`number|nil`): Accumulated sliding duration in seconds
 
@@ -1907,6 +1918,23 @@ function deathstats.get_corpse_effect_type(corpse_pos: table, death_info: table|
 
 * `effect_type` (`string`): water
 
+#### `deathstats.get_corpse_left_wielditem`
+
+Get the attached left wielditem entity (shield/offhand) from a corpse
+
+```lua
+function deathstats.get_corpse_left_wielditem(corpse: ObjectRef|nil)
+  -> went: ObjectRef|nil
+```
+
+**Parameters:**
+
+* `corpse` (`ObjectRef|nil`): The corpse entity object
+
+**Returns:**
+
+* `went` (`ObjectRef|nil`): The attached left wielditem entity or nil
+
 #### `deathstats.get_corpse_wielditem`
 
 Get the attached wielditem entity from a corpse
@@ -1924,22 +1952,39 @@ function deathstats.get_corpse_wielditem(corpse: ObjectRef|nil)
 
 * `went` (`ObjectRef|nil`): The attached wielditem entity or nil
 
+#### `deathstats.get_player_left_wield_item`
+
+Extract the player's active left/offhand wielded item or shield name
+
+```lua
+function deathstats.get_player_left_wield_item(player: ObjectRef)
+  -> item_name: string
+```
+
+**Parameters:**
+
+* `player` (`ObjectRef`): The player object
+
+**Returns:**
+
+* `item_name` (`string`): The item technical name (e.g. "x_player_armor:shield_steel"), or "" if empty
+
 #### `deathstats.get_player_visuals`
 
 Extract player visual characteristics (mesh, textures, visual_size, yaw) across all skin mods
 
 ```lua
 function deathstats.get_player_visuals(player: ObjectRef)
-  -> visuals: PlayerVisuals
+  -> visuals: table
 ```
 
 **Parameters:**
 
-* `player` (`ObjectRef`): Luanti player object
+* `player` (`ObjectRef`): The player object
 
 **Returns:**
 
-* `visuals` (`PlayerVisuals`): Visual properties table
+* `visuals` (`table`): { mesh = string, textures = table, visual_size = table, yaw = number, armor_dropped = boolean }
 
 #### `deathstats.get_player_wield_item`
 
@@ -2258,6 +2303,30 @@ function deathstats.calc_oriented_particle_bounds(rot: table|nil, min_val: numbe
 * `min_v` (`table`): Vector { x, y, z }
 * `max_v` (`table`): Vector { x, y, z }
 
+#### `deathstats.calc_oriented_particle_pos`
+
+Calculates rotation-compensated particle emitter position box for an attached entity.
+ Offsets along the local axis corresponding to world +Y (UP) so particles always emit
+ from the top of the corpse regardless of pitch and roll.
+
+```lua
+function deathstats.calc_oriented_particle_pos(rot: table|nil, min_h_offset: number, max_h_offset: number, h_spread: number)
+  -> min_p: table
+  2. max_p: table
+```
+
+**Parameters:**
+
+* `rot` (`table|nil`): Rotation { x = pitch, y = yaw, z = roll } in radians
+* `min_h_offset` (`number`): Minimum vertical offset above corpse (world space)
+* `max_h_offset` (`number`): Maximum vertical offset above corpse (world space)
+* `h_spread` (`number`): Horizontal half-width spread around corpse (world space)
+
+**Returns:**
+
+* `min_p` (`table`): Vector { x, y, z }
+* `max_p` (`table`): Vector { x, y, z }
+
 #### `deathstats.create_corpse_particlespawner_def`
 
 Create a modern ParticleSpawner definition table with graceful fallback to older Luanti clients
@@ -2426,13 +2495,13 @@ function deathstats.show_death_formspec(player: ObjectRef, death_info: table)
 Display the lifetime player dossier formspec dialog (alias for show_lifetime_stats_formspec)
 
 ```lua
-function deathstats.show_lifetime_formspec(player: ObjectRef, from_death_screen: boolean|nil)
+function deathstats.show_lifetime_formspec(player: ObjectRef, from_death_screen: boolean|string|nil)
 ```
 
 **Parameters:**
 
 * `player` (`ObjectRef`): Luanti player object
-* `from_death_screen` (`boolean|nil`): True if launched from death screen modal
+* `from_death_screen` (`boolean|string|nil`): True if launched from death screen modal, or specific tab name
 
 #### `deathstats.show_lifetime_stats_formspec`
 
@@ -2449,8 +2518,7 @@ function deathstats.show_lifetime_stats_formspec(player: ObjectRef, tab: string|
 
 #### `deathstats.show_photo_mode_formspec`
 
-Display the elevated death formspec with consistent padding above hotbar area
- Show minimal photo mode overlay with single button to restore death UI
+Show minimal photo mode overlay with single button to restore death UI
 
 ```lua
 function deathstats.show_photo_mode_formspec(player: ObjectRef)

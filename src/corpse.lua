@@ -571,9 +571,30 @@ core.register_entity("deathstats:corpse", {
                     end
                     if self._rot and deathstats.config.ragdoll_tumbling ~= false then
                         -- Keep pitch aligned with slope incline so torso lays flush with slope face
-                        -- Roll like a barrel/log along longitudinal spine axis (Roll Z) to avoid dipping head/feet into ground
                         self._rot.x = pitch_slope
-                        self._rot.z = (self._rot.z or 0) + accel_mag * 1.0 * dtime
+
+                        -- Decompose motion and terrain gradient into lateral axis perpendicular to spine
+                        local yaw = self._base_yaw or (self._rot and self._rot.y) or 0
+                        local lat_x = math.cos(yaw)
+                        local lat_z = math.sin(yaw)
+                        local down_lat = down_x * lat_x + down_z * lat_z
+                        local v_lat = new_vx * lat_x + new_vz * lat_z
+
+                        -- Roll like a log/barrel naturally DOWNWARDS along lateral gradient:
+                        -- Moving right (v_lat > 0) rolls with positive rot.z; moving left (v_lat < 0) rolls with negative rot.z.
+                        -- Purely longitudinal sliding (head-first or feet-first) does not barrel roll.
+                        local roll_rate = 0
+                        if math.abs(v_lat) > 0.05 then
+                            roll_rate = v_lat / 0.35
+                        elseif math.abs(down_lat) > 0.02 then
+                            roll_rate = down_lat * accel_mag * 2.0
+                        end
+                        roll_rate = math.max(-12.0, math.min(12.0, roll_rate))
+
+                        self._rot.z = (self._rot.z or 0) + roll_rate * dtime
+                        if self._rot_speed then
+                            self._rot_speed.z = roll_rate
+                        end
                         if self.object.set_rotation then
                             self.object:set_rotation(self._rot)
                         end
@@ -777,16 +798,20 @@ core.register_entity("deathstats:corpse_wielditem", {
 function deathstats.pose_corpse(corpse, mesh_name, anim_name)
     if not corpse then return end
     local req_anim = anim_name or "lay"
+    local is_glb = mesh_name and (mesh_name:find("%.glb$") ~= nil or mesh_name:find("%.gltf$") ~= nil)
 
     local anim_def = nil
     local papi = rawget(_G, "player_api") or rawget(_G, "x_player_api")
     if papi and type(papi) == "table" and type(papi.registered_models) == "table" and mesh_name and papi.registered_models[mesh_name] then
         local model_def = papi.registered_models[mesh_name]
-        if model_def and type(model_def) == "table" and model_def.animations then
-            if req_anim == "sit" then
-                anim_def = model_def.animations.sit
-            else
-                anim_def = model_def.animations.lay or model_def.animations.die
+        if model_def and type(model_def) == "table" then
+            local anims = (is_glb and model_def.animations_glb) or model_def.animations or model_def.animations_glb
+            if anims then
+                if req_anim == "sit" then
+                    anim_def = anims.sit
+                else
+                    anim_def = anims.lay or anims.die
+                end
             end
         end
     end
@@ -809,17 +834,18 @@ function deathstats.pose_corpse(corpse, mesh_name, anim_name)
     end
 
     if not anim_def then
-        anim_def = (req_anim == "sit") and { x = 81, y = 160 } or { x = 162, y = 166 }
+        if is_glb then
+            anim_def = { track = (req_anim == "sit") and "sit" or "lay" }
+        else
+            anim_def = (req_anim == "sit") and { x = 81, y = 160 } or { x = 162, y = 166 }
+        end
     end
 
     -- Multi-track glTF support (track name string or { track = "lay", ... })
     local track_name = (type(anim_def) == "string" and anim_def) or (type(anim_def) == "table" and anim_def.track)
     if track_name then
         if corpse.play_animation then
-            corpse:play_animation(track_name, { speed = 1, loop = false, priority = 0 })
-        end
-        if corpse.set_animation then
-            corpse:set_animation({ x = 0, y = 0 }, 1, 0, false)
+            corpse:play_animation(track_name, { speed = 1, loop = true, priority = 0 })
         end
         return
     end
@@ -861,12 +887,35 @@ function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
         luaent._applied_bones[bone_name] = { x = rx, y = ry, z = rz }
     end
 
+    local is_glb = false
+    if luaent and luaent._mesh then
+        is_glb = (luaent._mesh:find("%.glb$") ~= nil or luaent._mesh:find("%.gltf$") ~= nil)
+    elseif corpse.get_properties then
+        local p = corpse:get_properties()
+        if p and p.mesh then
+            is_glb = (p.mesh:find("%.glb$") ~= nil or p.mesh:find("%.gltf$") ~= nil)
+        end
+    end
+
+    local rot_x = rot_vec.x or 0
+    local rot_y = rot_vec.y or 0
+    local rot_z = rot_vec.z or 0
+
+    -- GLB / glTF bone coordinate parity:
+    -- Blitz3D export uses left-handed coordinates which inverts the local bone rotation axes relative to glTF.
+    -- Negating (rot_x, rot_y, rot_z) ensures GLB models rotate in the correct anatomical direction (preventing inward/crossed legs).
+    if is_glb then
+        rot_x = -rot_x
+        rot_y = -rot_y
+        rot_z = -rot_z
+    end
+
     -- Luanti >= 5.9.0 ObjectRef:set_bone_override
     -- Vec rotation is in radians; absolute = false applies relative to the frozen lay animation pose
     if corpse.set_bone_override then
         local success = corpse:set_bone_override(bone_name, {
             rotation = {
-                vec = vector.new(rot_vec.x or 0, rot_vec.y or 0, rot_vec.z or 0),
+                vec = vector.new(rot_x, rot_y, rot_z),
                 absolute = false,
                 interpolation = 0,
             },
@@ -904,9 +953,9 @@ function deathstats.rotate_corpse_bone(corpse, bone_name, rot_vec)
             }
         end
         local deg_vec = vector.new(
-            base.rot.x + math.deg(rot_vec.x or 0),
-            base.rot.y + math.deg(rot_vec.y or 0),
-            base.rot.z + math.deg(rot_vec.z or 0)
+            base.rot.x + math.deg(rot_x),
+            base.rot.y + math.deg(rot_y),
+            base.rot.z + math.deg(rot_z)
         )
         corpse:set_bone_position(bone_name, base.pos, deg_vec)
         return true
@@ -950,25 +999,9 @@ function deathstats.fracture_corpse_limbs(corpse, custom_angles)
         -- Right Arm: 50% chance splayed outwards (+35 to +80 deg), 30% folded inward across torso (-55 to -20 deg)
         local right_arm_deg = (math.random() < 0.5) and random_float(35, 80) or random_float(-55, -20)
         -- Legs: Anatomically, corpses naturally splay outward (Left Leg -70 to -15 deg, Right Leg +15 to +70 deg).
-        -- Crossed legs (adducted across body midline: Left Leg > 0 or Right Leg < 0) occur at a reduced, natural probability (~4%).
-        -- If one leg crosses inward, the other leg remains splayed outward to prevent unnatural double-crossed knots.
-        local cross_prob = 0.04
-        local left_leg_deg, right_leg_deg
-        if math.random() < cross_prob then
-            if math.random() < 0.5 then
-                -- Left leg crosses inward across midline (+10 to +30 deg); Right leg stays outward (+15 to +70 deg)
-                left_leg_deg = random_float(10, 30)
-                right_leg_deg = random_float(15, 70)
-            else
-                -- Right leg crosses inward across midline (-30 to -10 deg); Left leg stays outward (-70 to -15 deg)
-                left_leg_deg = random_float(-70, -15)
-                right_leg_deg = random_float(-30, -10)
-            end
-        else
-            -- Both legs naturally splay outward (abducted away from each other)
-            left_leg_deg = random_float(-70, -15)
-            right_leg_deg = random_float(15, 70)
-        end
+        -- Crossed legs are strictly prevented: both legs always splay outward away from the body midline.
+        local left_leg_deg = random_float(-70, -15)
+        local right_leg_deg = random_float(15, 70)
         -- Head: limp neck turned sideways on the floor (-45 to +45 deg)
         local head_deg = random_float(-45, 45)
 
@@ -1013,6 +1046,15 @@ function deathstats.get_corpse_wielditem(corpse)
     return luaent and luaent._wielditem_entity
 end
 
+--- Get the attached left wielditem entity (shield/offhand) from a corpse
+---@param corpse ObjectRef|nil The corpse entity object
+---@return ObjectRef|nil went The attached left wielditem entity or nil
+function deathstats.get_corpse_left_wielditem(corpse)
+    if not corpse then return nil end
+    local luaent = corpse.get_luaentity and corpse:get_luaentity()
+    return luaent and luaent._left_wielditem_entity
+end
+
 --- Safely remove a corpse entity and any attached wielditem entity
 ---@param corpse ObjectRef|nil The corpse object reference
 function deathstats.remove_corpse(corpse)
@@ -1037,8 +1079,23 @@ function deathstats.remove_corpse(corpse)
     if went and (not went.is_valid or went:is_valid()) and went.remove then
         went:remove()
     end
+    local left_went = deathstats.get_corpse_left_wielditem(corpse)
+    if left_went and (not left_went.is_valid or left_went:is_valid()) and left_went.remove then
+        left_went:remove()
+    end
     local luaent = corpse.get_luaentity and corpse:get_luaentity()
     if luaent then
+        if type(luaent._armor_entities) == "table" then
+            for i = 1, #luaent._armor_entities do
+                local a_ent = luaent._armor_entities[i]
+                if a_ent and (not a_ent.is_valid or a_ent:is_valid()) and a_ent.remove then
+                    local a_lent = a_ent.get_luaentity and a_ent:get_luaentity()
+                    if a_lent then a_lent._intentional_removal = true end
+                    a_ent:remove()
+                end
+            end
+            luaent._armor_entities = nil
+        end
         if type(luaent._particle_spawners) == "table" then
             for i = 1, #luaent._particle_spawners do
                 core.delete_particlespawner(luaent._particle_spawners[i])
@@ -1046,6 +1103,7 @@ function deathstats.remove_corpse(corpse)
             luaent._particle_spawners = nil
         end
         luaent._wielditem_entity = nil
+        luaent._left_wielditem_entity = nil
     end
     if deathstats.player_corpses then
         for pname, c_obj in pairs(deathstats.player_corpses) do
@@ -1099,24 +1157,38 @@ function deathstats.unhide_corpse_arrows(corpse)
     end
 end
 
---- Check if 3d_armor is configured to drop or destroy armor on player death
+--- Check if 3d_armor or x_player_armor is configured to drop or destroy armor on player death
 ---@param player ObjectRef|nil Optional player reference
 ---@return boolean drops True if armor is ejected/dropped from inventory on death
 function deathstats.is_armor_dropped(_player)
-    local armor_mod = rawget(_G, "armor")
-    if not armor_mod then
-        return false
+    local xpa = rawget(_G, "x_player_armor")
+    if xpa and type(xpa) == "table" and xpa.constants and type(xpa.constants) == "table" then
+        if xpa.constants.DROP_ON_DEATH ~= nil or xpa.constants.DESTROY_ON_DEATH ~= nil then
+            if (xpa.constants.DROP_ON_DEATH == true) or (xpa.constants.DESTROY_ON_DEATH == true) then
+                return true
+            end
+        end
     end
-    if armor_mod.config and type(armor_mod.config) == "table" then
+
+    local armor_mod = rawget(_G, "armor")
+    if armor_mod and armor_mod.config and type(armor_mod.config) == "table" then
         if armor_mod.config.drop ~= nil or armor_mod.config.destroy ~= nil then
             return (armor_mod.config.drop == true) or (armor_mod.config.destroy == true)
         end
     end
+
+    local xpa_drop = core.settings:get_bool("x_player_armor_drop_on_death")
+    local xpa_dest = core.settings:get_bool("x_player_armor_destroy_on_death")
+    if (xpa_drop == true) or (xpa_dest == true) then
+        return true
+    end
+
     local drop_set = core.settings:get_bool("armor_drop")
     local dest_set = core.settings:get_bool("armor_destroy")
-    if drop_set ~= nil or dest_set ~= nil then
-        return (drop_set == true) or (dest_set == true)
+    if (drop_set == true) or (dest_set == true) then
+        return true
     end
+
     return false
 end
 
@@ -1219,13 +1291,74 @@ function deathstats.get_player_wield_item(player)
         local pname = player:get_player_name()
         local a_tex = pname and armor_mod.textures[pname]
         if a_tex and a_tex.wielditem and a_tex.wielditem ~= "" and a_tex.wielditem ~= "3d_armor_trans.png" and a_tex.wielditem ~= "blank.png" then
-            local item_clean = a_tex.wielditem:gsub("%.png$", ""):gsub("_", ":", 1)
+            local item_clean = a_tex.wielditem:gsub("%.png$", "")
+            if item_clean:find("^3d_armor_") then
+                item_clean = item_clean:gsub("^3d_armor_", "3d_armor:")
+            else
+                item_clean = item_clean:gsub("_", ":", 1)
+            end
             if core.registered_items[a_tex.wielditem] then
                 return a_tex.wielditem
             elseif core.registered_items[item_clean] then
                 return item_clean
             else
                 return a_tex.wielditem
+            end
+        end
+    end
+
+    return ""
+end
+
+--- Extract the player's active left/offhand wielded item or shield name
+---@param player ObjectRef The player object
+---@return string item_name The item technical name (e.g. "x_player_armor:shield_steel"), or "" if empty
+function deathstats.get_player_left_wield_item(player)
+    if not player or not player:is_player() then
+        return ""
+    end
+
+    -- 1. Check x_player_api left wield item
+    local xpapi = rawget(_G, "x_player_api")
+    if type(xpapi) == "table" and type(xpapi.get_left_wield_item) == "function" then
+        local left = xpapi.get_left_wield_item(player)
+        if left and left ~= "" then
+            return left
+        end
+    end
+
+    -- 2. Check x_player_armor equipped shield
+    local xpa = rawget(_G, "x_player_armor")
+    local get_shield = xpa and (xpa.get_equipped_shield or (xpa.combat and xpa.combat.get_equipped_shield))
+    if get_shield then
+        local shield_stack = get_shield(player)
+        if shield_stack then
+            local sname = deathstats.get_stack_name(shield_stack)
+            if sname ~= "" then
+                return sname
+            end
+        end
+    end
+
+    -- 3. Check 3d_armor textures table for shield if present
+    local armor_mod = rawget(_G, "armor")
+    if type(armor_mod) == "table" and type(armor_mod.textures) == "table" then
+        local pname = player:get_player_name()
+        local a_tex = pname and armor_mod.textures[pname]
+        if type(a_tex) == "table" and a_tex.shield and a_tex.shield ~= "" and a_tex.shield ~= "3d_armor_trans.png"
+                and a_tex.shield ~= "blank.png" then
+            local item_clean = a_tex.shield:gsub("%.png$", "")
+            if item_clean:find("^3d_armor_") then
+                item_clean = item_clean:gsub("^3d_armor_", "3d_armor:")
+            else
+                item_clean = item_clean:gsub("_", ":", 1)
+            end
+            if core.registered_items[a_tex.shield] then
+                return a_tex.shield
+            elseif core.registered_items[item_clean] then
+                return item_clean
+            else
+                return a_tex.shield
             end
         end
     end
@@ -1249,6 +1382,7 @@ function deathstats.get_player_visuals(player)
             armor_dropped = false,
             inventory_dropped = false,
             wield_item = "",
+            left_wield_item = "",
         }
     end
     local props = player:get_properties() or {}
@@ -1260,6 +1394,7 @@ function deathstats.get_player_visuals(player)
         armor_dropped = deathstats.is_armor_dropped(player),
         inventory_dropped = deathstats.is_inventory_dropped(player),
         wield_item = deathstats.get_player_wield_item(player),
+        left_wield_item = deathstats.get_player_left_wield_item(player),
     }
 end
 
@@ -1523,11 +1658,92 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             end
         end
 
+        -- Attach 3D left wielditem entity (shield/offhand) to left hand if items/armor are retained
+        local left_item = visuals.left_wield_item
+        local is_shield = left_item and (core.get_item_group(left_item, "armor_shield") > 0
+            or left_item:find("shield") ~= nil)
+        local left_dropped = is_shield and visuals.armor_dropped or visuals.inventory_dropped
+        if left_item and left_item ~= "" and not left_dropped then
+            local mesh = visuals.mesh or "character.b3d"
+            local is_glb = mesh:find("%.glb$") ~= nil
+            local model_format = is_glb and "glb" or "b3d"
+            local left_wield_ent
+
+            local xpa = rawget(_G, "x_player_armor")
+            if is_shield and xpa and (type(xpa.attach_shield_to_entity) == "function" or type(xpa.attach_shield) == "function") then
+                local attach_fn = xpa.attach_shield_to_entity or xpa.attach_shield
+                left_wield_ent = attach_fn(corpse, left_item, model_format, {
+                    entity_name = "deathstats:corpse_wielditem",
+                })
+            else
+                local xpapi = rawget(_G, "x_player_api")
+                local is_xpapi_wield = (type(xpapi) == "table") and (xpapi.enable_wield_item ~= false)
+                if is_xpapi_wield and type(xpapi.attach_wield_item_to_entity) == "function" then
+                    local opts = nil
+                    if is_shield then
+                        opts = {
+                            override_transform = true,
+                            pos_glb = { x = -0.8, y = 5.0, z = -2.8 },
+                            rot_glb = { x = 180, y = 45, z = 0 },
+                            pos_b3d = { x = -0.8, y = 5.0, z = 2.8 },
+                            rot_b3d = { x = 180, y = -45, z = 0 },
+                        }
+                    end
+                    left_wield_ent = xpapi.attach_wield_item_to_entity(
+                        corpse,
+                        left_item,
+                        model_format,
+                        "Arm_Left",
+                        "deathstats:corpse_wielditem",
+                        true,
+                        opts
+                    )
+                else
+                    -- Fallback when x_player_api and x_player_armor are not enabled
+                    left_wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+                    if left_wield_ent then
+                        left_wield_ent:set_properties({
+                            textures = { left_item },
+                            wield_item = left_item,
+                            visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+                            pointable = false,
+                        })
+                        if left_wield_ent.set_attach then
+                            if is_shield then
+                                local s_rot = is_glb and { x = 180, y = 45, z = 0 } or { x = 180, y = -45, z = 0 }
+                                local s_pos = is_glb and { x = -0.8, y = 5.0, z = -2.8 } or { x = -0.8, y = 5.0, z = 2.8 }
+                                left_wield_ent:set_attach(corpse, "Arm_Left", s_pos, s_rot, true)
+                            else
+                                left_wield_ent:set_attach(corpse, "Arm_Left", { x = 0, y = 6.0, z = -1.5 }, { x = 90, y = 0, z = 90 }, true)
+                            end
+                        end
+                    end
+                end
+            end
+
+            if left_wield_ent and luaent then
+                luaent._left_wielditem_entity = left_wield_ent
+            end
+        end
+
         -- Transfer attached x_bows arrows from player to corpse if x_bows is loaded
         local xbows_loaded = rawget(_G, "XBows")
         if player and xbows_loaded and type(xbows_loaded.transfer_arrows_to_corpse) == "function" then
             xbows_loaded.transfer_arrows_to_corpse(player, corpse)
             deathstats.unhide_corpse_arrows(corpse)
+        end
+
+        -- Attach x_player_armor 3D modular armor entities to corpse if equipped and not dropped
+        local xpa = rawget(_G, "x_player_armor")
+        if not visuals.armor_dropped and xpa and type(xpa.attach_armor_to_entity) == "function" then
+            local armor_target = (visuals.armor_items and #visuals.armor_items > 0 and visuals.armor_items) or player
+            local mesh = visuals.mesh or "character.b3d"
+            local is_glb = mesh:find("%.glb$") ~= nil or mesh:find("%.gltf$") ~= nil
+            local model_format = is_glb and "glb" or "b3d"
+            local armor_ents = xpa.attach_armor_to_entity(corpse, armor_target, model_format)
+            if luaent and armor_ents and #armor_ents > 0 then
+                luaent._armor_entities = armor_ents
+            end
         end
     end
     return corpse

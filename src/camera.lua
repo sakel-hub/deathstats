@@ -204,6 +204,7 @@ function deathstats.update_death_camera(player, dtime)
         if new_corpse then
             data.corpse = new_corpse
             data.corpse_wielditem = deathstats.get_corpse_wielditem(new_corpse)
+            data.corpse_left_wielditem = deathstats.get_corpse_left_wielditem(new_corpse)
         end
         local c_ent = new_corpse and new_corpse.get_luaentity and new_corpse:get_luaentity()
         if deathstats.config.enable_corpse_particles ~= false and not data.particle_spawners and c_ent and c_ent._settled then
@@ -1185,6 +1186,7 @@ function deathstats.set_death_camera(player, death_info)
                 if retry_corpse then
                     cdata.corpse = retry_corpse
                     cdata.corpse_wielditem = deathstats.get_corpse_wielditem(retry_corpse)
+                    cdata.corpse_left_wielditem = deathstats.get_corpse_left_wielditem(retry_corpse)
                     if retry_corpse.get_pos then
                         local actual_pos = retry_corpse:get_pos()
                         if actual_pos then
@@ -1424,6 +1426,7 @@ function deathstats.set_death_camera(player, death_info)
         orbit_speed = speed,
         corpse = corpse,
         corpse_wielditem = deathstats.get_corpse_wielditem(corpse),
+        corpse_left_wielditem = deathstats.get_corpse_left_wielditem(corpse),
         anchor = anchor,
         corpse_settled = (not corpse) or (not has_motion) or is_reconnect_death,
         old_armor_groups = old_armor_groups,

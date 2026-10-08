@@ -605,7 +605,20 @@ end
 function deathstats.probe_ground_elevation(probe_x, probe_z, start_y)
     start_y = start_y or 0
     if core.raycast then
-        local r_start = vector.new(probe_x, start_y + 0.8, probe_z)
+        local ray_start_y = start_y + 0.8
+        local start_check = core.get_node_or_nil(vector.new(probe_x, ray_start_y, probe_z))
+        local start_def = start_check and start_check.name ~= "ignore" and core.registered_nodes[start_check.name]
+        if start_def and start_def.walkable and start_check.name ~= "air" and start_def.drawtype ~= "airlike" then
+            for up = 1, 3 do
+                local up_node = core.get_node_or_nil(vector.new(probe_x, ray_start_y + up, probe_z))
+                local up_def = up_node and up_node.name ~= "ignore" and core.registered_nodes[up_node.name]
+                if not up_def or not up_def.walkable or up_node.name == "air" or up_def.drawtype == "airlike" then
+                    ray_start_y = ray_start_y + up
+                    break
+                end
+            end
+        end
+        local r_start = vector.new(probe_x, ray_start_y, probe_z)
         local r_end = vector.new(probe_x, start_y - 4.5, probe_z)
         local ray = core.raycast(r_start, r_end, false, false)
         for pt in ray do
@@ -923,13 +936,14 @@ function deathstats.ensure_corpse_clearance(pos, yaw, is_wall_sitting)
         end
     end
 
-    -- If corpse torso is inside a walkable solid block, push to nearest open air
+    -- If corpse torso is inside a walkable solid block, push to nearest open air (horizontally or upward)
     scratch_pos.x = px
     scratch_pos.y = py + 0.5
     scratch_pos.z = pz
     local torso_node = core.get_node_or_nil(scratch_pos)
     local torso_def = torso_node and core.registered_nodes[torso_node.name]
     if torso_def and torso_def.walkable and torso_node.name ~= "air" and torso_node.name ~= "ignore" then
+        local found_horizontal = false
         local dirs = {
             { x = 0.45, z = 0 },
             { x = -0.45, z = 0 },
@@ -946,7 +960,24 @@ function deathstats.ensure_corpse_clearance(pos, yaw, is_wall_sitting)
             if not check_def or not check_def.walkable then
                 px = px + d.x
                 pz = pz + d.z
+                found_horizontal = true
                 break
+            end
+        end
+
+        -- If completely embedded underground with no open air horizontally, elevate upward out of solid block
+        if not found_horizontal then
+            local cur_y = math.floor(py + 0.5 + 0.5)
+            for dy = 0, 4 do
+                scratch_pos.x = px
+                scratch_pos.y = cur_y + dy + 1
+                scratch_pos.z = pz
+                local above_node = core.get_node_or_nil(scratch_pos)
+                local above_def = above_node and core.registered_nodes[above_node.name]
+                if not above_def or not above_def.walkable or above_node.name == "air" then
+                    py = (cur_y + dy) + 0.5 + 0.02
+                    break
+                end
             end
         end
     end
@@ -1084,7 +1115,7 @@ function deathstats.settle_corpse_at_rest(luaent)
         -- If slope probe didn't resolve a ground surface or corpse is higher up in the air, find full ground surface below
         if not target_y then
             local surface_y = deathstats.find_ground_surface(pos, nil, luaent._death_info or { category = "fall" })
-            if surface_y and surface_y < (pos.y - 0.001) and (pos.y - surface_y) <= 40.0 then
+            if surface_y and math.abs(pos.y - surface_y) > 0.001 and (pos.y - surface_y) <= 40.0 and (surface_y - pos.y) <= 3.0 then
                 target_y = surface_y + 0.02
             end
         end
