@@ -11333,6 +11333,21 @@ suites[108] = function()
     local left_item_xpa = deathstats.get_player_left_wield_item(mock_player)
     assert(left_item_xpa == "x_player_armor:shield_wood",
         "Must extract shield from x_player_armor.combat.get_equipped_shield")
+
+    -- Test fallback to x_player_armor.visuals.last_death_armor snapshot
+    rawset(_G, "x_player_armor", {
+        visuals = {
+            last_death_armor = {
+                ["ShieldHero"] = {
+                    ItemStack("x_player_armor:chestplate_steel"),
+                    ItemStack("x_player_armor:shield_diamond"),
+                }
+            }
+        }
+    })
+    local left_item_snapshot = deathstats.get_player_left_wield_item(mock_player)
+    assert(left_item_snapshot == "x_player_armor:shield_diamond",
+        "Must extract shield from x_player_armor.visuals.last_death_armor")
     rawset(_G, "x_player_armor", nil)
 
     -- 3. Test get_player_left_wield_item fallback to 3d_armor textures
@@ -11393,6 +11408,27 @@ suites[108] = function()
     assert(deathstats.get_corpse_left_wielditem(corpse_shield_dropped) == nil,
         "Left shield must NOT spawn when armor dropped")
     deathstats.remove_corpse(corpse_shield_dropped)
+
+    -- 7. Test right-hand wielditem fallback to x_player_armor when x_player_api is absent
+    rawset(_G, "x_player_api", nil)
+    local xpa_wield_called = false
+    rawset(_G, "x_player_armor", {
+        attach_wield_item_to_entity = function(parent, item, fmt, opts)
+            xpa_wield_called = true
+            local went = core.add_entity(parent:get_pos(), (opts and opts.entity_name) or "deathstats:corpse_wielditem")
+            went:set_attach(parent, "Arm_Right", { x = 0, y = 5.2, z = 3.5 }, { x = -90, y = 225, z = 90 }, true)
+            return went
+        end
+    })
+    local corpse_xpa_wield = deathstats.spawn_and_setup_corpse(corpse_pos, {
+        mesh = "character.b3d",
+        textures = { "character.png" },
+        wield_item = "default:sword_steel",
+        inventory_dropped = false,
+        armor_dropped = true,
+    })
+    assert(xpa_wield_called == true, "x_player_armor.attach_wield_item_to_entity must be called for right wield item")
+    deathstats.remove_corpse(corpse_xpa_wield)
 
     -- Restore globals
     rawset(_G, "x_player_api", saved_xpapi)
@@ -11523,6 +11559,7 @@ suites[109] = function()
     local shield_target_item = nil
     local shield_target_format = nil
     local xpa_shield_mock = {
+        attach_armor_to_entity = xpa_mock.attach_armor_to_entity,
         attach_shield_to_entity = function(parent, item, format, opts)
             shield_attach_called = true
             shield_target_item = item
@@ -11557,11 +11594,328 @@ suites[109] = function()
     deathstats.remove_corpse(shield_corpse)
     assert(s_went:is_valid() == false, "Shield entity must be removed on remove_corpse")
 
+    -- 6. Corpse Data Serialization & Reconnect Preservation of Shield and Armor
+    local recon_corpse_pos = { x = 650, y = 15, z = 650 }
+    local p_recon = {
+        _name = "ReconHero",
+        is_player = function() return true end,
+        get_player_name = function(self) return self._name end,
+        get_pos = function() return recon_corpse_pos end,
+        get_hp = function() return 0 end,
+        get_wielded_item = function() return ItemStack("") end,
+        get_inventory = function() return nil end,
+        get_properties = function() return { mesh = "character.glb", textures = { "character.png" } } end,
+        get_armor_groups = function() return { fleshy = 100 } end,
+        get_meta = function()
+            local meta_store = {}
+            return {
+                get_string = function(_, k) return meta_store[k] or "" end,
+                set_string = function(_, k, v) meta_store[k] = v end,
+            }
+        end,
+    }
+    local p_meta = p_recon:get_meta()
+    p_meta:set_string("deathstats:corpse_data", core.serialize({
+        pos = recon_corpse_pos,
+        yaw = 0.5,
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        armor_dropped = false,
+        inventory_dropped = false,
+        wield_item = "default:sword_steel",
+        left_wield_item = "x_player_armor:shield_steel",
+        armor_items = { "x_player_armor:chestplate_diamond" },
+    }))
+
+    -- Simulate start_death_camera unpack of saved_corpse on reconnect
+    local des_corpse = core.deserialize(p_meta:get_string("deathstats:corpse_data"))
+    assert(des_corpse ~= nil, "corpse_data must deserialize")
+    assert(des_corpse.left_wield_item == "x_player_armor:shield_steel", "corpse_data must contain left_wield_item")
+    assert(des_corpse.armor_items ~= nil and #des_corpse.armor_items == 1, "corpse_data must contain armor_items")
+
+    local recon_visuals = {
+        mesh = "character.glb",
+        textures = { "character.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+        yaw = 0,
+        armor_dropped = true,
+        inventory_dropped = true,
+    }
+    if des_corpse.armor_dropped ~= nil then recon_visuals.armor_dropped = des_corpse.armor_dropped end
+    if des_corpse.inventory_dropped ~= nil then recon_visuals.inventory_dropped = des_corpse.inventory_dropped end
+    if des_corpse.wield_item ~= nil then recon_visuals.wield_item = des_corpse.wield_item end
+    if des_corpse.left_wield_item ~= nil then recon_visuals.left_wield_item = des_corpse.left_wield_item end
+    if des_corpse.armor_items ~= nil then recon_visuals.armor_items = des_corpse.armor_items end
+
+    assert(recon_visuals.left_wield_item == "x_player_armor:shield_steel", "saved_corpse must restore left_wield_item")
+    assert(recon_visuals.armor_items ~= nil and #recon_visuals.armor_items == 1, "saved_corpse must restore armor_items")
+
+    local spawned_recon = deathstats.spawn_and_setup_corpse(recon_corpse_pos, recon_visuals)
+    local recon_lent = spawned_recon:get_luaentity()
+    assert(recon_lent._armor_entities ~= nil and #recon_lent._armor_entities == 1,
+        "Corpse on reconnect must restore attached armor entities")
+    assert(recon_lent._left_wielditem_entity ~= nil,
+        "Corpse on reconnect must restore attached shield entity")
+    deathstats.remove_corpse(spawned_recon)
+
     rawset(_G, "x_player_armor", saved_xpa)
 
     print("  [PASS] Corpse Visuals Parity (GLB Pose & Bone Orientation, Underground Recovery, x_player_armor Integration)")
 end
 suites[109]()
 
-print("\nALL 109 TEST SUITES PASSED SUCCESSFULLY!")
+--------------------------------------------------------------------------------
+-- TEST 110: x_player_armor Grandchild Hiding, Single Armor & Shield Parity
+--------------------------------------------------------------------------------
+suites[110] = function()
+    print("\n--- TEST 110: x_player_armor Grandchild Hiding, Single Armor & Shield Parity ---")
+
+    local saved_xpa = rawget(_G, "x_player_armor")
+    local saved_armor = rawget(_G, "armor")
+    local saved_xpapi = rawget(_G, "x_player_api")
+
+    -- 1. Mock x_player_armor and backward compatibility armor.textures metatable
+    local xpa_updated_players = {}
+    local xpa_wield_visibility = {}
+    local mock_armor_entities = {}
+
+    local mock_xpa = {
+        visuals = {
+            player_entities = {},
+            last_death_armor = {},
+        },
+        get_valid_player = function(player)
+            return player:get_player_name(), player:get_inventory()
+        end,
+        attach_armor_to_entity = function(parent, items, _format)
+            local created = {}
+            for _, _ in ipairs(items or {}) do
+                local a_ent = core.add_entity(parent:get_pos(), "x_player_armor:visual")
+                a_ent:set_attach(parent, "Body", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+                table.insert(created, a_ent)
+                table.insert(mock_armor_entities, a_ent)
+            end
+            return created
+        end,
+        attach_shield_to_entity = function(parent, _item, _format, opts)
+            local s_ent = core.add_entity(parent:get_pos(), (opts and opts.entity_name) or "deathstats:corpse_wielditem")
+            s_ent:set_attach(parent, "Arm_Left", { x = -0.8, y = 5.0, z = -2.8 }, { x = 180, y = 45, z = 0 }, true)
+            return s_ent
+        end,
+        update_player_visuals = function(player)
+            local pname = player and player:get_player_name()
+            if pname then xpa_updated_players[pname] = true end
+        end,
+    }
+    rawset(_G, "x_player_armor", mock_xpa)
+
+    local mock_armor_compat = {
+        textures = setmetatable({}, {
+            __index = function(t, pname)
+                local data = {
+                    skin = "hero_skin.png",
+                    armor = "3d_armor_composite_texture.png",
+                    wielditem = "blank.png",
+                    shield = "x_player_armor_diamond.png",
+                }
+                rawset(t, pname, data)
+                return data
+            end,
+        }),
+    }
+    rawset(_G, "armor", mock_armor_compat)
+
+    local mock_xpapi = {
+        enable_wield_item = true,
+        set_wield_item_visibility = function(player, visible)
+            local pname = player and player:get_player_name()
+            if pname then xpa_wield_visibility[pname] = visible end
+        end,
+        resolve_model_redirect = function(mesh)
+            if mesh == "3d_armor_character.b3d" or mesh == "character.b3d" then
+                return "character.glb"
+            end
+            return mesh
+        end,
+        get_visual_proxies = function(_player)
+            return nil
+        end,
+    }
+    rawset(_G, "x_player_api", mock_xpapi)
+
+    -- 2. Verify compat_skins.get_player_visuals does NOT treat x_player_armor as legacy 3d_armor
+    local p_test = create_mock_player("ArmorParityHero")
+    p_test:set_properties({
+        mesh = "character.glb",
+        textures = { "hero_skin.png" },
+        visual_size = { x = 1, y = 1, z = 1 },
+    })
+    mock_players["ArmorParityHero"] = p_test
+
+    local pinv = p_test:get_inventory()
+    pinv:set_size("armor", 5)
+    pinv:set_stack("armor", 2, ItemStack("x_player_armor:chestplate_diamond"))
+    pinv:set_stack("armor", 5, ItemStack("x_player_armor:shield_diamond"))
+
+    local visuals = deathstats.compat_skins.get_player_visuals(p_test)
+    assert(visuals.mesh == "character.glb",
+        string.format("Corpse mesh must remain canonical 'character.glb', got '%s'", tostring(visuals.mesh)))
+    assert(#visuals.textures == 1,
+        string.format("Expected single-slot texture table { final_skin } without 3d_armor composite overlay, got #textures=%d", #visuals.textures))
+    assert(visuals.textures[1] == "hero_skin.png",
+        string.format("Expected base skin 'hero_skin.png', got '%s'", tostring(visuals.textures[1])))
+    assert(#visuals.armor_items >= 1, "visuals.armor_items must contain worn armor items")
+
+    -- 3. Verify Recursive Child and Grandchild Hiding on Death
+    -- Create mock player hierarchy:
+    -- player -> proxies.glb -> [modular armor entity, wielded shield entity]
+    local p_child_proxy = core.add_entity({ x = 0, y = 0, z = 0 }, "x_player_api:visual_glb")
+    p_child_proxy:set_attach(p_test, "", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+
+    local p_grandchild_armor = core.add_entity({ x = 0, y = 0, z = 0 }, "x_player_armor:visual")
+    p_grandchild_armor:set_properties({
+        is_visible = true,
+        visual_size = { x = 10, y = 10, z = 10 },
+        pointable = false,
+    })
+    p_grandchild_armor:set_attach(p_child_proxy, "Body", { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+
+    local p_grandchild_shield = core.add_entity({ x = 0, y = 0, z = 0 }, "x_player_api:wield_item")
+    p_grandchild_shield:set_properties({
+        is_visible = true,
+        visual_size = { x = 0.27, y = 0.27, z = 0.27 },
+        pointable = false,
+    })
+    p_grandchild_shield:set_attach(p_child_proxy, "Arm_Left", { x = -0.8, y = 5.0, z = -2.8 }, { x = 180, y = 45, z = 0 })
+
+    -- Also register armor entity in xpa player_entities table
+    mock_xpa.visuals.player_entities["ArmorParityHero"] = {
+        torso = { p_grandchild_armor },
+    }
+
+    -- Set mock player children hierarchy
+    p_child_proxy._children = { p_grandchild_armor, p_grandchild_shield }
+    p_child_proxy.get_children = function(self) return self._children end
+    p_test._children = { p_child_proxy }
+    p_test.get_children = function(self) return self._children end
+
+    -- Trigger death camera
+    local death_info = {
+        killer = nil,
+        category = "fall",
+        source = "fall",
+        damage = 25,
+    }
+    deathstats.set_death_camera(p_test, death_info)
+
+    -- Verify x_player_api.set_wield_item_visibility called with false
+    assert(xpa_wield_visibility["ArmorParityHero"] == false,
+        "x_player_api.set_wield_item_visibility must be called with false on player death")
+
+    -- Verify player direct child (proxy) was hidden
+    local proxy_props = p_child_proxy:get_properties()
+    assert(proxy_props.is_visible == false, "Proxy entity must be hidden")
+    assert(proxy_props.visual_size.x == 0 and proxy_props.visual_size.y == 0,
+        "Proxy visual size must be zeroed")
+
+    -- CRITICAL CHECK: Verify grandchildren (armor entity and shield on proxy) were recursively hidden!
+    local g_armor_props = p_grandchild_armor:get_properties()
+    assert(g_armor_props.is_visible == false,
+        "Grandchild armor entity attached to proxy must be recursively hidden on death")
+    assert(g_armor_props.visual_size.x == 0 and g_armor_props.visual_size.y == 0,
+        "Grandchild armor visual size must be zeroed")
+
+    local g_shield_props = p_grandchild_shield:get_properties()
+    assert(g_shield_props.is_visible == false,
+        "Grandchild shield entity attached to proxy must be recursively hidden on death")
+    assert(g_shield_props.visual_size.x == 0 and g_shield_props.visual_size.y == 0,
+        "Grandchild shield visual size must be zeroed")
+
+    -- 4. Verify Corpse has single armor attachment and single shield attachment
+    local cdata = deathstats.player_camera_data["ArmorParityHero"]
+    assert(cdata ~= nil and cdata.corpse ~= nil, "Corpse entity must be active in death camera data")
+    local corpse_ent = cdata.corpse:get_luaentity()
+    assert(corpse_ent._armor_entities ~= nil and #corpse_ent._armor_entities >= 1,
+        "Corpse must receive modular armor entities from x_player_armor")
+    assert(corpse_ent._left_wielditem_entity ~= nil,
+        "Corpse must receive shield entity from x_player_armor")
+
+    -- Verify update_death_camera maintains recursive hiding with ZERO redundant set_properties or wield visibility spam
+    local redundant_set_props = 0
+    local orig_armor_set_props = p_grandchild_armor.set_properties
+    p_grandchild_armor.set_properties = function(self, props)
+        redundant_set_props = redundant_set_props + 1
+        return orig_armor_set_props(self, props)
+    end
+    xpa_wield_visibility["ArmorParityHero"] = "unchanged"
+    deathstats.update_death_camera(p_test, 0.1)
+    p_grandchild_armor.set_properties = orig_armor_set_props
+    assert(redundant_set_props == 0,
+        "update_death_camera must not call set_properties on already-hidden armor entities on every globalstep")
+    assert(xpa_wield_visibility["ArmorParityHero"] == "unchanged",
+        "update_death_camera must not spam set_wield_item_visibility on every globalstep when dtime > 0")
+    assert(p_grandchild_armor:get_properties().is_visible == false,
+        "Grandchild armor must remain hidden during camera update")
+    assert(p_grandchild_shield:get_properties().is_visible == false,
+        "Grandchild shield must remain hidden during camera update")
+
+    -- 5. Verify Respawn Restoration & Exact Visual Size Preservation (10x GLB armor & 0.27x shield)
+    deathstats.reset_camera(p_test)
+    assert(xpa_wield_visibility["ArmorParityHero"] == true,
+        "x_player_api.set_wield_item_visibility must be called with true on respawn")
+    assert(xpa_updated_players["ArmorParityHero"] == true,
+        "x_player_armor.update_player_visuals must be called for player on respawn")
+    assert(p_grandchild_armor:get_properties().is_visible == true,
+        "Grandchild armor entity must be restored to visible on respawn")
+    assert(p_grandchild_armor:get_properties().visual_size.x == 10,
+        "Grandchild GLB armor entity must preserve its 10x visual_size on respawn")
+    assert(p_grandchild_shield:get_properties().is_visible == true,
+        "Grandchild shield entity must be restored to visible on respawn")
+    assert(math.abs(p_grandchild_shield:get_properties().visual_size.x - 0.27) < 0.001,
+        "Grandchild shield entity must preserve its 0.27x visual_size on respawn")
+
+    -- 6. Regression Test: First death after removing armor from inventory must NOT show stale armor/shield on corpse
+    -- Simulate x_player_armor having recorded last_death_armor on Death #1:
+    mock_xpa.visuals.last_death_armor["ArmorParityHero"] = {
+        ItemStack("x_player_armor:chestplate_diamond"),
+        ItemStack("x_player_armor:shield_diamond"),
+    }
+    -- Player removes all armor and shield from the armor inventory after respawning:
+    pinv:set_stack("armor", 2, ItemStack(""))
+    pinv:set_stack("armor", 5, ItemStack(""))
+    mock_armor_entities = {}
+
+    -- Now player dies again (1st death after removing armor, before xpa's on_dieplayer updates last_death_armor):
+    local visuals_after_unequip = deathstats.compat_skins.get_player_visuals(p_test)
+    assert(#visuals_after_unequip.armor_items == 0,
+        "visuals.armor_items must be empty on first death after removing armor from inventory")
+    assert(visuals_after_unequip.left_wield_item == "",
+        "visuals.left_wield_item must be empty on first death after removing shield from inventory")
+
+    deathstats.set_death_camera(p_test, death_info)
+    local cdata2 = deathstats.player_camera_data["ArmorParityHero"]
+    assert(cdata2 ~= nil and cdata2.corpse ~= nil, "Corpse must spawn on second death")
+    local corpse_ent2 = cdata2.corpse:get_luaentity()
+    assert(corpse_ent2._armor_entities == nil,
+        "Corpse on first death after removing armor must NOT have any _armor_entities attached")
+    assert(corpse_ent2._left_wielditem_entity == nil,
+        "Corpse on first death after removing shield must NOT have any _left_wielditem_entity attached")
+    assert(#mock_armor_entities == 0,
+        "attach_armor_to_entity must NOT spawn armor entities when armor was removed from inventory")
+    deathstats.reset_camera(p_test)
+
+    -- Cleanup
+    deathstats.player_camera_data["ArmorParityHero"] = nil
+    mock_players["ArmorParityHero"] = nil
+    rawset(_G, "x_player_armor", saved_xpa)
+    rawset(_G, "armor", saved_armor)
+    rawset(_G, "x_player_api", saved_xpapi)
+
+    print("  [PASS] x_player_armor Grandchild Hiding, Single Armor & Shield Parity")
+end
+suites[110]()
+
+print("\nALL 110 TEST SUITES PASSED SUCCESSFULLY!")
+
 

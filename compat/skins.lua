@@ -18,6 +18,7 @@ local KNOWN_HUMANOID_MESHES = {
     ["character.b3d"] = true,
     ["3d_armor_character.b3d"] = true,
     ["skinsdb_3d_armor_character_5.b3d"] = true,
+    ["skinsdb_3d_armor_character_5.glb"] = true,
     ["character_female.b3d"] = true,
     ["myappearance_character.b3d"] = true,
     ["character.glb"] = true,
@@ -374,34 +375,7 @@ function cs.get_player_visuals(player)
     local left_wield_item = deathstats.get_player_left_wield_item and deathstats.get_player_left_wield_item(player) or ""
 
     -- Extract x_player_armor worn items snapshot
-    local armor_items = {}
-    if not drops_armor then
-        local xpa = rawget(_G, "x_player_armor")
-        if xpa and type(xpa) == "table" then
-            local inv = nil
-            if type(xpa.get_valid_player) == "function" then
-                local _, p_inv = xpa.get_valid_player(player)
-                inv = p_inv
-            end
-            if inv then
-                local list = inv:get_list("armor")
-                if list then
-                    for _, item in ipairs(list) do
-                        if item and not item:is_empty() then
-                            table.insert(armor_items, item:to_string())
-                        end
-                    end
-                end
-            end
-            if #armor_items == 0 and name and xpa.visuals and xpa.visuals.last_death_armor and xpa.visuals.last_death_armor[name] then
-                for _, item in ipairs(xpa.visuals.last_death_armor[name]) do
-                    if item and not item:is_empty() then
-                        table.insert(armor_items, item:to_string())
-                    end
-                end
-            end
-        end
-    end
+    local armor_items = (deathstats.get_player_armor_items and deathstats.get_player_armor_items(player, drops_armor)) or {}
 
     -- Extract base skin and metadata
     local skin_tex, custom_mesh, format, vs_x, vs_y = cs.extract_base_skin(player, name)
@@ -473,22 +447,42 @@ function cs.get_player_visuals(player)
         or (skins_mod and skins_mod.get_player_skin and (armor_mod ~= nil or (props and props.textures and #props.textures >= 4)))
     )
 
-    local is_3d_armor = not is_skinsdb and (
+    local has_xpa = rawget(_G, "x_player_armor") ~= nil
+
+    local is_3d_armor = not has_xpa and not is_skinsdb and (
         (raw_mesh == "3d_armor_character.b3d" or raw_mesh == "3d_armor_character.glb")
         or (armor_mod and ((armor_mod.textures and armor_mod.textures[name]) or (raw_mesh and raw_mesh:find("3d_armor"))))
         or (armor_mod and props and props.textures and #props.textures == 3)
     )
 
+    local xpapi_format = (type(xpapi) == "table" and type(xpapi.get_model_format) == "function" and xpapi.get_model_format())
+        or (type(rawget(_G, "player_api")) == "table" and type(rawget(_G, "player_api").get_model_format) == "function" and rawget(_G, "player_api").get_model_format())
+    local wants_glb = (raw_mesh and (raw_mesh:find("%.glb$") ~= nil or raw_mesh:find("%.gltf$") ~= nil))
+        or (xpapi_format == "glb")
+
     -- Sanitize mesh: guarantee valid human mesh (strictly excluding non-human models/morphs)
     local mesh = raw_mesh
     if is_skinsdb then
-        mesh = "skinsdb_3d_armor_character_5.b3d"
+        mesh = wants_glb and "skinsdb_3d_armor_character_5.glb" or "skinsdb_3d_armor_character_5.b3d"
     elseif is_3d_armor then
-        local fallback_mesh = (raw_mesh and raw_mesh:find("%.glb$")) and "3d_armor_character.glb" or "3d_armor_character.b3d"
+        local fallback_mesh = wants_glb and "3d_armor_character.glb" or "3d_armor_character.b3d"
         mesh = (cs.is_humanoid_mesh(raw_mesh) and raw_mesh) or fallback_mesh
+        if wants_glb and mesh:find("%.b3d$") then
+            mesh = mesh:gsub("%.b3d$", ".glb")
+        elseif not wants_glb and (mesh:find("%.glb$") or mesh:find("%.gltf$")) then
+            mesh = mesh:gsub("%.gl[bt]f?$", ".b3d")
+        end
     else
-        if not cs.is_humanoid_mesh(mesh) then
-            mesh = (raw_mesh and raw_mesh:find("%.glb$")) and "character.glb" or "character.b3d"
+        if has_xpa and (mesh == "3d_armor_character.b3d" or mesh == "3d_armor_character.glb") then
+            mesh = wants_glb and "character.glb" or "character.b3d"
+        elseif not cs.is_humanoid_mesh(mesh) then
+            mesh = wants_glb and "character.glb" or "character.b3d"
+        else
+            if wants_glb and mesh:find("%.b3d$") then
+                mesh = mesh:gsub("%.b3d$", ".glb")
+            elseif not wants_glb and (mesh:find("%.glb$") or mesh:find("%.gltf$")) then
+                mesh = mesh:gsub("%.gl[bt]f?$", ".b3d")
+            end
         end
     end
 
@@ -514,12 +508,12 @@ function cs.get_player_visuals(player)
         end
 
         local armor_texture = "blank.png"
-        if not drops_armor and armor_mod and armor_mod.textures and armor_mod.textures[name] then
+        if not has_xpa and not drops_armor and armor_mod and armor_mod.textures and armor_mod.textures[name] then
             local a_tex = armor_mod.textures[name]
             if a_tex.armor and a_tex.armor ~= "" and a_tex.armor ~= "blank.png" and a_tex.armor ~= "3d_armor_trans.png" then
                 armor_texture = a_tex.armor
             end
-        elseif not drops_armor and props and props.textures and props.textures[3] and props.textures[3] ~= "blank.png" and props.textures[3] ~= "3d_armor_trans.png" then
+        elseif not has_xpa and not drops_armor and props and props.textures and props.textures[3] and props.textures[3] ~= "blank.png" and props.textures[3] ~= "3d_armor_trans.png" then
             armor_texture = props.textures[3]
         end
 

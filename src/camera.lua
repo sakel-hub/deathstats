@@ -172,6 +172,162 @@ function deathstats.get_camera_orbit_pos(center, radius, height, angle)
     )
 end
 
+local HIDDEN_ATTACHMENT_PROPS = {
+    is_visible = false,
+    visual_size = { x = 0, y = 0, z = 0 },
+    pointable = false,
+}
+
+local HIDDEN_ARROW_PROPS = {
+    is_visible = false,
+    pointable = false,
+}
+
+local DEFAULT_VISIBLE_VS = { x = 1, y = 1, z = 1 }
+
+local orig_attachment_vs = setmetatable({}, { __mode = "k" })
+local scratch_excluded = {}
+
+--- Hide a single attached entity if not already hidden, preserving its original non-zero visual_size.
+---@param obj ObjectRef The attached entity
+---@param is_arrow boolean? True if the entity is a stuck arrow
+local function hide_single_attachment(obj, is_arrow)
+    if not obj or (obj.is_valid and not obj:is_valid()) or not obj.set_properties then
+        return
+    end
+    local cp = obj.get_properties and obj:get_properties()
+    if is_arrow then
+        if not cp or cp.is_visible ~= false or cp.pointable ~= false then
+            obj:set_properties(HIDDEN_ARROW_PROPS)
+        end
+        return
+    end
+    if cp and cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0) then
+        orig_attachment_vs[obj] = {
+            x = cp.visual_size.x,
+            y = cp.visual_size.y,
+            z = cp.visual_size.z or cp.visual_size.x,
+        }
+    end
+    if not cp or cp.is_visible ~= false
+            or (cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0))
+            or cp.pointable ~= false then
+        obj:set_properties(HIDDEN_ATTACHMENT_PROPS)
+    end
+end
+
+--- Restore visibility and original visual_size on a single attached entity.
+---@param obj ObjectRef The attached entity
+local function unhide_single_attachment(obj)
+    if not obj or (obj.is_valid and not obj:is_valid()) or not obj.set_properties then
+        return
+    end
+    local cent = obj.get_luaentity and obj:get_luaentity()
+    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
+    if is_arrow then return end
+    local is_proxy = cent and (cent.name == "x_player_api:visual_glb" or cent.name == "x_player_api:visual_b3d")
+    if is_proxy then return end
+    local cp = obj.get_properties and obj:get_properties()
+    local saved_vs = orig_attachment_vs[obj]
+    orig_attachment_vs[obj] = nil
+    local c_vs = saved_vs
+        or (cp and cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0) and cp.visual_size)
+        or DEFAULT_VISIBLE_VS
+    obj:set_properties({
+        is_visible = true,
+        visual_size = c_vs,
+        pointable = false,
+    })
+end
+
+--- Recursively hide a player's attached child entities and mod-specific armor/wield visuals.
+--- Ensures grandchildren (e.g. x_player_api proxies with x_player_armor modular entities)
+--- are fully hidden and do not leak ghost visuals at the death location.
+---@param parent_obj ObjectRef The player or child entity to traverse
+---@param excluded table<ObjectRef, boolean>? Set of entities to exclude from hiding
+---@param is_initial boolean? True on initial death camera setup
+local function hide_player_attachments(parent_obj, excluded, is_initial)
+    if not parent_obj then return end
+
+    -- Explicit external mod hiding hooks on the root player
+    if parent_obj.is_player and parent_obj:is_player() then
+        if is_initial then
+            local xpapi = rawget(_G, "x_player_api")
+            if xpapi and type(xpapi.set_wield_item_visibility) == "function" then
+                xpapi.set_wield_item_visibility(parent_obj, false)
+            end
+        end
+
+        local pname = parent_obj:get_player_name()
+        local xpa = rawget(_G, "x_player_armor")
+        if pname and xpa and xpa.visuals and type(xpa.visuals.player_entities) == "table" then
+            local p_ents = xpa.visuals.player_entities[pname]
+            if p_ents then
+                for _, list in pairs(p_ents) do
+                    if type(list) == "table" then
+                        for _, obj in ipairs(list) do
+                            if not excluded or not excluded[obj] then
+                                hide_single_attachment(obj, false)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Recursive hierarchy visitor
+    if parent_obj.get_children then
+        local children = parent_obj:get_children()
+        if children then
+            for _, child in ipairs(children) do
+                if child and (not child.is_valid or child:is_valid()) and (not excluded or not excluded[child]) then
+                    local cent = child.get_luaentity and child:get_luaentity()
+                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
+                    hide_single_attachment(child, is_arrow)
+                    hide_player_attachments(child, excluded, false)
+                end
+            end
+        end
+    end
+end
+
+--- Recursively unhide a player's attached child entities on respawn.
+---@param parent_obj ObjectRef The player or child entity to traverse
+---@param excluded table<ObjectRef, boolean>? Set of entities to exclude from unhiding
+local function unhide_player_attachments(parent_obj, excluded)
+    if not parent_obj then return end
+
+    if parent_obj.is_player and parent_obj:is_player() then
+        local pname = parent_obj:get_player_name()
+        local xpa = rawget(_G, "x_player_armor")
+        if pname and xpa and xpa.visuals and type(xpa.visuals.player_entities) == "table" then
+            local p_ents = xpa.visuals.player_entities[pname]
+            if p_ents then
+                for _, list in pairs(p_ents) do
+                    if type(list) == "table" then
+                        for _, obj in ipairs(list) do
+                            if not excluded or not excluded[obj] then
+                                unhide_single_attachment(obj)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if not parent_obj.get_children then return end
+    local children = parent_obj:get_children()
+    if not children then return end
+    for _, child in ipairs(children) do
+        if child and (not child.is_valid or child:is_valid()) and (not excluded or not excluded[child]) then
+            unhide_single_attachment(child)
+            unhide_player_attachments(child, excluded)
+        end
+    end
+end
+
 --- Update camera position and orientation along the circular orbit
 ---@param player ObjectRef The deceased player object
 ---@param dtime number Delta time in seconds since last frame
@@ -503,45 +659,13 @@ function deathstats.update_death_camera(player, dtime)
         end
     end
 
-    -- Hide any attached child objects (e.g. 3d armor meshes or wielded items from external mods)
-    if player.get_children then
-        local children = player:get_children()
-        if children then
-            for _, child in ipairs(children) do
-                if child and (not child.is_valid or child:is_valid()) and child ~= data.anchor and child ~= data.corpse and child ~= data.corpse_wielditem then
-                    local cent = child.get_luaentity and child:get_luaentity()
-                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
-                    if is_arrow then
-                        if child.set_properties then
-                            child:set_properties({
-                                is_visible = false,
-                                pointable = false,
-                            })
-                        end
-                    else
-                        if child.get_properties and child.set_properties then
-                            local cp = child:get_properties()
-                            if cp and (cp.is_visible ~= false
-                                or (cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0))
-                                or cp.pointable ~= false) then
-                                child:set_properties({
-                                    is_visible = false,
-                                    visual_size = { x = 0, y = 0, z = 0 },
-                                    pointable = false,
-                                })
-                            end
-                        elseif child.set_properties then
-                            child:set_properties({
-                                is_visible = false,
-                                visual_size = { x = 0, y = 0, z = 0 },
-                                pointable = false,
-                            })
-                        end
-                    end
-                end
-            end
-        end
-    end
+    -- Hide any attached child objects and grandchildren (proxies, modular armor meshes, wield items)
+    for k in pairs(scratch_excluded) do scratch_excluded[k] = nil end
+    if data.anchor then scratch_excluded[data.anchor] = true end
+    if data.corpse then scratch_excluded[data.corpse] = true end
+    if data.corpse_wielditem then scratch_excluded[data.corpse_wielditem] = true end
+    if data.corpse_left_wielditem then scratch_excluded[data.corpse_left_wielditem] = true end
+    hide_player_attachments(player, scratch_excluded, dtime == 0)
 
     -- Keep player attached to camera anchor to prevent falling/rubber-banding if detached by external mods
     if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) then
@@ -1133,6 +1257,8 @@ function deathstats.set_death_camera(player, death_info)
         if saved_corpse.armor_dropped ~= nil then visuals.armor_dropped = saved_corpse.armor_dropped end
         if saved_corpse.inventory_dropped ~= nil then visuals.inventory_dropped = saved_corpse.inventory_dropped end
         if saved_corpse.wield_item ~= nil then visuals.wield_item = saved_corpse.wield_item end
+        if saved_corpse.left_wield_item ~= nil then visuals.left_wield_item = saved_corpse.left_wield_item end
+        if saved_corpse.armor_items ~= nil then visuals.armor_items = saved_corpse.armor_items end
     elseif meta then
         meta:set_string("deathstats:orig_textures", core.serialize(visuals.textures))
         meta:set_string("deathstats:orig_mesh", visuals.mesh or "character.b3d")
@@ -1147,6 +1273,8 @@ function deathstats.set_death_camera(player, death_info)
             armor_dropped = visuals.armor_dropped,
             inventory_dropped = visuals.inventory_dropped,
             wield_item = visuals.wield_item,
+            left_wield_item = visuals.left_wield_item,
+            armor_items = visuals.armor_items,
         }))
     end
 
@@ -1243,31 +1371,9 @@ function deathstats.set_death_camera(player, death_info)
             show_on_minimap = false,
         })
     end
-    if player.get_children then
-        local children = player:get_children()
-        if children then
-            for _, child in ipairs(children) do
-                if child and (not child.is_valid or child:is_valid()) and child ~= corpse then
-                    local cent = child.get_luaentity and child:get_luaentity()
-                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
-                    if child.set_properties then
-                        if is_arrow then
-                            child:set_properties({
-                                is_visible = false,
-                                pointable = false,
-                            })
-                        else
-                            child:set_properties({
-                                is_visible = false,
-                                visual_size = { x = 0, y = 0, z = 0 },
-                                pointable = false,
-                            })
-                        end
-                    end
-                end
-            end
-        end
-    end
+    local excluded = {}
+    if corpse then excluded[corpse] = true end
+    hide_player_attachments(player, excluded, true)
     if player.set_physics_override then
         player:set_physics_override({ speed = 0, jump = 0, gravity = 0, sneak = false })
     end
@@ -1494,6 +1600,7 @@ function deathstats.reset_camera(player, is_leaving)
                 end
                 data.corpse = nil
                 data.corpse_wielditem = nil
+                data.corpse_left_wielditem = nil
             else
                 local luaent = data.corpse.get_luaentity and data.corpse:get_luaentity()
                 if luaent and luaent._particle_spawners then
@@ -1510,6 +1617,12 @@ function deathstats.reset_camera(player, is_leaving)
                     end
                     data.corpse_wielditem = nil
                 end
+                if data.corpse_left_wielditem then
+                    if (not data.corpse_left_wielditem.is_valid or data.corpse_left_wielditem:is_valid()) and data.corpse_left_wielditem.remove then
+                        data.corpse_left_wielditem:remove()
+                    end
+                    data.corpse_left_wielditem = nil
+                end
             end
         end
         if data.corpse_wielditem then
@@ -1517,6 +1630,12 @@ function deathstats.reset_camera(player, is_leaving)
                 data.corpse_wielditem:remove()
             end
             data.corpse_wielditem = nil
+        end
+        if data.corpse_left_wielditem then
+            if (not data.corpse_left_wielditem.is_valid or data.corpse_left_wielditem:is_valid()) and data.corpse_left_wielditem.remove then
+                data.corpse_left_wielditem:remove()
+            end
+            data.corpse_left_wielditem = nil
         end
         if data.anchor and (not data.anchor.is_valid or data.anchor:is_valid()) and data.anchor.remove then
             data.anchor:remove()
@@ -1593,6 +1712,9 @@ function deathstats.reset_camera(player, is_leaving)
     if not mesh_name or mesh_name == "" then
         mesh_name = "character.b3d"
     end
+    if meta and meta.set_string then
+        meta:set_string("deathstats:corpse_data", "")
+    end
 
     if player.set_nametag_attributes then
         if data and data.old_nametag_attributes then
@@ -1632,30 +1754,15 @@ function deathstats.reset_camera(player, is_leaving)
     end
 
     -- Unhide attached child entities that were hidden during death sequence (e.g. 3D armor, wield entities)
-    if player.get_children then
-        local children = player:get_children()
-        if children then
-            for _, child in ipairs(children) do
-                if child and (not child.is_valid or child:is_valid())
-                    and (not data or (child ~= data.anchor and child ~= data.corpse and child ~= data.corpse_wielditem)) then
-                    local cent = child.get_luaentity and child:get_luaentity()
-                    local is_arrow = cent and (cent._is_arrow or (cent.name and cent.name:find("^x_bows:")))
-                    if not is_arrow and child.set_properties then
-                        local is_proxy = cent and (cent.name == "x_player_api:visual_glb" or cent.name == "x_player_api:visual_b3d")
-                        if not is_proxy then
-                            local cp = child.get_properties and child:get_properties()
-                            local c_vs = (cp and cp.visual_size and (cp.visual_size.x > 0 or cp.visual_size.y > 0) and cp.visual_size) or { x = 1, y = 1, z = 1 }
-                            child:set_properties({
-                                is_visible = true,
-                                visual_size = c_vs,
-                                pointable = false,
-                            })
-                        end
-                    end
-                end
-            end
-        end
+    local excluded = nil
+    if data then
+        excluded = {}
+        if data.anchor then excluded[data.anchor] = true end
+        if data.corpse then excluded[data.corpse] = true end
+        if data.corpse_wielditem then excluded[data.corpse_wielditem] = true end
+        if data.corpse_left_wielditem then excluded[data.corpse_left_wielditem] = true end
     end
+    unhide_player_attachments(player, excluded)
 
     -- Reapply model and skins to player_api, x_player_api, and compatible skin frameworks
     local papi = rawget(_G, "player_api")
@@ -1713,13 +1820,21 @@ function deathstats.reset_camera(player, is_leaving)
     if skins_mod and skins_mod.update_player_skin then
         skins_mod.update_player_skin(player)
     end
+    local xpa = rawget(_G, "x_player_armor")
     local armor_mod = rawget(_G, "armor")
-    if armor_mod and armor_mod.set_player_armor then
+    if xpa and type(xpa) == "table" then
+        if type(xpa.set_player_armor) == "function" then
+            xpa.set_player_armor(player)
+        end
+        if type(xpa.update_player_visuals) == "function" then
+            xpa.update_player_visuals(player)
+        end
+    elseif armor_mod and armor_mod.set_player_armor then
         armor_mod:set_player_armor(player)
     end
 
     -- Restore standing animation (with deferred retries to ensure player_api handshake is complete)
-    local function restore_stand()
+    local function restore_stand(is_deferred)
         if deathstats.is_shutting_down or not deathstats.is_player_online(name) then return end
         local p = core.get_player_by_name(name)
         if not p or not p:is_player() then return end
@@ -1761,13 +1876,24 @@ function deathstats.reset_camera(player, is_leaving)
         if skins_mod and skins_mod.update_player_skin then
             pcall(skins_mod.update_player_skin, p)
         end
-        if armor_mod and armor_mod.set_player_armor then
-            pcall(armor_mod.set_player_armor, p)
+        if is_deferred then
+            local cur_xpa = rawget(_G, "x_player_armor")
+            if cur_xpa and type(cur_xpa) == "table" then
+                if type(cur_xpa.verify_player_visuals) == "function" then
+                    pcall(cur_xpa.verify_player_visuals, p)
+                elseif type(cur_xpa.update_player_visuals) == "function" then
+                    pcall(cur_xpa.update_player_visuals, p)
+                end
+            elseif armor_mod and armor_mod.set_player_armor then
+                pcall(armor_mod.set_player_armor, armor_mod, p)
+            end
+        elseif not xpa and armor_mod and armor_mod.set_player_armor then
+            pcall(armor_mod.set_player_armor, armor_mod, p)
         end
     end
-    restore_stand()
-    core.after(0.2, restore_stand)
-    core.after(0.5, restore_stand)
+    restore_stand(false)
+    core.after(0.2, function() restore_stand(true) end)
+    core.after(0.5, function() restore_stand(true) end)
 
     -- Unlock camera to "any" after short delay
     core.after(0.2, function()

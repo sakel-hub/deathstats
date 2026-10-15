@@ -802,8 +802,10 @@ function deathstats.pose_corpse(corpse, mesh_name, anim_name)
 
     local anim_def = nil
     local papi = rawget(_G, "player_api") or rawget(_G, "x_player_api")
-    if papi and type(papi) == "table" and type(papi.registered_models) == "table" and mesh_name and papi.registered_models[mesh_name] then
-        local model_def = papi.registered_models[mesh_name]
+    if papi and type(papi) == "table" and mesh_name then
+        local model_def = (type(papi.get_model) == "function" and papi.get_model(mesh_name))
+            or (type(papi.registered_models) == "table" and papi.registered_models[mesh_name])
+            or (type(papi.resolve_model) == "function" and type(papi.registered_models) == "table" and papi.registered_models[papi.resolve_model(mesh_name)])
         if model_def and type(model_def) == "table" then
             local anims = (is_glb and model_def.animations_glb) or model_def.animations or model_def.animations_glb
             if anims then
@@ -1164,9 +1166,7 @@ function deathstats.is_armor_dropped(_player)
     local xpa = rawget(_G, "x_player_armor")
     if xpa and type(xpa) == "table" and xpa.constants and type(xpa.constants) == "table" then
         if xpa.constants.DROP_ON_DEATH ~= nil or xpa.constants.DESTROY_ON_DEATH ~= nil then
-            if (xpa.constants.DROP_ON_DEATH == true) or (xpa.constants.DESTROY_ON_DEATH == true) then
-                return true
-            end
+            return (xpa.constants.DROP_ON_DEATH == true) or (xpa.constants.DESTROY_ON_DEATH == true)
         end
     end
 
@@ -1310,6 +1310,69 @@ function deathstats.get_player_wield_item(player)
     return ""
 end
 
+--- Check whether an item technical name represents a shield
+---@param iname string|nil Item name
+---@return boolean is_shield
+local function is_shield_item(iname)
+    if not iname or iname == "" then return false end
+    return core.get_item_group(iname, "armor_shield") > 0
+        or core.get_item_group(iname, "shield") > 0
+        or iname:find("shield") ~= nil
+end
+
+--- Extract the player's currently equipped x_player_armor items (when not dropped on death)
+---@param player ObjectRef The player object
+---@param drops_armor boolean|nil Optional precomputed armor_dropped flag
+---@return string[] armor_items Array of serialized ItemStack strings
+function deathstats.get_player_armor_items(player, drops_armor)
+    local armor_items = {}
+    if not player or not player:is_player() then
+        return armor_items
+    end
+    if drops_armor == nil then
+        drops_armor = deathstats.is_armor_dropped(player)
+    end
+    if drops_armor then
+        return armor_items
+    end
+
+    local xpa = rawget(_G, "x_player_armor")
+    if xpa and type(xpa) == "table" then
+        local inv = nil
+        local has_live_list = false
+        if type(xpa.get_valid_player) == "function" then
+            local _, p_inv = xpa.get_valid_player(player)
+            inv = p_inv
+        end
+        if inv then
+            local list = inv:get_list("armor")
+            if list then
+                has_live_list = true
+                local count = (inv.get_size and inv:get_size("armor")) or #list
+                for i = 1, count do
+                    local item = list[i]
+                    if item and not item:is_empty() then
+                        table.insert(armor_items, item:to_string())
+                    end
+                end
+            end
+        end
+        if not has_live_list and #armor_items == 0 and xpa.visuals and type(xpa.visuals.last_death_armor) == "table" then
+            local pname = player:get_player_name()
+            local snapshot = pname and xpa.visuals.last_death_armor[pname]
+            if type(snapshot) == "table" then
+                for i = 1, #snapshot do
+                    local item = snapshot[i]
+                    if item and not item:is_empty() then
+                        table.insert(armor_items, item:to_string())
+                    end
+                end
+            end
+        end
+    end
+    return armor_items
+end
+
 --- Extract the player's active left/offhand wielded item or shield name
 ---@param player ObjectRef The player object
 ---@return string item_name The item technical name (e.g. "x_player_armor:shield_steel"), or "" if empty
@@ -1329,14 +1392,47 @@ function deathstats.get_player_left_wield_item(player)
 
     -- 2. Check x_player_armor equipped shield
     local xpa = rawget(_G, "x_player_armor")
-    local get_shield = xpa and (xpa.get_equipped_shield or (xpa.combat and xpa.combat.get_equipped_shield))
-    if get_shield then
-        local shield_stack = get_shield(player)
-        if shield_stack then
-            local sname = deathstats.get_stack_name(shield_stack)
-            if sname ~= "" then
-                return sname
+    if xpa and type(xpa) == "table" then
+        local has_live_armor_check = false
+        local get_shield = xpa.get_equipped_shield or (xpa.combat and xpa.combat.get_equipped_shield)
+        if type(get_shield) == "function" then
+            has_live_armor_check = true
+            local shield_stack = get_shield(player)
+            if shield_stack then
+                local sname = deathstats.get_stack_name(shield_stack)
+                if sname ~= "" then
+                    return sname
+                end
             end
+        elseif type(xpa.get_valid_player) == "function" then
+            local _, inv = xpa.get_valid_player(player)
+            local list = inv and inv:get_list("armor")
+            if list then
+                has_live_armor_check = true
+                local count = (inv.get_size and inv:get_size("armor")) or #list
+                for i = 1, count do
+                    local iname = deathstats.get_stack_name(list[i])
+                    if is_shield_item(iname) then
+                        return iname
+                    end
+                end
+            end
+        end
+        -- Fallback to x_player_armor last_death_armor snapshot only if live inventory check was unavailable
+        if not has_live_armor_check and xpa.visuals and type(xpa.visuals.last_death_armor) == "table" then
+            local pname = player:get_player_name()
+            local snapshot = pname and xpa.visuals.last_death_armor[pname]
+            if type(snapshot) == "table" then
+                for i = 1, #snapshot do
+                    local iname = deathstats.get_stack_name(snapshot[i])
+                    if is_shield_item(iname) then
+                        return iname
+                    end
+                end
+            end
+        end
+        if has_live_armor_check then
+            return ""
         end
     end
 
@@ -1383,18 +1479,21 @@ function deathstats.get_player_visuals(player)
             inventory_dropped = false,
             wield_item = "",
             left_wield_item = "",
+            armor_items = {},
         }
     end
     local props = player:get_properties() or {}
+    local drops_armor = deathstats.is_armor_dropped(player)
     return {
         mesh = props.mesh or "character.b3d",
         textures = props.textures or { "character.png" },
         visual_size = props.visual_size or { x = 1, y = 1, z = 1 },
         yaw = (player.get_look_horizontal and player:get_look_horizontal()) or 0,
-        armor_dropped = deathstats.is_armor_dropped(player),
+        armor_dropped = drops_armor,
         inventory_dropped = deathstats.is_inventory_dropped(player),
         wield_item = deathstats.get_player_wield_item(player),
         left_wield_item = deathstats.get_player_left_wield_item(player),
+        armor_items = deathstats.get_player_armor_items(player, drops_armor),
     }
 end
 
@@ -1596,16 +1695,18 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             deathstats.fracture_corpse_limbs(corpse)
         end
 
+        local mesh = visuals.mesh or "character.b3d"
+        local is_glb = mesh:find("%.glb$") ~= nil or mesh:find("%.gltf$") ~= nil
+        local model_format = is_glb and "glb" or "b3d"
+        local xpapi = rawget(_G, "x_player_api")
+        local is_xpapi_wield = (type(xpapi) == "table") and (xpapi.enable_wield_item ~= false)
+        local xpa = rawget(_G, "x_player_armor")
+
         -- Attach 3D wielditem entity to right hand if inventory items are retained on death
         if visuals.wield_item and visuals.wield_item ~= "" and not visuals.inventory_dropped then
-            local xpapi = rawget(_G, "x_player_api")
-            local is_xpapi_wield = xpapi and xpapi.enable_wield_item ~= false
             local wield_ent
 
             if is_xpapi_wield and type(xpapi.attach_wield_item_to_entity) == "function" then
-                local mesh = visuals.mesh or "character.b3d"
-                local is_glb = mesh:find("%.glb$") ~= nil
-                local model_format = is_glb and "glb" or "b3d"
                 wield_ent = xpapi.attach_wield_item_to_entity(
                     corpse,
                     visuals.wield_item,
@@ -1617,9 +1718,6 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
             elseif is_xpapi_wield and type(xpapi.get_wield_attachment_params) == "function" then
                 wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
                 if wield_ent then
-                    local mesh = visuals.mesh or "character.b3d"
-                    local is_glb = mesh:find("%.glb$") ~= nil
-                    local model_format = is_glb and "glb" or "b3d"
                     local v_size, att_pos, att_rot, glow, item_col = xpapi.get_wield_attachment_params(visuals.wield_item, model_format)
                     local props = {
                         textures = { visuals.wield_item },
@@ -1637,18 +1735,28 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
                     end
                 end
             else
-                -- Unchanged default deathstats behavior when x_player_api is not enabled
-                wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
-                if wield_ent then
-                    wield_ent:set_properties({
-                        textures = { visuals.wield_item },
-                        wield_item = visuals.wield_item,
-                        visual_size = { x = 0.25, y = 0.25, z = 0.25 },
-                        pointable = false,
-                    })
-                    if wield_ent.set_attach then
-                        -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
-                        wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
+                if xpa and type(xpa.attach_wield_item_to_entity) == "function" then
+                    wield_ent = xpa.attach_wield_item_to_entity(
+                        corpse,
+                        visuals.wield_item,
+                        model_format,
+                        { entity_name = "deathstats:corpse_wielditem" }
+                    )
+                end
+                if not wield_ent then
+                    -- Unchanged default deathstats behavior when external APIs are not enabled
+                    wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+                    if wield_ent then
+                        wield_ent:set_properties({
+                            textures = { visuals.wield_item },
+                            wield_item = visuals.wield_item,
+                            visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+                            pointable = false,
+                        })
+                        if wield_ent.set_attach then
+                            -- Attach to lower palm of right hand (y=6.0 places item in palm, z=1.5 aligns with grip)
+                            wield_ent:set_attach(corpse, "Arm_Right", { x = 0, y = 6.0, z = 1.5 }, { x = 90, y = 0, z = 90 }, true)
+                        end
                     end
                 end
             end
@@ -1660,62 +1768,53 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
 
         -- Attach 3D left wielditem entity (shield/offhand) to left hand if items/armor are retained
         local left_item = visuals.left_wield_item
-        local is_shield = left_item and (core.get_item_group(left_item, "armor_shield") > 0
-            or left_item:find("shield") ~= nil)
+        local is_shield = is_shield_item(left_item)
         local left_dropped = is_shield and visuals.armor_dropped or visuals.inventory_dropped
         if left_item and left_item ~= "" and not left_dropped then
-            local mesh = visuals.mesh or "character.b3d"
-            local is_glb = mesh:find("%.glb$") ~= nil
-            local model_format = is_glb and "glb" or "b3d"
             local left_wield_ent
 
-            local xpa = rawget(_G, "x_player_armor")
             if is_shield and xpa and (type(xpa.attach_shield_to_entity) == "function" or type(xpa.attach_shield) == "function") then
                 local attach_fn = xpa.attach_shield_to_entity or xpa.attach_shield
                 left_wield_ent = attach_fn(corpse, left_item, model_format, {
                     entity_name = "deathstats:corpse_wielditem",
                 })
+            elseif is_xpapi_wield and type(xpapi.attach_wield_item_to_entity) == "function" then
+                local opts = nil
+                if is_shield then
+                    opts = {
+                        override_transform = true,
+                        pos_glb = { x = -0.8, y = 5.0, z = -2.8 },
+                        rot_glb = { x = 180, y = 45, z = 0 },
+                        pos_b3d = { x = -0.8, y = 5.0, z = 2.8 },
+                        rot_b3d = { x = 180, y = -45, z = 0 },
+                    }
+                end
+                left_wield_ent = xpapi.attach_wield_item_to_entity(
+                    corpse,
+                    left_item,
+                    model_format,
+                    "Arm_Left",
+                    "deathstats:corpse_wielditem",
+                    true,
+                    opts
+                )
             else
-                local xpapi = rawget(_G, "x_player_api")
-                local is_xpapi_wield = (type(xpapi) == "table") and (xpapi.enable_wield_item ~= false)
-                if is_xpapi_wield and type(xpapi.attach_wield_item_to_entity) == "function" then
-                    local opts = nil
-                    if is_shield then
-                        opts = {
-                            override_transform = true,
-                            pos_glb = { x = -0.8, y = 5.0, z = -2.8 },
-                            rot_glb = { x = 180, y = 45, z = 0 },
-                            pos_b3d = { x = -0.8, y = 5.0, z = 2.8 },
-                            rot_b3d = { x = 180, y = -45, z = 0 },
-                        }
-                    end
-                    left_wield_ent = xpapi.attach_wield_item_to_entity(
-                        corpse,
-                        left_item,
-                        model_format,
-                        "Arm_Left",
-                        "deathstats:corpse_wielditem",
-                        true,
-                        opts
-                    )
-                else
-                    -- Fallback when x_player_api and x_player_armor are not enabled
-                    left_wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
-                    if left_wield_ent then
-                        left_wield_ent:set_properties({
-                            textures = { left_item },
-                            wield_item = left_item,
-                            visual_size = { x = 0.25, y = 0.25, z = 0.25 },
-                            pointable = false,
-                        })
-                        if left_wield_ent.set_attach then
-                            if is_shield then
-                                local s_rot = is_glb and { x = 180, y = 45, z = 0 } or { x = 180, y = -45, z = 0 }
-                                local s_pos = is_glb and { x = -0.8, y = 5.0, z = -2.8 } or { x = -0.8, y = 5.0, z = 2.8 }
-                                left_wield_ent:set_attach(corpse, "Arm_Left", s_pos, s_rot, true)
-                            else
-                                left_wield_ent:set_attach(corpse, "Arm_Left", { x = 0, y = 6.0, z = -1.5 }, { x = 90, y = 0, z = 90 }, true)
-                            end
+                -- Fallback when x_player_api and x_player_armor are not enabled
+                left_wield_ent = core.add_entity(corpse_pos, "deathstats:corpse_wielditem")
+                if left_wield_ent then
+                    left_wield_ent:set_properties({
+                        textures = { left_item },
+                        wield_item = left_item,
+                        visual_size = { x = 0.25, y = 0.25, z = 0.25 },
+                        pointable = false,
+                    })
+                    if left_wield_ent.set_attach then
+                        if is_shield then
+                            local s_rot = is_glb and { x = 180, y = 45, z = 0 } or { x = 180, y = -45, z = 0 }
+                            local s_pos = is_glb and { x = -0.8, y = 5.0, z = -2.8 } or { x = -0.8, y = 5.0, z = 2.8 }
+                            left_wield_ent:set_attach(corpse, "Arm_Left", s_pos, s_rot, true)
+                        else
+                            left_wield_ent:set_attach(corpse, "Arm_Left", { x = 0, y = 6.0, z = -1.5 }, { x = 90, y = 0, z = 90 }, true)
                         end
                     end
                 end
@@ -1734,15 +1833,20 @@ function deathstats.spawn_and_setup_corpse(corpse_pos, visuals, player, death_in
         end
 
         -- Attach x_player_armor 3D modular armor entities to corpse if equipped and not dropped
-        local xpa = rawget(_G, "x_player_armor")
         if not visuals.armor_dropped and xpa and type(xpa.attach_armor_to_entity) == "function" then
-            local armor_target = (visuals.armor_items and #visuals.armor_items > 0 and visuals.armor_items) or player
-            local mesh = visuals.mesh or "character.b3d"
-            local is_glb = mesh:find("%.glb$") ~= nil or mesh:find("%.gltf$") ~= nil
-            local model_format = is_glb and "glb" or "b3d"
-            local armor_ents = xpa.attach_armor_to_entity(corpse, armor_target, model_format)
-            if luaent and armor_ents and #armor_ents > 0 then
-                luaent._armor_entities = armor_ents
+            local armor_target = nil
+            if visuals.armor_items ~= nil then
+                if #visuals.armor_items > 0 then
+                    armor_target = visuals.armor_items
+                end
+            else
+                armor_target = player
+            end
+            if armor_target then
+                local armor_ents = xpa.attach_armor_to_entity(corpse, armor_target, model_format)
+                if luaent and armor_ents and #armor_ents > 0 then
+                    luaent._armor_entities = armor_ents
+                end
             end
         end
     end

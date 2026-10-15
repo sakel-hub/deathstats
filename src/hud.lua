@@ -78,6 +78,24 @@ function deathstats.reset_player_effects(player, is_leaving)
 
     -- Restore camera perspective, eye offset, fov, gameplay HUDs, and standing animation
     deathstats.reset_camera(player, is_leaving)
+
+    -- Clear persisted death metadata if player is respawning or being revived
+    if not is_leaving and player.get_meta then
+        local meta = player:get_meta()
+        if meta then
+            if meta.set_int then
+                meta:set_int("deathstats:death_active", 0)
+            end
+            if meta.set_string then
+                meta:set_string("deathstats:death_info", "")
+                meta:set_string("deathstats:corpse_data", "")
+                meta:set_string("deathstats:orig_textures", "")
+                meta:set_string("deathstats:orig_mesh", "")
+                meta:set_string("deathstats:orig_visual_size", "")
+                meta:set_string("deathstats:orig_yaw", "")
+            end
+        end
+    end
 end
 
 --- Calculate responsive banner scale maintaining exact texture aspect ratio across any screen resolution
@@ -217,6 +235,9 @@ function deathstats.trigger_death_screen(player, reason, is_reconnect)
             meta:set_string("deathstats:death_info", core.serialize(death_info))
         end
     else
+        if meta and meta.set_string then
+            meta:set_string("deathstats:corpse_data", "")
+        end
         death_info = deathstats.analyze_death(player, reason)
         deathstats.record_player_death(player, death_info)
         deathstats.save_player_stats(name)
