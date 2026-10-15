@@ -1804,7 +1804,7 @@ local mock_corpse = {
 deathstats.pose_corpse(mock_corpse, "character.b3d")
 assert(mock_corpse.anim ~= nil, "Corpse entity must receive animation")
 assert(mock_corpse.anim.range.x == 166 and mock_corpse.anim.range.y == 166, "Corpse entity must be frozen flat on frame 166")
-assert(mock_corpse.anim.speed == 1 and mock_corpse.anim.loop == false, "Corpse entity must have speed=1 and loop=false to lock flat pose in Irrlicht")
+assert(mock_corpse.anim.speed == 0 and mock_corpse.anim.loop == false, "Corpse entity must have speed=0 and loop=false to lock flat pose in Irrlicht")
 
 -- Multi-track glTF corpse posing test
 local mock_gltf_corpse = {
@@ -1834,7 +1834,8 @@ if papi then
 end
 deathstats.pose_corpse(mock_gltf_corpse, "character.glb")
 assert(mock_gltf_corpse.played_track == "lay", "glTF corpse must play named 'lay' animation track")
-assert(mock_gltf_corpse.played_opts ~= nil and mock_gltf_corpse.played_opts.loop == true, "glTF corpse must play with loop=true")
+assert(mock_gltf_corpse.played_opts ~= nil and mock_gltf_corpse.played_opts.speed == 0 and mock_gltf_corpse.played_opts.loop == false,
+    "glTF corpse must play with speed=0 and loop=false so it stays motionless without breathing")
 assert(mock_gltf_corpse.anim == nil, "glTF corpse must not reset animation frame via set_animation")
 print("  [PASS] Multi-Skin Mod Compatibility & Corpse Appearance Inheritance")
 
@@ -11460,8 +11461,8 @@ suites[109] = function()
     }
     deathstats.pose_corpse(mock_glb_corpse, "character.glb", "lay")
     assert(mock_glb_corpse.played_track == "lay", "GLB corpse must play 'lay' animation track")
-    assert(mock_glb_corpse.played_opts ~= nil and mock_glb_corpse.played_opts.loop == true,
-        "GLB corpse play_animation must have loop=true so it stays laid down")
+    assert(mock_glb_corpse.played_opts ~= nil and mock_glb_corpse.played_opts.speed == 0 and mock_glb_corpse.played_opts.loop == false,
+        "GLB corpse play_animation must have speed=0 and loop=false so it stays motionless without breathing")
     assert(mock_glb_corpse.anim == nil,
         "GLB corpse must not call set_animation(0,0) which cancels the lay pose")
 

@@ -847,7 +847,7 @@ function deathstats.pose_corpse(corpse, mesh_name, anim_name)
     local track_name = (type(anim_def) == "string" and anim_def) or (type(anim_def) == "table" and anim_def.track)
     if track_name then
         if corpse.play_animation then
-            corpse:play_animation(track_name, { speed = 1, loop = true, priority = 0 })
+            corpse:play_animation(track_name, { speed = 0, loop = false, priority = 0 })
         end
         return
     end
@@ -857,7 +857,7 @@ function deathstats.pose_corpse(corpse, mesh_name, anim_name)
         or ((type(anim_def) == "table" and (anim_def.y or anim_def[2])) or 166)
 
     if corpse.set_animation then
-        corpse:set_animation({ x = target_frame, y = target_frame }, 1, 0, false)
+        corpse:set_animation({ x = target_frame, y = target_frame }, 0, 0, false)
     end
 end
 
